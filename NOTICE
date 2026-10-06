@@ -1,0 +1,37 @@
+kushare
+Copyright (C) 2026 Cristian Romero Andrade
+
+Este proyecto se distribuye bajo la licencia GPL-3.0-or-later (ver LICENSE).
+
+== Definiciones de protocolo de terceros ==
+
+Los archivos .proto en crates/kushare-proto/proto/ fueron vendorizados desde
+los siguientes proyectos de Google, ambos bajo licencia Apache License 2.0
+(http://www.apache.org/licenses/LICENSE-2.0). Se conservan sin modificaciones
+sustanciales salvo ajustes menores de `package`/`option` necesarios para
+integrarlos en este workspace de Rust.
+
+- offline_wire_formats.proto, wire_format.proto
+  Origen: https://github.com/google/nearby
+  Copyright (C) Google LLC — Apache License 2.0
+
+- ukey.proto, securegcm.proto, securemessage.proto, device_to_device_messages.proto
+  Origen: https://github.com/google/ukey2
+  Copyright (C) Google LLC — Apache License 2.0
+
+Estos archivos describen exclusivamente el *formato de mensajes* del
+protocolo (estructuras protobuf), no contienen lógica de negocio de Google
+ni código ejecutable de sus repositorios.
+
+== Referencias de diseño ==
+
+El diseño del handshake UKEY2, la derivación de claves D2D y el framing TCP
+en crates/kushare-crypto y crates/kushare-transfer se basa en el
+conocimiento público documentado por:
+
+- Martichou/rquickshare (Rust) — https://github.com/Martichou/rquickshare
+- grishka/NearDrop (Swift), en particular su PROTOCOL.md —
+  https://github.com/grishka/NearDrop
+
+Ningún código fuente de esos proyectos fue copiado directamente; se
+reimplementó en Rust a partir de la documentación pública del protocolo.

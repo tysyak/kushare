@@ -1,0 +1,13 @@
+[package]
+name = "kushare-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prost = { workspace = true }
+prost-types = "0.14.4"
+
+[build-dependencies]
+prost-build = "0.14.4"
+protox = "0.9.1"

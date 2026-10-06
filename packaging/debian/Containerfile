@@ -1,0 +1,17 @@
+# Construye el .deb de kushare dentro de un contenedor Debian, para no
+# instalar el toolchain de Debian ni sus paquetes -dev en el host Arch.
+FROM docker.io/library/debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates build-essential pkg-config \
+        libdbus-1-dev libbluetooth-dev libwayland-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN cargo install cargo-deb --locked
+
+WORKDIR /src
+ENTRYPOINT ["make", "package-deb-inner"]

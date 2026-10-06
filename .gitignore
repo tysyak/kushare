@@ -1,0 +1,8 @@
+/target
+**/target
+*.pkg.tar.zst
+*.deb
+*.rpm
+pkg/
+src/*.tar.gz
+.SRCINFO.bak

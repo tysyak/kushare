@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=kushare
+GenericName=Quick Share
+Comment=Cliente nativo de Quick Share (Nearby Share) para Linux
+Exec=kushare
+Icon=kushare
+Terminal=false
+Categories=Network;FileTransfer;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

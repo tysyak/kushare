@@ -1,0 +1,18 @@
+# Construye el .rpm de kushare dentro de un contenedor Fedora, para no
+# instalar el toolchain de Fedora ni sus paquetes -devel en el host Arch.
+FROM docker.io/library/fedora:41
+
+RUN dnf install -y \
+        gcc pkgconf-pkg-config \
+        dbus-devel bluez-libs-devel wayland-devel \
+        curl ca-certificates make \
+    && dnf clean all
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN cargo install cargo-generate-rpm --locked
+
+WORKDIR /src
+ENTRYPOINT ["make", "package-rpm-inner"]

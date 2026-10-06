@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kushare-proto",
+    "crates/kushare-crypto",
+    "crates/kushare-core",
+    "crates/kushare-discovery",
+    "crates/kushare-transfer",
+    "crates/kushare-tray",
+    ".",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/mascrit/kushare"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "io-util", "signal"] }
+prost = "0.14"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+
+[package]
+name = "kushare"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cliente nativo open-source de Quick Share (Nearby Share) para Linux"
+
+[[bin]]
+name = "kushare"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+kushare-core = { path = "crates/kushare-core" }
+kushare-crypto = { path = "crates/kushare-crypto" }
+kushare-proto = { path = "crates/kushare-proto" }
+kushare-discovery = { path = "crates/kushare-discovery" }
+kushare-transfer = { path = "crates/kushare-transfer" }
+kushare-tray = { path = "crates/kushare-tray" }
+tray-icon = { version = "0.25.1", default-features = false, features = ["ksni"] }
+rfd = "0.17.2"
+ratatui = "0.30.2"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+tempfile = "3.27.0"
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
+
+[package.metadata.deb]
+maintainer = "Cristian Romero Andrade <mascrit@gmail.com>"
+copyright = "2026, Cristian Romero Andrade"
+license-file = ["LICENSE", "0"]
+extended-description = "Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para Linux: descubrimiento por mDNS/BLE, envío y recepción de archivos, e icono de bandeja del sistema."
+# Sin libgtk-3: el tray usa el backend ksni (StatusNotifierItem sobre
+# D-Bus vía zbus, puro Rust) y el selector de archivos usa el backend
+# xdg-desktop-portal de rfd, ninguno de los dos enlaza GTK.
+depends = "libdbus-1-3, libbluetooth3, libwayland-client0"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/kushare", "usr/bin/", "755"],
+    ["target/release/kushare-tui", "usr/bin/", "755"],
+    ["packaging/arch/kushare.desktop", "usr/share/applications/", "644"],
+    ["packaging/common/kushare.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["README.md", "usr/share/doc/kushare/", "644"],
+]
+
+[package.metadata.generate-rpm]
+license = "GPLv3+"
+assets = [
+    { source = "target/release/kushare", dest = "/usr/bin/kushare", mode = "755" },
+    { source = "target/release/kushare-tui", dest = "/usr/bin/kushare-tui", mode = "755" },
+    { source = "packaging/arch/kushare.desktop", dest = "/usr/share/applications/kushare.desktop", mode = "644" },
+    { source = "packaging/common/kushare.svg", dest = "/usr/share/icons/hicolor/scalable/apps/kushare.svg", mode = "644" },
+]
+requires = { "dbus-libs" = "*", "bluez-libs" = "*", "wayland" = "*" }

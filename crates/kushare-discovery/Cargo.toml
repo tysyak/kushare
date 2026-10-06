@@ -1,0 +1,20 @@
+[package]
+name = "kushare-discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bluer = { version = "0.17.4", features = ["full"], optional = true }
+mdns-sd = "0.21.4"
+tokio = { workspace = true, features = ["net", "sync", "rt", "macros", "time", "signal"] }
+tracing.workspace = true
+kushare-core = { path = "../kushare-core" }
+base64 = "0.23.1"
+futures-core = { version = "0.3.34", optional = true }
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"], optional = true }
+
+[features]
+default = ["ble"]
+ble = ["dep:bluer", "dep:futures-core", "dep:futures-util"]

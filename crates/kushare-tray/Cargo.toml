@@ -1,0 +1,15 @@
+[package]
+name = "kushare-tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+muda = { version = "0.20.0", default-features = false, features = ["snapshot"] }
+rfd = "0.17.2"
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing.workspace = true
+tray-icon = { version = "0.25.1", default-features = false, features = ["ksni"] }
+zbus = { version = "5.19.0", features = ["tokio"] }
+kushare-core = { path = "../kushare-core" }

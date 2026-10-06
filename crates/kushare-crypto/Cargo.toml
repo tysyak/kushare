@@ -1,0 +1,16 @@
+[package]
+name = "kushare-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hkdf = "0.13.0"
+hmac = "0.13.0"
+libaes = "0.7.0"
+p256 = { version = "0.14.0", features = ["ecdh", "getrandom"] }
+prost.workspace = true
+sha2 = "0.11.0"
+thiserror.workspace = true
+kushare-proto = { path = "../kushare-proto" }
+getrandom = "0.4.3"
