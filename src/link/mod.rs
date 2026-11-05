@@ -70,6 +70,55 @@ impl LinkHandle {
         self.changes.send_modify(|n| *n = n.wrapping_add(1));
     }
 
+    /// Envía `path` por Bluetooth RFCOMM (perfil de transferencias) a
+    /// `address`, en segundo plano; el resultado se avisa con una
+    /// notificación de escritorio.
+    pub fn send_file_bt(
+        &self,
+        path: std::path::PathBuf,
+        address: bluer::Address,
+    ) -> anyhow::Result<()> {
+        let bt = self
+            .transfer_bt
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("el daemon no tiene Bluetooth disponible"))?;
+        if !path.is_file() {
+            anyhow::bail!("{} no es un archivo", path.display());
+        }
+        let device_name = self.manager.device_name().to_string();
+        tokio::spawn(async move {
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let result = async {
+                let mut session = bt.connect(address).await?;
+                // El progreso no se muestra (envío en segundo plano).
+                let (events, _) = tokio::sync::mpsc::channel(64);
+                kushare_transfer::Sender::send_file(
+                    &mut session,
+                    &kushare_core::random_endpoint_id(),
+                    &device_name,
+                    &path,
+                    events,
+                )
+                .await
+            }
+            .await;
+            let body = match &result {
+                Ok(()) => format!("Enviado \"{file_name}\" por Bluetooth a {address}"),
+                Err(err) => format!("No se pudo enviar \"{file_name}\" a {address}: {err:#}"),
+            };
+            if let Err(err) = &result {
+                tracing::warn!(?err, %address, "envío por Bluetooth fallido");
+            }
+            if let Ok(notifier) = Notifier::connect().await {
+                let _ = notifier.notify("kushare", &body).await;
+            }
+        });
+        Ok(())
+    }
+
     pub fn is_scanning(&self) -> bool {
         self.scanning.load(std::sync::atomic::Ordering::Relaxed)
     }

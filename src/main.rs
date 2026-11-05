@@ -365,6 +365,26 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
                             tracing::warn!(?err, "no se pudo desemparejar");
                         }
                     }
+                    TrayCommand::SendTo(id) => {
+                        let peer = link.manager.peers().into_iter().find(|p| p.device_id == id);
+                        let Some(address) = peer
+                            .as_ref()
+                            .and_then(|p| p.bt_address.as_deref())
+                            .and_then(|a| a.parse::<bluer::Address>().ok())
+                        else {
+                            tracing::warn!(%id, "no se conoce la dirección Bluetooth del dispositivo");
+                            continue;
+                        };
+                        let link = link.clone();
+                        tokio::spawn(async move {
+                            let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else {
+                                return;
+                            };
+                            if let Err(err) = link.send_file_bt(file.path().to_path_buf(), address) {
+                                tracing::warn!(?err, "no se pudo enviar el archivo");
+                            }
+                        });
+                    }
                     TrayCommand::Scan => {
                         if let Err(err) = link.scan(std::time::Duration::from_secs(30)) {
                             tracing::warn!(?err, "no se pudo iniciar el escaneo");
@@ -436,6 +456,7 @@ fn refresh_devices_menu(tray: &Tray, link: &link::LinkHandle) {
             connected: p.connected,
             incoming: p.incoming_enabled,
             outgoing: p.outgoing_enabled,
+            can_send_file: p.bt_address.is_some() && link.transfer_bt.is_some(),
         })
         .collect();
     let discovered: Vec<(String, String)> = link

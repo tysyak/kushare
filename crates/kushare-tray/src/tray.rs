@@ -25,6 +25,7 @@ const MENU_LINK_OUT: &str = "link-out:";
 const MENU_LINK_UNPAIR: &str = "link-unpair:";
 const MENU_LINK_PAIR: &str = "link-pair:";
 const MENU_LINK_SCAN: &str = "link-scan";
+const MENU_LINK_SEND: &str = "link-send:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -39,6 +40,8 @@ pub enum TrayCommand {
     Pair(String),
     /// Buscar dispositivos en la red (bajo demanda).
     Scan,
+    /// Elegir un archivo y enviarlo a este dispositivo emparejado.
+    SendTo(String),
 }
 
 /// Un dispositivo emparejado, tal como se muestra en el menú.
@@ -49,6 +52,8 @@ pub struct DeviceEntry {
     pub connected: bool,
     pub incoming: bool,
     pub outgoing: bool,
+    /// Hay por dónde enviarle archivos (dirección Bluetooth conocida).
+    pub can_send_file: bool,
 }
 
 /// Icono de bandeja ya registrado; se mantiene vivo mientras este valor no
@@ -161,6 +166,12 @@ fn build_menu(
             d.outgoing,
             None,
         ))?;
+        sub.append(&MenuItem::with_id(
+            format!("{MENU_LINK_SEND}{}", d.device_id),
+            "Enviar archivo…",
+            d.can_send_file,
+            None,
+        ))?;
         sub.append(&PredefinedMenuItem::separator())?;
         sub.append(&MenuItem::with_id(
             format!("{MENU_LINK_UNPAIR}{}", d.device_id),
@@ -201,7 +212,8 @@ fn command_for(id: &MenuId) -> Option<TrayCommand> {
             .map(TrayCommand::ToggleIncoming)
             .or_else(|| arg(MENU_LINK_OUT).map(TrayCommand::ToggleOutgoing))
             .or_else(|| arg(MENU_LINK_UNPAIR).map(TrayCommand::Unpair))
-            .or_else(|| arg(MENU_LINK_PAIR).map(TrayCommand::Pair)),
+            .or_else(|| arg(MENU_LINK_PAIR).map(TrayCommand::Pair))
+            .or_else(|| arg(MENU_LINK_SEND).map(TrayCommand::SendTo)),
     }
 }
 
