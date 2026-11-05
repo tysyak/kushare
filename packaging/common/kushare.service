@@ -1,0 +1,19 @@
+# Servicio de usuario de systemd para el daemon de kushare, alternativa al
+# autoarranque XDG (/etc/xdg/autostart/kushare.desktop). Activar con:
+#   systemctl --user enable --now kushare
+# Requiere que la sesión gráfica active graphical-session.target (GNOME,
+# KDE, o Hyprland/Sway con uwsm). No actives ambos métodos: el segundo
+# daemon saldría con error al no poder registrar org.kushare.Daemon.
+[Unit]
+Description=kushare: enlace con tus dispositivos, transferencias y notificaciones
+Documentation=https://github.com/tysyak/kushare
+PartOf=graphical-session.target
+After=graphical-session.target bluetooth.target
+
+[Service]
+ExecStart=/usr/bin/kushare
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

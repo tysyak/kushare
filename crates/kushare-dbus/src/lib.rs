@@ -34,6 +34,8 @@ pub trait Daemon {
     fn device_name(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn scanning(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
+    fn link_port(&self) -> zbus::Result<u16>;
     fn peers(&self) -> zbus::Result<Vec<PeerRow>>;
     /// Dispositivos del último escaneo aún no emparejados: (id, nombre, dirección).
     fn discovered(&self) -> zbus::Result<Vec<(String, String, String)>>;

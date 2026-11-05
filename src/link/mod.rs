@@ -54,6 +54,8 @@ pub struct LinkHandle {
     /// enlace), registrado en la misma sesión BlueZ: lo usan la recepción
     /// por Bluetooth del daemon y `kushare send-bt` vía D-Bus.
     pub transfer_bt: Option<BtService>,
+    /// Puerto TCP real del enlace (puede no ser el fijo si estaba ocupado).
+    pub link_port: Arc<Mutex<u16>>,
     /// Escáner mDNS; solo busca durante [`LinkHandle::scan`].
     scanner: Arc<MdnsScanner>,
     scanning: Arc<std::sync::atomic::AtomicBool>,
@@ -401,20 +403,26 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         transfer_bt,
         scanner: Arc::new(MdnsScanner::new()?),
         scanning: Arc::default(),
+        link_port: Arc::default(),
         advertiser: Arc::default(),
     };
 
     // TCP
-    let listener = TcpListener::bind(("0.0.0.0", opts.port))
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "no se pudo escuchar el enlace en el puerto {}: {e}",
-                opts.port
-            )
-        })?;
+    // Si el puerto fijo está ocupado (otro programa, otra instancia), no se
+    // falla: se usa uno libre y se avisa. El peer lo aprende igualmente en
+    // el `Hello`, pero el firewall tendría que abrir ese otro puerto
+    // (`kushare doctor` lo indica).
+    let listener = match TcpListener::bind(("0.0.0.0", opts.port)).await {
+        Ok(listener) => listener,
+        Err(err) if opts.port != 0 => {
+            tracing::warn!(port = opts.port, %err, "puerto del enlace ocupado; se usa otro libre");
+            TcpListener::bind(("0.0.0.0", 0)).await?
+        }
+        Err(err) => return Err(err.into()),
+    };
     let port = listener.local_addr()?.port();
     manager.set_tcp_port(port);
+    *handle.link_port.lock().expect("mutex envenenado") = port;
     tracing::info!(port, "enlace escuchando por TCP");
     {
         let manager = manager.clone();

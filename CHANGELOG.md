@@ -6,7 +6,22 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.2.0] - 2026-11-05
+
 ### Añadido
+- **`kushare-gui`**: interfaz gráfica (iced) con estado del enlace,
+  dispositivos (emparejar por red o Bluetooth con PIN, direcciones de
+  notificaciones, filtro por app, enviar archivos), ajustes de tema (Sistema,
+  Claro, Oscuro, OLED) y diagnóstico. Controla al daemon por D-Bus.
+- **`kushare doctor`**: diagnóstico de puerto, firewall (firewalld y ufw),
+  mDNS, Bluetooth, servidor de notificaciones y otros puentes, con el comando
+  exacto para arreglar cada problema.
+- **FAQ** con los problemas comunes (firewall, redes que aíslan dispositivos,
+  KDE Connect, arranque automático…).
+- Los paquetes instalan la GUI, su lanzador, el **autoarranque del daemon** al
+  iniciar sesión (`/etc/xdg/autostart`) y un servicio de usuario de systemd
+  opcional.
+- Crate `kushare-dbus` con el contrato D-Bus compartido por CLI y GUI.
 - **Enlace persistente con kushare-android** (crate `kushare-link`): identidad
   Ed25519 por dispositivo, emparejado con PIN de 6 dígitos confirmado en ambos
   lados, reconexión automática autenticada sin PIN, keepalive y resolución de
@@ -26,6 +41,8 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 - El daemon recibe archivos también por Bluetooth RFCOMM.
 
 ### Cambiado
+- Si el puerto 47816 está ocupado, el daemon usa otro libre en vez de fallar
+  (propiedad D-Bus `LinkPort`).
 - Sin escaneo de red continuo: solo bajo demanda (`kushare scan`).
 - Keepalive por Bluetooth de 4 min y reconexión que duerme hasta el próximo
   intento, para gastar menos.
@@ -47,5 +64,6 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
   mDNS y BLE, icono de bandeja con notificaciones D-Bus, `kushare-tui` y
   empaquetado para Arch, Debian y Fedora vía podman.
 
-[Sin publicar]: https://github.com/tysyak/kushare/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/tysyak/kushare/releases/tag/v0.1.0
+[Sin publicar]: https://github.com/tysyak/kushare/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tysyak/kushare/releases/tag/v0.2.0
+[0.1.0]: https://github.com/tysyak/kushare/commit/cc5ac03

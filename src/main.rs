@@ -1,3 +1,4 @@
+mod doctor;
 mod link;
 
 use clap::{Parser, Subcommand};
@@ -59,6 +60,9 @@ enum Command {
         /// Dirección Bluetooth del receptor, p. ej. AA:BB:CC:DD:EE:FF.
         address: String,
     },
+    /// Diagnostica problemas típicos (puerto, firewall, mDNS, Bluetooth,
+    /// notificaciones) y dice cómo arreglarlos.
+    Doctor,
     /// Control del enlace persistente del daemon en marcha.
     #[command(flatten)]
     Link(link::cli::LinkCommand),
@@ -105,6 +109,7 @@ fn main() -> anyhow::Result<()> {
             let endpoint_id = random_endpoint_id();
             runtime.block_on(run_send_bt(settings, endpoint_id, file, address))
         }
+        Some(Command::Doctor) => runtime.block_on(doctor::run_doctor()),
         Some(Command::Link(command)) => runtime.block_on(link::cli::run(command)),
         None => runtime.block_on(run(settings, cli.link_port)),
     }

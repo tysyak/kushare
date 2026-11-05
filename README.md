@@ -1,8 +1,22 @@
 # kushare
 
-Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para Linux, escrito en Rust, que va creciendo hacia algo al estilo de KDE Connect: además de transferir archivos, mantiene un **enlace persistente** con la app [`kushare-android`](https://github.com/mascrit/kushare-android) para **sincronizar notificaciones** en ambas direcciones (ver [Enlace persistente y notificaciones](#enlace-persistente-y-notificaciones)).
+Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para Linux, escrito en Rust, que va creciendo hacia algo al estilo de KDE Connect: además de transferir archivos, mantiene un **enlace persistente** con la app [`kushare-android`](https://github.com/tysyak/kushare-android) para **sincronizar notificaciones** en ambas direcciones (ver [Enlace persistente y notificaciones](#enlace-persistente-y-notificaciones)).
 
-Ver [`CLAUDE.md`](./CLAUDE.md) para la especificación completa del proyecto.
+¿Problemas? Ejecuta `kushare doctor` y mira el [FAQ](./FAQ.md) (firewall, redes que aíslan dispositivos, KDE Connect, arranque automático…). Cambios por versión en el [CHANGELOG](./CHANGELOG.md).
+
+## Instalar
+
+Los paquetes (Arch `.pkg.tar.zst`, Debian/Ubuntu `.deb`, Fedora `.rpm`) están en los [releases](https://github.com/tysyak/kushare/releases) e instalan:
+
+- `kushare` (daemon + CLI), `kushare-gui` (interfaz gráfica) y `kushare-tui`;
+- el lanzador **kushare** en el menú de aplicaciones (abre la GUI);
+- el **daemon arranca solo al iniciar sesión** (`/etc/xdg/autostart/kushare.desktop`). En Hyprland/Sway sin uwsm: `exec-once = kushare`, o el servicio de usuario `systemctl --user enable --now kushare` (ver [FAQ](./FAQ.md#el-daemon-de-kushare-no-está-corriendo)).
+
+Después de instalar, abre los puertos del enlace en el firewall si tienes uno (`kushare doctor` te da el comando exacto).
+
+## Interfaz gráfica
+
+`kushare-gui` tiene lo mismo que la app Android: estado del enlace, dispositivos (emparejar por red o Bluetooth con PIN, activar cada dirección de notificaciones, filtro por app, enviar archivos), ajustes de tema (Sistema, Claro, Oscuro, OLED) y diagnóstico. No hace red por su cuenta: controla al daemon por D-Bus.
 
 ## Estado
 
@@ -12,8 +26,10 @@ Scaffold inicial funcional:
 - **`crates/kushare-crypto`** — handshake UKEY2 y cifrado por mensaje (SecureMessage/D2D), implementado sobre RustCrypto puro Rust.
 - **`crates/kushare-core`** — tipos compartidos (`Device`, `TransferEvent`, `Settings`, ...).
 - **`crates/kushare-discovery`** — descubrimiento por mDNS (funcional) y BLE real (`bluer`, feature `ble`): anuncia y escanea kushare-a-kushare, y **detecta** un Android real con Quick Share abierto (UUID `0xFEF3`, confirmado con captura real — ver `crates/kushare-discovery/src/ble.rs`). Lo que no logra es lo inverso: un Android real no reconoce el anuncio de kushare como un peer válido (se intentó imitar el formato capturado y falló — ver `examples/android_mimicry_advertise.rs`).
-- **`crates/kushare-transfer`** — framing, sesión con handshake UKEY2, envío (TX) y recepción (RX) de archivos, genérico sobre el transporte: TCP (`Receiver`/`Sender`) y Bluetooth RFCOMM clásico (`bt::BtService`, feature `bluetooth`, con `bluer`) comparten el mismo código. El transporte RFCOMM es interoperable con una app Android real (ver [`kushare-android`](https://github.com/mascrit/kushare-android), que implementa el mismo protocolo sobre `BluetoothSocket` nativo) — probado en ambos sentidos con hash SHA-256 idéntico.
+- **`crates/kushare-transfer`** — framing, sesión con handshake UKEY2, envío (TX) y recepción (RX) de archivos, genérico sobre el transporte: TCP (`Receiver`/`Sender`) y Bluetooth RFCOMM clásico (`bt::BtService`, feature `bluetooth`, con `bluer`) comparten el mismo código. El transporte RFCOMM es interoperable con una app Android real (ver [`kushare-android`](https://github.com/tysyak/kushare-android), que implementa el mismo protocolo sobre `BluetoothSocket` nativo) — probado en ambos sentidos con hash SHA-256 idéntico.
 - **`crates/kushare-tray`** — icono de bandeja (`tray-icon` con backend `ksni`, sin GTK) y notificaciones D-Bus (`zbus`): mostrar con acciones/icono/respuesta, y **capturar** las de otras apps (`monitor.rs`, vía `BecomeMonitor`).
+- **`crates/kushare-dbus`** — cliente D-Bus del daemon (`org.kushare.Daemon`), compartido por la CLI y la GUI.
+- **`kushare-gui`** (`src/bin/kushare-gui/`) — interfaz gráfica (iced).
 - **`crates/kushare-link`** — enlace persistente kushare ⇄ kushare: identidad Ed25519, emparejado con PIN, reconexión automática, notificaciones, filtros por app y configuración sincronizada. Sin dependencias de Linux de escritorio: lo usa también la app Android.
 - **`kushare-tui`** (`src/bin/kushare-tui/`) — interfaz de terminal con dos pantallas, "Enviar" y "Recibir", al estilo de la app Quick Share de Android (ver más abajo).
 
@@ -55,7 +71,7 @@ cargo run -- send-bt archivo.txt AA:BB:CC:DD:EE:FF   # dirección Bluetooth (MAC
 
 BlueZ solo admite **un** registro del perfil RFCOMM de kushare por equipo (`org.bluez.Error.AlreadyExists: UUID already registered` si se intenta un segundo). Por eso, si el daemon está corriendo, `send-bt` no registra nada: le pide el envío por D-Bus y el daemon lo hace con su perfil (el resultado llega como notificación). Sin daemon, `send-bt` registra el perfil él mismo y muestra el progreso. El perfil de transferencias y el del [enlace persistente](#enlace-persistente-y-notificaciones) tienen UUID distintos y conviven: se puede enviar un archivo mientras el enlace de notificaciones sigue activo por Bluetooth.
 
-Es interoperable con [`kushare-android`](https://github.com/mascrit/kushare-android): la app Android implementa el mismo UUID de servicio (`b4ac1500-6c92-4e64-8f1e-7e1a0cd4f6a1`) sobre `BluetoothSocket` nativo.
+Es interoperable con [`kushare-android`](https://github.com/tysyak/kushare-android): la app Android implementa el mismo UUID de servicio (`b4ac1500-6c92-4e64-8f1e-7e1a0cd4f6a1`) sobre `BluetoothSocket` nativo.
 
 ## Enlace persistente y notificaciones
 
@@ -88,6 +104,7 @@ kushare apps <dispositivo>             # apps vistas y cuáles están bloqueadas
 kushare block|unblock <dispositivo> in|out <app>
 kushare unpair <dispositivo>           # se olvida en ambos lados
 kushare quit                           # cierra el daemon
+kushare doctor                         # diagnóstico: puerto, firewall, mDNS, Bluetooth, notificaciones
 ```
 
 `<dispositivo>` acepta el id, un prefijo del id o el nombre. Todo esto también está en el menú del icono de bandeja (*Dispositivos*). Los subcomandos hablan con el daemon por D-Bus (`org.kushare.Daemon` en el bus de sesión), igual que cualquier otra interfaz que se quiera construir.

@@ -34,6 +34,7 @@ impl Peer {
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub device_id: String,
+    pub link_port: u16,
     pub device_name: String,
     pub peers: Vec<Peer>,
     /// (id, nombre, dirección)
@@ -46,6 +47,7 @@ pub async fn snapshot(daemon: DaemonProxy<'static>) -> Result<Snapshot, String> 
     Ok(Snapshot {
         device_id: daemon.device_id().await.map_err(e)?,
         device_name: daemon.device_name().await.map_err(e)?,
+        link_port: daemon.link_port().await.unwrap_or_default(),
         peers: daemon
             .peers()
             .await
@@ -156,15 +158,31 @@ pub fn events() -> Subscription<Event> {
     })
 }
 
+/// Ejecuta `kushare doctor` y devuelve su informe.
+pub async fn doctor() -> String {
+    let out = tokio::process::Command::new(kushare_binary())
+        .arg("doctor")
+        .output()
+        .await;
+    match out {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+        Err(err) => format!("no se pudo ejecutar `kushare doctor`: {err}"),
+    }
+}
+
+/// El binario `kushare` junto a este o, si no, el del PATH.
+fn kushare_binary() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("kushare")))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| "kushare".into())
+}
+
 /// Arranca el daemon (`kushare`) en segundo plano: el binario junto a este
 /// o, si no, el del PATH.
 pub fn start_daemon() -> Result<(), String> {
-    let sibling = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("kushare")))
-        .filter(|path| path.is_file());
-    let program = sibling.unwrap_or_else(|| "kushare".into());
-    std::process::Command::new(program)
+    std::process::Command::new(kushare_binary())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

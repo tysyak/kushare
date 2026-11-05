@@ -1,0 +1,15 @@
+# Arranca el daemon de kushare al iniciar sesión (se instala en
+# /etc/xdg/autostart/kushare.desktop). Lo respetan GNOME, KDE, XFCE, etc.,
+# y en Hyprland/Sway con uwsm o dex. Para desactivarlo en un usuario:
+#   cp /etc/xdg/autostart/kushare.desktop ~/.config/autostart/ && echo Hidden=true >> ~/.config/autostart/kushare.desktop
+# Alternativa con systemd: systemctl --user enable --now kushare (no uses ambos).
+[Desktop Entry]
+Type=Application
+Name=kushare (segundo plano)
+Comment=Enlace con tus dispositivos, transferencias y notificaciones
+Exec=kushare
+Icon=kushare
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel

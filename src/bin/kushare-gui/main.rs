@@ -133,6 +133,8 @@ struct App {
     send_file: Option<PathBuf>,
     toast: Option<String>,
     angle: f32,
+    /// Informe de `kushare doctor` (None: no se ha pedido; Some(""): en curso).
+    doctor: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +183,9 @@ enum Message {
     OpenDownloads,
     Done(Result<String, String>),
     DismissToast,
+    RunDoctor,
+    DoctorDone(String),
+    CloseDoctor,
 }
 
 impl App {
@@ -198,6 +203,7 @@ impl App {
             send_file: None,
             toast: None,
             angle: 0.0,
+            doctor: None,
         };
         let tasks = Task::batch([
             iced::system::theme().map(Message::SystemTheme),
@@ -497,6 +503,18 @@ impl App {
                 self.toast = None;
                 Task::none()
             }
+            Message::RunDoctor => {
+                self.doctor = Some(String::new());
+                Task::perform(daemon::doctor(), Message::DoctorDone)
+            }
+            Message::DoctorDone(report) => {
+                self.doctor = Some(report);
+                Task::none()
+            }
+            Message::CloseDoctor => {
+                self.doctor = None;
+                Task::none()
+            }
         }
     }
 
@@ -536,6 +554,9 @@ impl App {
         }
         if let Some(f) = &self.app_filter {
             layers = layers.push(self.apps_dialog(c, f));
+        }
+        if let Some(report) = &self.doctor {
+            layers = layers.push(self.doctor_dialog(c, report));
         }
         layers.into()
     }
@@ -1290,6 +1311,32 @@ impl App {
                 .padding(20)
                 .width(Length::Fill)
                 .style(style::card(c.container_high, c.on_surface, Shape::List)),
+            self.section(c, "Diagnóstico"),
+            container(
+                row![
+                    shape_icon(Icon::Search, Blob::Cookie6, c.tertiary, c.on_tertiary, 48.0, 0.0),
+                    column![
+                        text("Comprobar conexión").size(17).font(SEMIBOLD),
+                        text(if self.snapshot.link_port != 0 {
+                            format!("Puerto del enlace: {}/tcp. Revisa firewall, mDNS, Bluetooth y notificaciones.", self.snapshot.link_port)
+                        } else {
+                            "Revisa puerto, firewall, mDNS, Bluetooth y notificaciones.".to_string()
+                        })
+                        .size(13)
+                        .color(c.on_surface_variant),
+                    ]
+                    .width(Length::Fill),
+                    button(text("Diagnosticar").font(SEMIBOLD))
+                        .padding(Padding::from([10, 22]))
+                        .style(style::button(c, ButtonKind::Tonal))
+                        .on_press(Message::RunDoctor),
+                ]
+                .spacing(16)
+                .align_y(Alignment::Center),
+            )
+            .padding(20)
+            .width(Length::Fill)
+            .style(style::card(c.container_high, c.on_surface, Shape::List)),
             self.section(c, "Acerca de"),
             container(column![
                 info("Nombre", self.snapshot.device_name.clone()),
@@ -1416,6 +1463,32 @@ impl App {
                 ],
             ]
             .spacing(18)
+            .into(),
+        )
+    }
+
+    fn doctor_dialog<'a>(&self, c: Colors, report: &'a str) -> Element<'a, Message> {
+        let body: Element<'a, Message> = if report.is_empty() {
+            text("Diagnosticando…").color(c.on_surface_variant).into()
+        } else {
+            scrollable(text(report).font(Font::MONOSPACE).size(13))
+                .height(Length::Fixed(380.0))
+                .into()
+        };
+        self.dialog(
+            c,
+            column![
+                text("Diagnóstico").size(26).font(EXTRA_BOLD),
+                body,
+                row![
+                    space().width(Length::Fill),
+                    button(text("Cerrar").font(SEMIBOLD))
+                        .padding(Padding::from([10, 26]))
+                        .style(style::button(c, ButtonKind::Filled))
+                        .on_press(Message::CloseDoctor),
+                ],
+            ]
+            .spacing(16)
             .into(),
         )
     }

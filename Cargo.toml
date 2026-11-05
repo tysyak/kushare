@@ -13,10 +13,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/mascrit/kushare"
+repository = "https://github.com/tysyak/kushare"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "io-util", "signal"] }
@@ -33,7 +33,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Cliente nativo open-source de Quick Share (Nearby Share) para Linux"
+description = "Archivos y notificaciones entre tu PC Linux y tu teléfono (Quick Share, enlace con kushare-android)"
 
 [[bin]]
 name = "kushare"
@@ -58,11 +58,11 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 tempfile = "3.27.0"
 futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
 bluer = { version = "0.17.4", features = ["full"] }
-kushare-link = { version = "0.1.0", path = "crates/kushare-link" }
+kushare-link = { path = "crates/kushare-link" }
 zbus = { version = "5.19.0", features = ["tokio"] }
 directories = "6"
 iced = { version = "0.14", features = ["tokio", "svg", "image", "advanced"] }
-kushare-dbus = { version = "0.1.0", path = "crates/kushare-dbus" }
+kushare-dbus = { path = "crates/kushare-dbus" }
 toml = "0.9"
 serde = { workspace = true, features = ["derive"] }
 
@@ -70,19 +70,25 @@ serde = { workspace = true, features = ["derive"] }
 maintainer = "Cristian Romero Andrade <mascrit@gmail.com>"
 copyright = "2026, Cristian Romero Andrade"
 license-file = ["LICENSE", "0"]
-extended-description = "Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para Linux: descubrimiento por mDNS/BLE, envío y recepción de archivos, e icono de bandeja del sistema."
+extended-description = "Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para Linux, con enlace persistente con la app kushare-android: notificaciones sincronizadas en ambas direcciones, envío y recepción de archivos por Wi-Fi o Bluetooth, icono de bandeja, GUI y CLI. El daemon arranca solo al iniciar sesión."
 # Sin libgtk-3: el tray usa el backend ksni (StatusNotifierItem sobre
 # D-Bus vía zbus, puro Rust) y el selector de archivos usa el backend
 # xdg-desktop-portal de rfd, ninguno de los dos enlaza GTK.
-depends = "libdbus-1-3, libbluetooth3, libwayland-client0"
+depends = "libdbus-1-3, libbluetooth3, libwayland-client0, libxkbcommon0"
+recommends = "zenity, xdg-desktop-portal"
 section = "net"
 priority = "optional"
 assets = [
     ["target/release/kushare", "usr/bin/", "755"],
     ["target/release/kushare-tui", "usr/bin/", "755"],
-    ["packaging/arch/kushare.desktop", "usr/share/applications/", "644"],
+    ["target/release/kushare-gui", "usr/bin/", "755"],
+    ["packaging/common/kushare.desktop", "usr/share/applications/", "644"],
+    ["packaging/common/kushare-autostart.desktop", "etc/xdg/autostart/kushare.desktop", "644"],
+    ["packaging/common/kushare.service", "usr/lib/systemd/user/", "644"],
     ["packaging/common/kushare.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["README.md", "usr/share/doc/kushare/", "644"],
+    ["FAQ.md", "usr/share/doc/kushare/", "644"],
+    ["CHANGELOG.md", "usr/share/doc/kushare/", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -90,7 +96,13 @@ license = "GPLv3+"
 assets = [
     { source = "target/release/kushare", dest = "/usr/bin/kushare", mode = "755" },
     { source = "target/release/kushare-tui", dest = "/usr/bin/kushare-tui", mode = "755" },
-    { source = "packaging/arch/kushare.desktop", dest = "/usr/share/applications/kushare.desktop", mode = "644" },
+    { source = "target/release/kushare-gui", dest = "/usr/bin/kushare-gui", mode = "755" },
+    { source = "packaging/common/kushare.desktop", dest = "/usr/share/applications/kushare.desktop", mode = "644" },
+    { source = "packaging/common/kushare-autostart.desktop", dest = "/etc/xdg/autostart/kushare.desktop", mode = "644", config = true },
+    { source = "packaging/common/kushare.service", dest = "/usr/lib/systemd/user/kushare.service", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/kushare/README.md", mode = "644", doc = true },
+    { source = "FAQ.md", dest = "/usr/share/doc/kushare/FAQ.md", mode = "644", doc = true },
+    { source = "CHANGELOG.md", dest = "/usr/share/doc/kushare/CHANGELOG.md", mode = "644", doc = true },
     { source = "packaging/common/kushare.svg", dest = "/usr/share/icons/hicolor/scalable/apps/kushare.svg", mode = "644" },
 ]
-requires = { "dbus-libs" = "*", "bluez-libs" = "*", "wayland" = "*" }
+requires = { "dbus-libs" = "*", "bluez-libs" = "*", "libwayland-client" = "*", "libxkbcommon" = "*" }

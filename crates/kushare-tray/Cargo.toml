@@ -15,7 +15,7 @@ zbus = { version = "5.19.0", features = ["tokio"] }
 kushare-core = { path = "../kushare-core" }
 png = "0.18.1"
 freedesktop-icons = "0.4.0"
-kushare-link = { version = "0.1.0", path = "../kushare-link" }
+kushare-link = { path = "../kushare-link" }
 futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
 
 [dev-dependencies]

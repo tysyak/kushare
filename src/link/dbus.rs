@@ -41,6 +41,12 @@ impl DaemonApi {
         self.link.manager.device_name().to_string()
     }
 
+    /// Puerto TCP en el que escucha el enlace.
+    #[zbus(property)]
+    fn link_port(&self) -> u16 {
+        *self.link.link_port.lock().expect("mutex envenenado")
+    }
+
     fn peers(&self) -> Vec<PeerRow> {
         self.link
             .manager

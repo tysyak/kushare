@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=kushare
+GenericName=Compartir con el teléfono
+Comment=Archivos y notificaciones entre tu PC y tu teléfono
+Exec=kushare-gui
+Icon=kushare
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=quick share;nearby;android;notificaciones;bluetooth;
+StartupNotify=true
