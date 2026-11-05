@@ -25,7 +25,7 @@ use kushare_proto::wire_format::{
 use prost::Message;
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
@@ -84,7 +84,7 @@ fn decode_wire_frame(offline: &OfflineFrame) -> anyhow::Result<WireFrame> {
 pub struct Sender;
 
 impl Sender {
-    pub async fn connect(addr: SocketAddr) -> anyhow::Result<TransferSession> {
+    pub async fn connect(addr: SocketAddr) -> anyhow::Result<TransferSession<TcpStream>> {
         let stream = TcpStream::connect(addr).await?;
         TransferSession::handshake_as_initiator(stream).await
     }
@@ -92,8 +92,9 @@ impl Sender {
     /// Envía un único archivo a través de una sesión ya conectada. Emite
     /// [`TransferEvent`]s de progreso por `events` (p. ej. para que
     /// `kushare-tray` los traduzca en una notificación de escritorio).
-    pub async fn send_file(
-        session: &mut TransferSession,
+    /// Genérico sobre el transporte (TCP, RFCOMM Bluetooth, ...).
+    pub async fn send_file<S: AsyncRead + AsyncWrite + Unpin>(
+        session: &mut TransferSession<S>,
         my_endpoint_id: &str,
         my_device_name: &str,
         path: &Path,

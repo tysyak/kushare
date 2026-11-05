@@ -30,8 +30,8 @@ use kushare_proto::wire_format::{
 use prost::Message;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
 use crate::session::TransferSession;
@@ -132,8 +132,16 @@ fn sanitize_file_name(name: &str) -> String {
         .unwrap_or_else(|| "archivo_recibido".to_string())
 }
 
-async fn handle_connection(
-    stream: TcpStream,
+/// Atiende una conexión entrante ya establecida, sin importar el
+/// transporte (TCP, RFCOMM Bluetooth, un puente a `BluetoothSocket` de
+/// Android, ...): conduce el handshake UKEY2 como respondedor, acepta la
+/// solicitud y la introducción, y guarda a disco cada archivo recibido.
+/// Pública porque los consumidores de transportes externos a este crate
+/// (p. ej. el puente UniFFI de `kushare-android` para Bluetooth clásico
+/// vía `BluetoothSocket`) también la necesitan, no solo [`Receiver`] y
+/// `kushare_transfer::bt::BtService`.
+pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
     download_dir: PathBuf,
     events: mpsc::Sender<TransferEvent>,
 ) -> anyhow::Result<()> {

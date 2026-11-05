@@ -12,7 +12,7 @@ Scaffold inicial funcional:
 - **`crates/kushare-crypto`** — handshake UKEY2 y cifrado por mensaje (SecureMessage/D2D), implementado sobre RustCrypto puro Rust.
 - **`crates/kushare-core`** — tipos compartidos (`Device`, `TransferEvent`, `Settings`, ...).
 - **`crates/kushare-discovery`** — descubrimiento por mDNS (funcional) y BLE real (`bluer`, feature `ble`): anuncia y escanea kushare-a-kushare, y **detecta** un Android real con Quick Share abierto (UUID `0xFEF3`, confirmado con captura real — ver `crates/kushare-discovery/src/ble.rs`). Lo que no logra es lo inverso: un Android real no reconoce el anuncio de kushare como un peer válido (se intentó imitar el formato capturado y falló — ver `examples/android_mimicry_advertise.rs`).
-- **`crates/kushare-transfer`** — framing TCP, sesión con handshake UKEY2, envío (TX) y recepción (RX) de archivos.
+- **`crates/kushare-transfer`** — framing, sesión con handshake UKEY2, envío (TX) y recepción (RX) de archivos, genérico sobre el transporte: TCP (`Receiver`/`Sender`) y Bluetooth RFCOMM clásico (`bt::BtService`, feature `bluetooth`, con `bluer`) comparten el mismo código. El transporte RFCOMM es interoperable con una app Android real (ver [`kushare-android`](https://github.com/mascrit/kushare-android), que implementa el mismo protocolo sobre `BluetoothSocket` nativo) — probado en ambos sentidos con hash SHA-256 idéntico.
 - **`crates/kushare-tray`** — icono de bandeja (`tray-icon` con backend `ksni`, sin GTK) y notificaciones D-Bus (`zbus`).
 - **`kushare-tui`** (`src/bin/kushare-tui/`) — interfaz de terminal con dos pantallas, "Enviar" y "Recibir", al estilo de la app Quick Share de Android (ver más abajo).
 
@@ -41,6 +41,20 @@ También hay un modo de envío directo por CLI, sin GUI, útil para probar dos i
 ```sh
 cargo run -- send archivo.txt 127.0.0.1:PUERTO   # el puerto lo imprime la instancia receptora al arrancar
 ```
+
+## Bluetooth (RFCOMM)
+
+Transporte alternativo a TCP/mDNS, útil cuando los dos dispositivos no tienen conectividad IP entre sí (aislamiento de clientes en WiFi, hotspots que bloquean multicast, firewalls...). Usa el mismo handshake UKEY2 y framing, solo cambia el transporte (ver `crates/kushare-transfer/src/bt.rs`). Requiere que los dispositivos ya estén **emparejados** por Bluetooth de antemano (`bluetoothctl pair <MAC>`).
+
+El modo normal (`cargo run`, sin subcomando) ya escucha por Bluetooth además de TCP, sin nada extra que hacer. Para enviar:
+
+```sh
+cargo run -- send-bt archivo.txt AA:BB:CC:DD:EE:FF   # dirección Bluetooth (MAC) del receptor
+```
+
+**Limitación de BlueZ, no de kushare**: solo puede haber **un** proceso con el perfil RFCOMM de kushare registrado a la vez en el mismo equipo (`org.bluez.Error.AlreadyExists: UUID already registered` si se intenta un segundo). Si el daemon de fondo (`cargo run` sin subcomando) ya está corriendo con recepción Bluetooth activa, hay que cerrarlo antes de poder usar `send-bt` desde otro proceso en esa misma máquina. No afecta al uso normal, en el que un único proceso de kushare por equipo escucha y envía.
+
+Es interoperable con [`kushare-android`](https://github.com/mascrit/kushare-android): la app Android implementa el mismo UUID de servicio (`b4ac1500-6c92-4e64-8f1e-7e1a0cd4f6a1`) sobre `BluetoothSocket` nativo.
 
 ## Firewall
 

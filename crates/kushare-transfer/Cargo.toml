@@ -12,6 +12,12 @@ kushare-proto = { path = "../kushare-proto" }
 kushare-crypto = { path = "../kushare-crypto" }
 kushare-core = { path = "../kushare-core" }
 prost = { workspace = true }
+bluer = { version = "0.17.4", features = ["full"], optional = true }
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"], optional = true }
+
+[features]
+default = ["bluetooth"]
+bluetooth = ["dep:bluer", "dep:futures-util"]
 
 [dev-dependencies]
 sha2 = "0.11.0"

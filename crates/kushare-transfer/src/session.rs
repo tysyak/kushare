@@ -14,20 +14,24 @@
 use kushare_crypto::{SecureChannel, Ukey2Initiator, Ukey2Responder};
 use kushare_proto::offline_wire_formats::OfflineFrame;
 use prost::Message;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::framing;
 
-pub struct TransferSession {
-    stream: TcpStream,
+/// Sesión de transferencia sobre cualquier transporte de bytes ordenado y
+/// fiable (TCP, RFCOMM Bluetooth, ...). `S` es genérico para que el mismo
+/// handshake UKEY2 y el mismo framing sirvan sin duplicar código sin
+/// importar el medio físico.
+pub struct TransferSession<S> {
+    stream: S,
     channel: SecureChannel,
 }
 
-impl TransferSession {
-    /// Conduce el handshake UKEY2 como iniciador (quien abre la conexión
-    /// TCP) y devuelve una sesión lista para intercambiar `OfflineFrame`s
+impl<S: AsyncRead + AsyncWrite + Unpin> TransferSession<S> {
+    /// Conduce el handshake UKEY2 como iniciador (quien abre la conexión)
+    /// y devuelve una sesión lista para intercambiar `OfflineFrame`s
     /// cifrados.
-    pub async fn handshake_as_initiator(mut stream: TcpStream) -> anyhow::Result<Self> {
+    pub async fn handshake_as_initiator(mut stream: S) -> anyhow::Result<Self> {
         let mut initiator = Ukey2Initiator::new();
 
         let client_init = initiator.build_client_init()?;
@@ -45,9 +49,9 @@ impl TransferSession {
     }
 
     /// Conduce el handshake UKEY2 como respondedor (quien acepta la
-    /// conexión TCP entrante) y devuelve una sesión lista para intercambiar
+    /// conexión entrante) y devuelve una sesión lista para intercambiar
     /// `OfflineFrame`s cifrados.
-    pub async fn handshake_as_responder(mut stream: TcpStream) -> anyhow::Result<Self> {
+    pub async fn handshake_as_responder(mut stream: S) -> anyhow::Result<Self> {
         let mut responder = Ukey2Responder::new();
 
         let client_init = framing::read_frame(&mut stream).await?;
@@ -89,7 +93,7 @@ mod tests {
     use kushare_proto::offline_wire_formats::{
         V1Frame, offline_frame::Version, v1_frame::FrameType,
     };
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
 
     #[tokio::test]
     async fn handshake_and_frame_exchange_over_loopback() {
