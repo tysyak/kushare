@@ -37,7 +37,8 @@
 //! nuevo si el `n` de aquí basta o también necesita ajustarse.
 
 use kushare_core::DiscoveredDevice;
-use mdns_sd::{Receiver, ServiceDaemon, ServiceEvent, ServiceInfo};
+pub use mdns_sd::ServiceEvent;
+use mdns_sd::{Receiver, ServiceDaemon, ServiceInfo};
 
 /// Tipo de servicio mDNS usado por Quick Share/Nearby Connections.
 pub const SERVICE_TYPE: &str = "_FC9F5ED42C8A._tcp.local.";

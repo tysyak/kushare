@@ -151,6 +151,8 @@ pub struct PeerInfo {
     pub device_kind: String,
     pub connected: bool,
     pub transport: Option<String>,
+    /// Dirección Bluetooth conocida del peer (para reconectar por RFCOMM).
+    pub bt_address: Option<String>,
     pub outgoing_enabled: bool,
     pub incoming_enabled: bool,
     pub outgoing_blocked: Vec<String>,
@@ -1388,6 +1390,7 @@ impl LinkManager {
                     device_kind: rec.device_kind.clone(),
                     connected: link.is_some(),
                     transport: link.map(|l| l.transport.clone()),
+                    bt_address: rec.bt_address.clone(),
                     outgoing_enabled: rec.outgoing.value,
                     incoming_enabled: rec.incoming.value,
                     outgoing_blocked: rec.outgoing_blocked.value.iter().cloned().collect(),

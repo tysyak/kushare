@@ -12,7 +12,7 @@
 //! reenvía a un `tokio::sync::mpsc::Sender<TrayCommand>` con `try_send`.
 
 use kushare_core::TransferEvent;
-use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tokio::sync::mpsc;
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -20,11 +20,32 @@ const MENU_ID_SEND_FILE: &str = "send_file";
 const MENU_ID_TOGGLE_VISIBLE: &str = "toggle_visible";
 const MENU_ID_QUIT: &str = "quit";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+const MENU_LINK_IN: &str = "link-in:";
+const MENU_LINK_OUT: &str = "link-out:";
+const MENU_LINK_UNPAIR: &str = "link-unpair:";
+const MENU_LINK_PAIR: &str = "link-pair:";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
     SendFile,
     ToggleVisible,
     Quit,
+    /// Alternar "recibir notificaciones de" este dispositivo.
+    ToggleIncoming(String),
+    /// Alternar "enviar mis notificaciones a" este dispositivo.
+    ToggleOutgoing(String),
+    Unpair(String),
+    Pair(String),
+}
+
+/// Un dispositivo emparejado, tal como se muestra en el menú.
+#[derive(Debug, Clone)]
+pub struct DeviceEntry {
+    pub device_id: String,
+    pub name: String,
+    pub connected: bool,
+    pub incoming: bool,
+    pub outgoing: bool,
 }
 
 /// Icono de bandeja ya registrado; se mantiene vivo mientras este valor no
@@ -38,21 +59,7 @@ impl Tray {
     /// "Hacer visible" / "Salir", tal como pide CLAUDE.md) y empieza a
     /// reenviar los clics del menú por `cmd_tx`.
     pub fn new(icon: Icon, cmd_tx: mpsc::Sender<TrayCommand>) -> anyhow::Result<Self> {
-        let menu = Menu::new();
-        menu.append(&MenuItem::with_id(
-            MENU_ID_SEND_FILE,
-            "Enviar archivo",
-            true,
-            None,
-        ))?;
-        menu.append(&MenuItem::with_id(
-            MENU_ID_TOGGLE_VISIBLE,
-            "Hacer visible",
-            true,
-            None,
-        ))?;
-        menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&MenuItem::with_id(MENU_ID_QUIT, "Salir", true, None))?;
+        let menu = build_menu(&[], &[])?;
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -61,7 +68,7 @@ impl Tray {
             .build()?;
 
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-            let Some(command) = command_for(&event.id) else {
+            let Some(command) = command_for(event.id()) else {
                 return;
             };
             // `try_send`: el canal de comandos del tray es pequeño y no
@@ -79,14 +86,101 @@ impl Tray {
     pub fn set_tooltip(&self, text: &str) -> anyhow::Result<()> {
         Ok(self._icon.set_tooltip(Some(text))?)
     }
+
+    /// Reconstruye el menú con la lista actual de dispositivos emparejados
+    /// y de los visibles sin emparejar, (id, nombre).
+    pub fn set_devices(
+        &self,
+        paired: &[DeviceEntry],
+        discovered: &[(String, String)],
+    ) -> anyhow::Result<()> {
+        self._icon
+            .set_menu(Some(Box::new(build_menu(paired, discovered)?)));
+        Ok(())
+    }
+}
+
+fn build_menu(paired: &[DeviceEntry], discovered: &[(String, String)]) -> anyhow::Result<Menu> {
+    let menu = Menu::new();
+    menu.append(&MenuItem::with_id(
+        MENU_ID_SEND_FILE,
+        "Enviar archivo",
+        true,
+        None,
+    ))?;
+    menu.append(&MenuItem::with_id(
+        MENU_ID_TOGGLE_VISIBLE,
+        "Hacer visible",
+        true,
+        None,
+    ))?;
+    menu.append(&PredefinedMenuItem::separator())?;
+
+    let devices = Submenu::new("Dispositivos", true);
+    if paired.is_empty() && discovered.is_empty() {
+        devices.append(&MenuItem::new("(ninguno visible)", false, None))?;
+    }
+    for d in paired {
+        let state = if d.connected {
+            "conectado"
+        } else {
+            "desconectado"
+        };
+        let sub = Submenu::new(format!("{} ({state})", d.name), true);
+        sub.append(&CheckMenuItem::with_id(
+            format!("{MENU_LINK_IN}{}", d.device_id),
+            "Recibir sus notificaciones",
+            true,
+            d.incoming,
+            None,
+        ))?;
+        sub.append(&CheckMenuItem::with_id(
+            format!("{MENU_LINK_OUT}{}", d.device_id),
+            "Enviarle mis notificaciones",
+            true,
+            d.outgoing,
+            None,
+        ))?;
+        sub.append(&PredefinedMenuItem::separator())?;
+        sub.append(&MenuItem::with_id(
+            format!("{MENU_LINK_UNPAIR}{}", d.device_id),
+            "Desemparejar",
+            true,
+            None,
+        ))?;
+        devices.append(&sub)?;
+    }
+    if !discovered.is_empty() {
+        if !paired.is_empty() {
+            devices.append(&PredefinedMenuItem::separator())?;
+        }
+        for (id, name) in discovered {
+            devices.append(&MenuItem::with_id(
+                format!("{MENU_LINK_PAIR}{id}"),
+                format!("Emparejar con {name}…"),
+                true,
+                None,
+            ))?;
+        }
+    }
+    menu.append(&devices)?;
+    menu.append(&PredefinedMenuItem::separator())?;
+    menu.append(&MenuItem::with_id(MENU_ID_QUIT, "Salir", true, None))?;
+    Ok(menu)
 }
 
 fn command_for(id: &MenuId) -> Option<TrayCommand> {
-    match id.0.as_str() {
+    let id = id.0.as_str();
+    let arg = |prefix: &str| id.strip_prefix(prefix).map(str::to_string);
+    match id {
         MENU_ID_SEND_FILE => Some(TrayCommand::SendFile),
         MENU_ID_TOGGLE_VISIBLE => Some(TrayCommand::ToggleVisible),
         MENU_ID_QUIT => Some(TrayCommand::Quit),
-        _ => None,
+        _ => arg(MENU_LINK_IN)
+            .map(TrayCommand::ToggleIncoming)
+            .or_else(|| arg(MENU_LINK_OUT).map(TrayCommand::ToggleOutgoing))
+            .or_else(|| arg(MENU_LINK_UNPAIR).map(TrayCommand::Unpair))
+            .or_else(|| arg(MENU_LINK_PAIR).map(TrayCommand::Pair)),
     }
 }
 
@@ -118,5 +212,25 @@ pub fn tooltip_for_event(event: &TransferEvent) -> String {
         TransferEvent::Failed { file_name, reason } => {
             format!("kushare — error con \"{file_name}\": {reason}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_ids_roundtrip_to_commands() {
+        let id = |s: &str| MenuId(s.to_string());
+        assert_eq!(command_for(&id("quit")), Some(TrayCommand::Quit));
+        assert_eq!(
+            command_for(&id("link-in:abc")),
+            Some(TrayCommand::ToggleIncoming("abc".into()))
+        );
+        assert_eq!(
+            command_for(&id("link-pair:abc")),
+            Some(TrayCommand::Pair("abc".into()))
+        );
+        assert_eq!(command_for(&id("otra-cosa")), None);
     }
 }

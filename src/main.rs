@@ -1,9 +1,12 @@
+mod link;
+
 use clap::{Parser, Subcommand};
 use kushare_core::{Settings, TransferEvent, random_endpoint_id};
 use kushare_discovery::ble::{BleAdvertiser, BleScanner};
 use kushare_discovery::mdns::{MdnsAdvertiser, MdnsScanner, discovered_device_from_event};
+use kushare_link::Direction;
 use kushare_transfer::{Receiver, Sender};
-use kushare_tray::{Notifier, Tray, TrayCommand, tray::tooltip_for_event};
+use kushare_tray::{DeviceEntry, Notifier, Tray, TrayCommand, tray::tooltip_for_event};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +30,11 @@ struct Cli {
     /// defecto (tray + recepción), no a `send`.
     #[arg(long, default_value_t = 0)]
     port: u16,
+
+    /// Puerto TCP del enlace persistente con otros dispositivos kushare
+    /// (notificaciones). Fijo por defecto para poder abrirlo en el firewall.
+    #[arg(long, default_value_t = link::DEFAULT_LINK_PORT)]
+    link_port: u16,
 }
 
 #[derive(Subcommand, Debug)]
@@ -41,6 +49,9 @@ enum Command {
         /// aparece en el log de la instancia receptora al arrancar).
         addr: SocketAddr,
     },
+    /// Control del enlace persistente del daemon en marcha.
+    #[command(flatten)]
+    Link(link::cli::LinkCommand),
 }
 
 /// Icono de bandeja mínimo (un cuadrado sólido). Placeholder hasta que el
@@ -80,7 +91,8 @@ fn main() -> anyhow::Result<()> {
             let endpoint_id = random_endpoint_id();
             runtime.block_on(run_send(settings, endpoint_id, file, addr))
         }
-        None => runtime.block_on(run(settings)),
+        Some(Command::Link(command)) => runtime.block_on(link::cli::run(command)),
+        None => runtime.block_on(run(settings, cli.link_port)),
     }
 }
 
@@ -137,7 +149,7 @@ async fn run_send(
     Ok(())
 }
 
-async fn run(settings: Settings) -> anyhow::Result<()> {
+async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
     let endpoint_id = random_endpoint_id();
     tracing::info!(device_name = %settings.device_name, %endpoint_id, "iniciando kushare");
 
@@ -228,8 +240,19 @@ async fn run(settings: Settings) -> anyhow::Result<()> {
         );
     }
 
+    // Enlace persistente (notificaciones con otros dispositivos kushare).
+    let link = link::start(link::LinkOptions {
+        device_name: settings.device_name.clone(),
+        port: link_port,
+        ignore_senders: notifier.iter().filter_map(|n| n.unique_name()).collect(),
+    })
+    .await?;
+    let _dbus = link::dbus::serve(link.clone()).await?;
+    let mut link_changes = link.subscribe_changes();
+
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<TrayCommand>(16);
     let tray = Tray::new(placeholder_icon()?, cmd_tx)?;
+    refresh_devices_menu(&tray, &link);
 
     let mut visible = true;
     let my_device_name = settings.device_name.clone();
@@ -244,8 +267,38 @@ async fn run(settings: Settings) -> anyhow::Result<()> {
                     }
             }
 
+            Ok(()) = link_changes.changed() => refresh_devices_menu(&tray, &link),
+
             Some(command) = cmd_rx.recv() => {
                 match command {
+                    TrayCommand::ToggleIncoming(ref id) | TrayCommand::ToggleOutgoing(ref id) => {
+                        let dir = if matches!(command, TrayCommand::ToggleIncoming(_)) {
+                            Direction::Incoming
+                        } else {
+                            Direction::Outgoing
+                        };
+                        let id = id.clone();
+                        let current = link.manager.peers().into_iter().find(|p| p.device_id == id);
+                        if let Some(peer) = current {
+                            let enabled = match dir {
+                                Direction::Incoming => peer.incoming_enabled,
+                                Direction::Outgoing => peer.outgoing_enabled,
+                            };
+                            if let Err(err) = link.manager.set_direction(&id, dir, !enabled) {
+                                tracing::warn!(?err, "no se pudo cambiar la dirección");
+                            }
+                        }
+                    }
+                    TrayCommand::Unpair(id) => {
+                        if let Err(err) = link.manager.unpair(&id) {
+                            tracing::warn!(?err, "no se pudo desemparejar");
+                        }
+                    }
+                    TrayCommand::Pair(id) => {
+                        if let Err(err) = link.pair(&id) {
+                            tracing::warn!(?err, "no se pudo iniciar el emparejado");
+                        }
+                    }
                     TrayCommand::SendFile => {
                         let Some(path) = rfd::AsyncFileDialog::new().pick_file().await else {
                             continue;
@@ -294,4 +347,27 @@ async fn run(settings: Settings) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn refresh_devices_menu(tray: &Tray, link: &link::LinkHandle) {
+    let paired: Vec<DeviceEntry> = link
+        .manager
+        .peers()
+        .into_iter()
+        .map(|p| DeviceEntry {
+            device_id: p.device_id,
+            name: p.device_name,
+            connected: p.connected,
+            incoming: p.incoming_enabled,
+            outgoing: p.outgoing_enabled,
+        })
+        .collect();
+    let discovered: Vec<(String, String)> = link
+        .discovered_unpaired()
+        .into_iter()
+        .map(|s| (s.device_id, s.device_name))
+        .collect();
+    if let Err(err) = tray.set_devices(&paired, &discovered) {
+        tracing::warn!(?err, "no se pudo actualizar el menú de dispositivos");
+    }
 }

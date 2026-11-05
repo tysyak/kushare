@@ -1,0 +1,692 @@
+//! Enlace persistente en el escritorio: conecta `kushare_link::LinkManager`
+//! con los transportes (TCP + mDNS, RFCOMM), con las notificaciones del
+//! escritorio (captura vía `kushare_tray::monitor`, visualización vía
+//! `kushare_tray::Notifier`) y con los controles (D-Bus `org.kushare.Daemon`
+//! en [`dbus`], CLI en [`cli`], menú del tray).
+
+pub mod cli;
+pub mod dbus;
+
+use kushare_discovery::mdns::{
+    LINK_SERVICE_TYPE, LinkPeerSighting, MdnsAdvertiser, MdnsScanner, link_peer_from_event,
+};
+use kushare_link::{
+    ConnectIntent, DialFuture, Dialer, LinkConfig, LinkEvent, LinkManager, LinkStream, LocalDevice,
+    PeerRecord, RemoteNotification, Transport,
+};
+use kushare_transfer::bt::{BtService, ProfileSpec};
+use kushare_tray::monitor::Captured;
+use kushare_tray::notify::INLINE_REPLY_ACTION;
+use kushare_tray::{MirrorNotification, Notifier, NotifierEvent};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, watch};
+
+/// Puerto TCP fijo por defecto del enlace: fijo para que la regla del
+/// firewall no cambie entre arranques (`firewall-cmd --add-port=47816/tcp`).
+pub const DEFAULT_LINK_PORT: u16 = 47816;
+
+const TCP_DIAL_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Prefijo de las acciones de respuesta cuando el servidor de
+/// notificaciones no tiene `inline-reply` (quickshell, mako, dunst…): el
+/// botón abre un diálogo (zenity/kdialog) para escribir la respuesta.
+const REPLY_DIALOG_PREFIX: &str = "kushare-reply:";
+const PAIR_ACCEPT: &str = "kushare-pair-accept";
+const PAIR_REJECT: &str = "kushare-pair-reject";
+
+/// Lo que el resto del binario (tray, D-Bus) necesita del enlace.
+#[derive(Clone)]
+pub struct LinkHandle {
+    pub manager: LinkManager,
+    /// Peers vistos por mDNS ahora mismo (emparejados o no).
+    discovered: Arc<Mutex<BTreeMap<String, LinkPeerSighting>>>,
+    /// Se incrementa con cualquier cambio de peers/descubrimiento, para que
+    /// el tray reconstruya su menú.
+    changes: watch::Sender<u64>,
+    /// Eventos del enlace re-emitidos (para las señales D-Bus).
+    pub events: broadcast::Sender<LinkEvent>,
+}
+
+impl LinkHandle {
+    pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    fn bump(&self) {
+        self.changes.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    /// Peers descubiertos por mDNS que aún no están emparejados.
+    pub fn discovered_unpaired(&self) -> Vec<LinkPeerSighting> {
+        let paired: HashSet<String> = self
+            .manager
+            .peers()
+            .into_iter()
+            .map(|p| p.device_id)
+            .collect();
+        self.discovered
+            .lock()
+            .expect("mutex envenenado")
+            .values()
+            .filter(|s| !paired.contains(&s.device_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Resuelve una referencia a un peer (id completo, prefijo del id o
+    /// nombre, sin distinguir mayúsculas) entre emparejados y descubiertos.
+    pub fn resolve(&self, reference: &str) -> anyhow::Result<String> {
+        let reference = reference.trim();
+        let mut candidates: Vec<(String, String)> = self
+            .manager
+            .peers()
+            .into_iter()
+            .map(|p| (p.device_id, p.device_name))
+            .collect();
+        candidates.extend(
+            self.discovered
+                .lock()
+                .expect("mutex envenenado")
+                .values()
+                .map(|s| (s.device_id.clone(), s.device_name.clone())),
+        );
+        candidates.sort();
+        candidates.dedup_by(|a, b| a.0 == b.0);
+        if let Some((id, _)) = candidates.iter().find(|(id, _)| id == reference) {
+            return Ok(id.clone());
+        }
+        let matches: Vec<&(String, String)> = candidates
+            .iter()
+            .filter(|(id, name)| id.starts_with(reference) || name.eq_ignore_ascii_case(reference))
+            .collect();
+        match matches.as_slice() {
+            [(id, _)] => Ok(id.clone()),
+            [] => anyhow::bail!("ningún dispositivo coincide con {reference:?}"),
+            _ => anyhow::bail!("{reference:?} es ambiguo: usa más caracteres del id"),
+        }
+    }
+
+    /// Empieza a emparejar con un peer descubierto por mDNS. Vuelve en
+    /// cuanto la conexión arranca; el PIN llega como `PairingRequested`.
+    pub fn pair(&self, reference: &str) -> anyhow::Result<()> {
+        let id = self.resolve(reference)?;
+        let sighting = self
+            .discovered
+            .lock()
+            .expect("mutex envenenado")
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("{id} no está visible en la red ahora mismo"))?;
+        let manager = self.manager.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let stream =
+                    tokio::time::timeout(TCP_DIAL_TIMEOUT, TcpStream::connect(sighting.addr))
+                        .await
+                        .map_err(|_| {
+                            anyhow::anyhow!("tiempo agotado conectando a {}", sighting.addr)
+                        })??;
+                manager
+                    .connect(stream, Transport::Tcp(sighting.addr), ConnectIntent::Pair)
+                    .await
+            }
+            .await;
+            if let Err(err) = result {
+                tracing::warn!(?err, peer = %sighting.device_name, "emparejado fallido");
+            }
+        });
+        Ok(())
+    }
+}
+
+/// Dialer de escritorio: TCP a la última dirección vista por mDNS y, si no
+/// hay o falla, RFCOMM a la dirección Bluetooth conocida del peer.
+struct DesktopDialer {
+    bt: Option<BtService>,
+}
+
+impl Dialer for DesktopDialer {
+    fn dial(&self, peer: PeerRecord) -> DialFuture {
+        let bt = self.bt.clone();
+        Box::pin(async move {
+            let mut last_err = anyhow::anyhow!("{} no tiene dirección conocida", peer.device_name);
+            if let Some(addr) = peer
+                .last_tcp_addr
+                .as_deref()
+                .and_then(|a| a.parse::<SocketAddr>().ok())
+            {
+                match tokio::time::timeout(TCP_DIAL_TIMEOUT, TcpStream::connect(addr)).await {
+                    Ok(Ok(stream)) => {
+                        return Ok((
+                            Box::new(stream) as Box<dyn LinkStream>,
+                            Transport::Tcp(addr),
+                        ));
+                    }
+                    Ok(Err(err)) => last_err = err.into(),
+                    Err(_) => last_err = anyhow::anyhow!("tiempo agotado conectando a {addr}"),
+                }
+            }
+            if let (Some(bt), Some(bt_addr)) = (bt, peer.bt_address.as_deref()) {
+                let address: bluer::Address = bt_addr.parse()?;
+                let stream = bt.connect_raw(address).await?;
+                return Ok((
+                    Box::new(stream) as Box<dyn LinkStream>,
+                    Transport::Bluetooth(bt_addr.to_string()),
+                ));
+            }
+            Err(last_err)
+        })
+    }
+}
+
+pub struct LinkOptions {
+    pub device_name: String,
+    pub port: u16,
+    /// Nombres únicos D-Bus de otras conexiones de kushare cuyas
+    /// notificaciones no deben reenviarse (p. ej. el `Notifier` de
+    /// transferencias del binario principal).
+    pub ignore_senders: HashSet<String>,
+}
+
+/// Arranca todo el enlace en segundo plano y devuelve su handle.
+pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
+    let dirs = directories::ProjectDirs::from("", "", "kushare")
+        .ok_or_else(|| anyhow::anyhow!("no se pudo determinar el directorio HOME"))?;
+
+    // Bluetooth es opcional: sin adaptador, el enlace funciona solo por Wi-Fi.
+    let (bt, bt_address) = match start_bluetooth().await {
+        Ok((bt, addr)) => (Some(bt), Some(addr)),
+        Err(err) => {
+            tracing::warn!(?err, "enlace por Bluetooth no disponible");
+            (None, None)
+        }
+    };
+
+    let (manager, mut link_events) = LinkManager::open(
+        dirs.config_dir(),
+        dirs.cache_dir(),
+        LocalDevice {
+            name: opts.device_name.clone(),
+            kind: "desktop".into(),
+            bt_address: bt_address.clone(),
+            capabilities: vec!["notifications".into(), "notification-dismiss".into()],
+        },
+        LinkConfig::default(),
+    )?;
+    tracing::info!(device_id = manager.device_id(), "enlace persistente listo");
+
+    let (events, _) = broadcast::channel(64);
+    let handle = LinkHandle {
+        manager: manager.clone(),
+        discovered: Arc::default(),
+        changes: watch::channel(0).0,
+        events,
+    };
+
+    // TCP
+    let listener = TcpListener::bind(("0.0.0.0", opts.port))
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "no se pudo escuchar el enlace en el puerto {}: {e}",
+                opts.port
+            )
+        })?;
+    let port = listener.local_addr()?.port();
+    tracing::info!(port, "enlace escuchando por TCP");
+    {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, addr)) = listener.accept().await else {
+                    continue;
+                };
+                let manager = manager.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = manager.accept(stream, Transport::Tcp(addr)).await {
+                        tracing::info!(%addr, ?err, "conexión de enlace entrante rechazada");
+                    }
+                });
+            }
+        });
+    }
+
+    // Bluetooth (aceptación)
+    if let Some(bt) = &bt {
+        let bt = bt.clone();
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            let result = bt
+                .run_acceptor(move |stream, device| {
+                    let manager = manager.clone();
+                    async move {
+                        if let Err(err) = manager
+                            .accept(stream, Transport::Bluetooth(device.to_string()))
+                            .await
+                        {
+                            tracing::info!(%device, ?err, "conexión de enlace RFCOMM rechazada");
+                        }
+                    }
+                })
+                .await;
+            tracing::warn!(?result, "el aceptador RFCOMM del enlace terminó");
+        });
+    }
+
+    // mDNS
+    start_mdns(&handle, &opts.device_name, port)?;
+
+    // Reconexión
+    {
+        let manager = manager.clone();
+        tokio::spawn(async move { manager.run_reconnect(DesktopDialer { bt }).await });
+    }
+
+    // Notificaciones
+    let notifier = Notifier::connect().await?;
+    let mut ignore = opts.ignore_senders;
+    ignore.extend(notifier.unique_name());
+    let mut captured = kushare_tray::monitor::start(ignore).await?;
+    let mut notifier_events = notifier.events().await?;
+    let inline_reply = notifier
+        .capabilities()
+        .await
+        .iter()
+        .any(|c| c == "inline-reply");
+    tracing::info!(inline_reply, "servidor de notificaciones listo");
+
+    let loop_handle = handle.clone();
+    tokio::spawn(async move {
+        let mut ui = DesktopUi {
+            handle: loop_handle,
+            notifier,
+            inline_reply,
+            mirrors: HashMap::new(),
+            by_id: HashMap::new(),
+            pin_prompts: HashMap::new(),
+        };
+        loop {
+            tokio::select! {
+                Some(event) = link_events.recv() => ui.on_link_event(event).await,
+                Some(c) = captured.recv() => ui.on_captured(c),
+                Some(e) = notifier_events.recv() => ui.on_notifier_event(e).await,
+                else => break,
+            }
+        }
+        tracing::warn!("el bucle de notificaciones del enlace terminó");
+    });
+
+    Ok(handle)
+}
+
+async fn start_bluetooth() -> anyhow::Result<(BtService, String)> {
+    let session = bluer::Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    let address = adapter.address().await?.to_string();
+    // Este proceso no registra el perfil de transferencias, así que el
+    // agente BlueZ lo aporta el del enlace.
+    let spec = ProfileSpec {
+        with_agent: true,
+        ..ProfileSpec::link()
+    };
+    let bt = BtService::register_profile(session, spec).await?;
+    tracing::info!(%address, "enlace escuchando por RFCOMM");
+    Ok((bt, address))
+}
+
+fn start_mdns(handle: &LinkHandle, device_name: &str, port: u16) -> anyhow::Result<()> {
+    let my_id = handle.manager.device_id().to_string();
+    let mut advertiser = MdnsAdvertiser::new()?;
+    advertiser.start_advertising_link(&my_id, device_name, port)?;
+    let scanner = MdnsScanner::new()?;
+    let events = scanner.browse_service(LINK_SERVICE_TYPE)?;
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        // Mantener vivos el anuncio y el escaneo mientras corra esta tarea.
+        let _advertiser = advertiser;
+        let _scanner = scanner;
+        while let Ok(event) = events.recv_async().await {
+            match &event {
+                kushare_discovery::mdns::ServiceEvent::ServiceRemoved(_, fullname) => {
+                    let id = fullname.split('.').next().unwrap_or_default().to_string();
+                    if handle
+                        .discovered
+                        .lock()
+                        .expect("mutex envenenado")
+                        .remove(&id)
+                        .is_some()
+                    {
+                        handle.bump();
+                    }
+                }
+                _ => {
+                    let Some(sighting) = link_peer_from_event(&event) else {
+                        continue;
+                    };
+                    if sighting.device_id == my_id {
+                        continue;
+                    }
+                    tracing::debug!(?sighting, "peer del enlace visto por mDNS");
+                    handle
+                        .manager
+                        .note_sighting(&sighting.device_id, sighting.addr);
+                    let changed = handle
+                        .discovered
+                        .lock()
+                        .expect("mutex envenenado")
+                        .insert(sighting.device_id.clone(), sighting.clone())
+                        .as_ref()
+                        != Some(&sighting);
+                    if changed {
+                        handle.bump();
+                    }
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Espejo local de una notificación del peer.
+struct Mirror {
+    peer_id: String,
+    key: String,
+    /// Acción de respuesta del original (para `Replied` / el diálogo).
+    reply_action: Option<String>,
+    title: String,
+    text: String,
+}
+
+/// Puente entre los eventos del enlace y el servidor de notificaciones.
+struct DesktopUi {
+    handle: LinkHandle,
+    notifier: Notifier<'static>,
+    inline_reply: bool,
+    /// (peer, key) → id local del espejo.
+    mirrors: HashMap<(String, String), u32>,
+    by_id: HashMap<u32, Mirror>,
+    /// id de la notificación del PIN → device_id.
+    pin_prompts: HashMap<u32, String>,
+}
+
+impl DesktopUi {
+    fn peer_name(&self, peer_id: &str) -> String {
+        self.handle
+            .manager
+            .peers()
+            .into_iter()
+            .find(|p| p.device_id == peer_id)
+            .map(|p| p.device_name)
+            .unwrap_or_else(|| peer_id.to_string())
+    }
+
+    async fn on_link_event(&mut self, event: LinkEvent) {
+        let _ = self.handle.events.send(event.clone());
+        match event {
+            LinkEvent::PairingRequested {
+                device_id,
+                device_name,
+                pin,
+                ..
+            } => {
+                let shown = self
+                    .notifier
+                    .notify_full(&MirrorNotification {
+                        app_name: "kushare".into(),
+                        summary: format!("Emparejar con {device_name}"),
+                        body: format!("PIN: {pin}\nAcepta solo si el otro dispositivo muestra el mismo código."),
+                        actions: vec![
+                            (PAIR_ACCEPT.into(), "Aceptar".into()),
+                            (PAIR_REJECT.into(), "Rechazar".into()),
+                        ],
+                        persistent: true,
+                        ..Default::default()
+                    })
+                    .await;
+                match shown {
+                    Ok(id) => {
+                        self.pin_prompts.insert(id, device_id);
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, %pin, "no se pudo mostrar el PIN; usa `kushare pair`")
+                    }
+                }
+            }
+            LinkEvent::PairingFinished {
+                device_id,
+                device_name,
+                accepted,
+            } => {
+                let prompts: Vec<u32> = self
+                    .pin_prompts
+                    .iter()
+                    .filter(|(_, id)| **id == device_id)
+                    .map(|(n, _)| *n)
+                    .collect();
+                for id in prompts {
+                    self.pin_prompts.remove(&id);
+                    let _ = self.notifier.close(id).await;
+                }
+                let body = if accepted {
+                    format!("Emparejado con {device_name}")
+                } else {
+                    format!("No se emparejó con {device_name}")
+                };
+                let _ = self.notifier.notify("kushare", &body).await;
+                self.handle.bump();
+            }
+            LinkEvent::PeerConnected { .. }
+            | LinkEvent::PeerDisconnected { .. }
+            | LinkEvent::PeerUnpaired { .. }
+            | LinkEvent::ConfigChanged { .. } => self.handle.bump(),
+            LinkEvent::NotificationPosted {
+                device_id,
+                notification,
+            } => self.show_mirror(device_id, notification).await,
+            LinkEvent::NotificationRemoved { device_id, key } => {
+                if let Some(id) = self.mirrors.remove(&(device_id, key)) {
+                    self.by_id.remove(&id);
+                    let _ = self.notifier.close(id).await;
+                }
+            }
+            LinkEvent::DismissLocal { key, .. } => {
+                // Mejor esfuerzo: cerrar con su id la notificación de otra app.
+                if let Ok(id) = key.parse::<u32>()
+                    && let Err(err) = self.notifier.close(id).await
+                {
+                    tracing::debug!(?err, id, "no se pudo cerrar la notificación local");
+                }
+            }
+            LinkEvent::ActionRequested { .. } | LinkEvent::ReplyRequested { .. } => {
+                // Nunca ofrecemos acciones de notificaciones del escritorio
+                // (ver kushare_tray::monitor), así que no debería llegar.
+                tracing::debug!("acción remota sobre notificación de escritorio: no soportado");
+            }
+        }
+    }
+
+    async fn show_mirror(&mut self, peer_id: String, n: RemoteNotification) {
+        let peer_name = self.peer_name(&peer_id);
+        let reply = n.actions.iter().find(|a| a.is_reply).cloned();
+        let mut actions: Vec<(String, String)> = n
+            .actions
+            .iter()
+            .filter(|a| !a.is_reply)
+            .map(|a| (a.id.clone(), a.label.clone()))
+            .collect();
+        let mut inline_reply_placeholder = None;
+        if let Some(reply) = &reply {
+            if self.inline_reply {
+                inline_reply_placeholder = Some(format!("Responder en {}", n.app_name));
+            } else {
+                actions.push((
+                    format!("{REPLY_DIALOG_PREFIX}{}", reply.id),
+                    reply.label.clone(),
+                ));
+            }
+        }
+        let map_key = (peer_id.clone(), n.key.clone());
+        let replaces_id = self.mirrors.get(&map_key).copied().unwrap_or(0);
+        let shown = self
+            .notifier
+            .notify_full(&MirrorNotification {
+                replaces_id,
+                app_name: format!("{} · {peer_name}", n.app_name),
+                summary: n.title.clone(),
+                body: n.text.clone(),
+                icon_path: n.icon_path.clone(),
+                actions,
+                inline_reply_placeholder,
+                persistent: false,
+            })
+            .await;
+        match shown {
+            Ok(id) => {
+                if replaces_id != 0 && replaces_id != id {
+                    self.by_id.remove(&replaces_id);
+                }
+                self.mirrors.insert(map_key, id);
+                self.by_id.insert(
+                    id,
+                    Mirror {
+                        peer_id,
+                        key: n.key,
+                        reply_action: reply.map(|r| r.id),
+                        title: n.title,
+                        text: n.text,
+                    },
+                );
+            }
+            Err(err) => tracing::warn!(?err, "no se pudo mostrar la notificación del peer"),
+        }
+    }
+
+    fn on_captured(&mut self, captured: Captured) {
+        match captured {
+            Captured::Posted(n) => {
+                if n.app_name.eq_ignore_ascii_case("kushare") {
+                    return;
+                }
+                self.handle.manager.post_local_notification(n);
+            }
+            // Las caducadas (motivo 1) suelen seguir en el historial del
+            // servidor: no se quitan del teléfono.
+            Captured::Closed { key, reason } if reason != 1 => {
+                self.handle.manager.remove_local_notification(&key);
+            }
+            Captured::Closed { .. } => {}
+        }
+    }
+
+    async fn on_notifier_event(&mut self, event: NotifierEvent) {
+        match event {
+            NotifierEvent::ActionInvoked { id, action } => {
+                if let Some(device_id) = self.pin_prompts.remove(&id) {
+                    let accept = action == PAIR_ACCEPT;
+                    if action == PAIR_ACCEPT || action == PAIR_REJECT {
+                        self.handle.manager.respond_pairing(&device_id, accept);
+                    } else {
+                        self.pin_prompts.insert(id, device_id);
+                    }
+                    return;
+                }
+                let Some(mirror) = self.by_id.get(&id) else {
+                    return;
+                };
+                if action == "default" || action == INLINE_REPLY_ACTION {
+                    return; // clic en el cuerpo / el campo de respuesta inline
+                }
+                if let Some(action_id) = action.strip_prefix(REPLY_DIALOG_PREFIX) {
+                    let (manager, peer, key, action_id) = (
+                        self.handle.manager.clone(),
+                        mirror.peer_id.clone(),
+                        mirror.key.clone(),
+                        action_id.to_string(),
+                    );
+                    let (title, text) = (mirror.title.clone(), mirror.text.clone());
+                    tokio::spawn(async move {
+                        match ask_reply(&title, &text).await {
+                            Some(reply) => manager.reply_remote(&peer, &key, &action_id, &reply),
+                            None => tracing::debug!("respuesta cancelada"),
+                        }
+                    });
+                } else {
+                    self.handle
+                        .manager
+                        .invoke_remote_action(&mirror.peer_id, &mirror.key, &action);
+                }
+            }
+            NotifierEvent::Replied { id, text } => {
+                if let Some(mirror) = self.by_id.get(&id)
+                    && let Some(action_id) = &mirror.reply_action
+                {
+                    self.handle.manager.reply_remote(
+                        &mirror.peer_id,
+                        &mirror.key,
+                        action_id,
+                        &text,
+                    );
+                }
+            }
+            NotifierEvent::Closed { id, by_user } => {
+                self.pin_prompts.remove(&id);
+                if let Some(mirror) = self.by_id.remove(&id) {
+                    self.mirrors
+                        .remove(&(mirror.peer_id.clone(), mirror.key.clone()));
+                    if by_user {
+                        self.handle
+                            .manager
+                            .dismiss_remote_notification(&mirror.peer_id, &mirror.key);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Pide el texto de una respuesta con zenity (o kdialog). `None` si se
+/// canceló o no hay ninguno instalado.
+async fn ask_reply(title: &str, text: &str) -> Option<String> {
+    let prompt = format!("{title}\n{text}");
+    let attempts: [(&str, Vec<String>); 2] = [
+        (
+            "zenity",
+            vec![
+                "--entry".into(),
+                "--title=Responder".into(),
+                format!("--text={prompt}"),
+            ],
+        ),
+        (
+            "kdialog",
+            vec![
+                "--title".into(),
+                "Responder".into(),
+                "--inputbox".into(),
+                prompt.clone(),
+            ],
+        ),
+    ];
+    for (program, args) in attempts {
+        match tokio::process::Command::new(program)
+            .args(&args)
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => {
+                let reply = String::from_utf8_lossy(&out.stdout)
+                    .trim_end_matches('\n')
+                    .to_string();
+                return (!reply.is_empty()).then_some(reply);
+            }
+            Ok(_) => return None, // el usuario canceló
+            Err(_) => continue,   // no instalado: probar el siguiente
+        }
+    }
+    tracing::warn!("ni zenity ni kdialog están instalados: no se puede pedir la respuesta");
+    None
+}

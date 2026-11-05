@@ -1,5 +1,7 @@
+pub mod icon;
+pub mod monitor;
 pub mod notify;
 pub mod tray;
 
-pub use notify::Notifier;
-pub use tray::{Tray, TrayCommand};
+pub use notify::{MirrorNotification, Notifier, NotifierEvent};
+pub use tray::{DeviceEntry, Tray, TrayCommand};
