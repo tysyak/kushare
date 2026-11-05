@@ -12,6 +12,10 @@ fmt:
 clippy:
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 
+# Mirror de Arch para el contenedor (el de la imagen a veces es muy lento y
+# pacman aborta por timeout). Se puede cambiar: make package-arch ARCH_MIRROR=...
+ARCH_MIRROR ?= https://geo.mirror.pkgbuild.com
+
 # Arch Linux: corre makepkg dentro de un contenedor archlinux:latest vía
 # podman, para no instalar toolchains/paquetes de sistema en el host.
 #
@@ -23,7 +27,8 @@ clippy:
 # podman rootless eso deja archivos del host con el dueño de un subuid).
 package-arch:
 	podman run --rm -v "$(CURDIR)":/build:Z docker.io/library/archlinux:latest \
-	  bash -euc "pacman -Sy --noconfirm --needed base-devel git rust dbus bluez wayland && \
+	  bash -euc "echo 'Server = $(ARCH_MIRROR)/\$$repo/os/\$$arch' > /etc/pacman.d/mirrorlist && \
+	    pacman -Syu --noconfirm --needed --disable-download-timeout base-devel git rust dbus bluez wayland libxkbcommon && \
 	    useradd -m builder && \
 	    install -d -o builder /tmp/makepkg && \
 	    install -o builder -m 644 /build/PKGBUILD /tmp/makepkg/PKGBUILD && \
