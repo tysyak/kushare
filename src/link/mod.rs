@@ -50,6 +50,11 @@ pub struct LinkHandle {
     /// Eventos del enlace re-emitidos (para las señales D-Bus).
     pub events: broadcast::Sender<LinkEvent>,
     bt: Option<BtService>,
+    /// Escáner mDNS; solo busca durante [`LinkHandle::scan`].
+    scanner: Arc<MdnsScanner>,
+    scanning: Arc<std::sync::atomic::AtomicBool>,
+    /// Anuncio mDNS del enlace (siempre activo mientras viva el daemon).
+    advertiser: Arc<Mutex<Option<MdnsAdvertiser>>>,
 }
 
 impl LinkHandle {
@@ -59,6 +64,87 @@ impl LinkHandle {
 
     fn bump(&self) {
         self.changes.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    pub fn is_scanning(&self) -> bool {
+        self.scanning.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Busca dispositivos kushare en la red durante `duration`. No hay
+    /// escaneo continuo: solo cuando el usuario lo pide (ahorra tráfico
+    /// multicast y batería en portátiles). Los peers ya emparejados no lo
+    /// necesitan para reconectar: su dirección se aprende en cada conexión.
+    pub fn scan(&self, duration: Duration) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+        if self.scanning.swap(true, Ordering::SeqCst) {
+            return Ok(()); // ya hay un escaneo en curso
+        }
+        let events = match self.scanner.browse_service(LINK_SERVICE_TYPE) {
+            Ok(events) => events,
+            Err(err) => {
+                self.scanning.store(false, Ordering::SeqCst);
+                return Err(err);
+            }
+        };
+        self.discovered.lock().expect("mutex envenenado").clear();
+        self.bump();
+        let handle = self.clone();
+        tokio::spawn(async move {
+            let my_id = handle.manager.device_id().to_string();
+            let deadline = tokio::time::sleep(duration);
+            tokio::pin!(deadline);
+            loop {
+                let event = tokio::select! {
+                    _ = &mut deadline => break,
+                    event = events.recv_async() => match event {
+                        Ok(event) => event,
+                        Err(_) => break,
+                    },
+                };
+                handle.on_mdns_event(&my_id, &event);
+            }
+            let _ = handle.scanner.stop_browse(LINK_SERVICE_TYPE);
+            handle.scanning.store(false, Ordering::SeqCst);
+            handle.bump();
+            tracing::info!("escaneo de dispositivos terminado");
+        });
+        tracing::info!(?duration, "buscando dispositivos kushare en la red");
+        Ok(())
+    }
+
+    fn on_mdns_event(&self, my_id: &str, event: &kushare_discovery::mdns::ServiceEvent) {
+        if let kushare_discovery::mdns::ServiceEvent::ServiceRemoved(_, fullname) = event {
+            let id = fullname.split('.').next().unwrap_or_default().to_string();
+            if self
+                .discovered
+                .lock()
+                .expect("mutex envenenado")
+                .remove(&id)
+                .is_some()
+            {
+                self.bump();
+            }
+            return;
+        }
+        let Some(sighting) = link_peer_from_event(event) else {
+            return;
+        };
+        if sighting.device_id == my_id {
+            return;
+        }
+        tracing::debug!(?sighting, "peer del enlace visto por mDNS");
+        self.manager
+            .note_sighting(&sighting.device_id, sighting.addr);
+        let changed = self
+            .discovered
+            .lock()
+            .expect("mutex envenenado")
+            .insert(sighting.device_id.clone(), sighting.clone())
+            .as_ref()
+            != Some(&sighting);
+        if changed {
+            self.bump();
+        }
     }
 
     /// Peers descubiertos por mDNS que aún no están emparejados.
@@ -259,6 +345,9 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         changes: watch::channel(0).0,
         events,
         bt: bt.clone(),
+        scanner: Arc::new(MdnsScanner::new()?),
+        scanning: Arc::default(),
+        advertiser: Arc::default(),
     };
 
     // TCP
@@ -271,6 +360,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
             )
         })?;
     let port = listener.local_addr()?.port();
+    manager.set_tcp_port(port);
     tracing::info!(port, "enlace escuchando por TCP");
     {
         let manager = manager.clone();
@@ -311,8 +401,12 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         });
     }
 
-    // mDNS
-    start_mdns(&handle, &opts.device_name, port)?;
+    // mDNS: anunciarse siempre (pasivo: solo responde a quien pregunta);
+    // buscar solo bajo demanda (ver `LinkHandle::scan`). El anunciante debe
+    // vivir lo que el proceso.
+    let mut advertiser = MdnsAdvertiser::new()?;
+    advertiser.start_advertising_link(manager.device_id(), &opts.device_name, port)?;
+    *handle.advertiser.lock().expect("mutex envenenado") = Some(advertiser);
 
     // Reconexión
     {
@@ -370,59 +464,6 @@ async fn start_bluetooth() -> anyhow::Result<(BtService, String)> {
     let bt = BtService::register_profile(session, spec).await?;
     tracing::info!(%address, "enlace escuchando por RFCOMM");
     Ok((bt, address))
-}
-
-fn start_mdns(handle: &LinkHandle, device_name: &str, port: u16) -> anyhow::Result<()> {
-    let my_id = handle.manager.device_id().to_string();
-    let mut advertiser = MdnsAdvertiser::new()?;
-    advertiser.start_advertising_link(&my_id, device_name, port)?;
-    let scanner = MdnsScanner::new()?;
-    let events = scanner.browse_service(LINK_SERVICE_TYPE)?;
-    let handle = handle.clone();
-    tokio::spawn(async move {
-        // Mantener vivos el anuncio y el escaneo mientras corra esta tarea.
-        let _advertiser = advertiser;
-        let _scanner = scanner;
-        while let Ok(event) = events.recv_async().await {
-            match &event {
-                kushare_discovery::mdns::ServiceEvent::ServiceRemoved(_, fullname) => {
-                    let id = fullname.split('.').next().unwrap_or_default().to_string();
-                    if handle
-                        .discovered
-                        .lock()
-                        .expect("mutex envenenado")
-                        .remove(&id)
-                        .is_some()
-                    {
-                        handle.bump();
-                    }
-                }
-                _ => {
-                    let Some(sighting) = link_peer_from_event(&event) else {
-                        continue;
-                    };
-                    if sighting.device_id == my_id {
-                        continue;
-                    }
-                    tracing::debug!(?sighting, "peer del enlace visto por mDNS");
-                    handle
-                        .manager
-                        .note_sighting(&sighting.device_id, sighting.addr);
-                    let changed = handle
-                        .discovered
-                        .lock()
-                        .expect("mutex envenenado")
-                        .insert(sighting.device_id.clone(), sighting.clone())
-                        .as_ref()
-                        != Some(&sighting);
-                    if changed {
-                        handle.bump();
-                    }
-                }
-            }
-        }
-    });
-    Ok(())
 }
 
 /// Espejo local de una notificación del peer.

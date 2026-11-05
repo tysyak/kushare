@@ -49,6 +49,10 @@ message Hello {
   // vacía; el escritorio sí la manda para que el Android pueda reconectar
   // por RFCOMM si no hay Wi-Fi.
   string bt_address = 7;
+  // Puerto TCP en el que este lado acepta el enlace (0 = no escucha por
+  // TCP). Con la IP de origen de la conexión, el otro lado sabe a dónde
+  // reconectar por Wi-Fi sin tener que escanear la red.
+  uint32 tcp_port = 8;
 }
 
 // Prueba de posesión de la clave a largo plazo, atada a esta sesión UKEY2:

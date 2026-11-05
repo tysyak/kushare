@@ -36,8 +36,16 @@ pub enum Toggle {
 
 #[derive(Subcommand, Debug)]
 pub enum LinkCommand {
-    /// Lista los dispositivos emparejados y los visibles en la red.
+    /// Lista los dispositivos emparejados y los encontrados en el último escaneo.
     Devices,
+    /// Cierra el daemon en marcha.
+    Quit,
+    /// Busca dispositivos kushare en la red (no hay escaneo continuo).
+    Scan {
+        /// Segundos de búsqueda.
+        #[arg(default_value_t = 15)]
+        seconds: u32,
+    },
     /// Empareja con un dispositivo visible en la red (id, prefijo del id o
     /// nombre) o por Bluetooth (dirección MAC de un dispositivo ya vinculado).
     Pair {
@@ -110,7 +118,7 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                 );
             }
             let discovered = daemon.discovered().await?;
-            println!("\nVisibles sin emparejar:");
+            println!("\nEncontrados en el último escaneo (`kushare scan`):");
             if discovered.is_empty() {
                 println!("  (ninguno)");
             }
@@ -118,6 +126,34 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                 println!(
                     "  {name} {id} ({addr})  →  kushare pair {}",
                     &id[..8.min(id.len())]
+                );
+            }
+        }
+        LinkCommand::Quit => {
+            daemon.quit().await?;
+            println!("Daemon cerrado.");
+        }
+        LinkCommand::Scan { seconds } => {
+            daemon.scan(seconds).await?;
+            println!("Buscando durante {seconds} s…");
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..seconds {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                for (id, name, addr) in daemon.discovered().await? {
+                    if seen.insert(id.clone()) {
+                        println!(
+                            "  {name} {id} ({addr})  →  kushare pair {}",
+                            &id[..8.min(id.len())]
+                        );
+                    }
+                }
+            }
+            if seen.is_empty() {
+                println!(
+                    "No se encontró ningún dispositivo sin emparejar. Si la red aísla a los clientes,"
+                );
+                println!(
+                    "empareja por Bluetooth: `kushare pair <MAC>` (con el dispositivo ya vinculado)."
                 );
             }
         }

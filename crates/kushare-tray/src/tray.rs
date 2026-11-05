@@ -24,6 +24,7 @@ const MENU_LINK_IN: &str = "link-in:";
 const MENU_LINK_OUT: &str = "link-out:";
 const MENU_LINK_UNPAIR: &str = "link-unpair:";
 const MENU_LINK_PAIR: &str = "link-pair:";
+const MENU_LINK_SCAN: &str = "link-scan";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -36,6 +37,8 @@ pub enum TrayCommand {
     ToggleOutgoing(String),
     Unpair(String),
     Pair(String),
+    /// Buscar dispositivos en la red (bajo demanda).
+    Scan,
 }
 
 /// Un dispositivo emparejado, tal como se muestra en el menú.
@@ -59,7 +62,7 @@ impl Tray {
     /// "Hacer visible" / "Salir", tal como pide CLAUDE.md) y empieza a
     /// reenviar los clics del menú por `cmd_tx`.
     pub fn new(icon: Icon, cmd_tx: mpsc::Sender<TrayCommand>) -> anyhow::Result<Self> {
-        let menu = build_menu(&[], &[])?;
+        let menu = build_menu(&[], &[], false)?;
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -93,14 +96,19 @@ impl Tray {
         &self,
         paired: &[DeviceEntry],
         discovered: &[(String, String)],
+        scanning: bool,
     ) -> anyhow::Result<()> {
         self._icon
-            .set_menu(Some(Box::new(build_menu(paired, discovered)?)));
+            .set_menu(Some(Box::new(build_menu(paired, discovered, scanning)?)));
         Ok(())
     }
 }
 
-fn build_menu(paired: &[DeviceEntry], discovered: &[(String, String)]) -> anyhow::Result<Menu> {
+fn build_menu(
+    paired: &[DeviceEntry],
+    discovered: &[(String, String)],
+    scanning: bool,
+) -> anyhow::Result<Menu> {
     let menu = Menu::new();
     menu.append(&MenuItem::with_id(
         MENU_ID_SEND_FILE,
@@ -117,8 +125,20 @@ fn build_menu(paired: &[DeviceEntry], discovered: &[(String, String)]) -> anyhow
     menu.append(&PredefinedMenuItem::separator())?;
 
     let devices = Submenu::new("Dispositivos", true);
+    let scan_label = if scanning {
+        "Buscando…"
+    } else {
+        "Buscar dispositivos en la red"
+    };
+    devices.append(&MenuItem::with_id(
+        MENU_LINK_SCAN,
+        scan_label,
+        !scanning,
+        None,
+    ))?;
+    devices.append(&PredefinedMenuItem::separator())?;
     if paired.is_empty() && discovered.is_empty() {
-        devices.append(&MenuItem::new("(ninguno visible)", false, None))?;
+        devices.append(&MenuItem::new("(ninguno)", false, None))?;
     }
     for d in paired {
         let state = if d.connected {
@@ -176,6 +196,7 @@ fn command_for(id: &MenuId) -> Option<TrayCommand> {
         MENU_ID_SEND_FILE => Some(TrayCommand::SendFile),
         MENU_ID_TOGGLE_VISIBLE => Some(TrayCommand::ToggleVisible),
         MENU_ID_QUIT => Some(TrayCommand::Quit),
+        MENU_LINK_SCAN => Some(TrayCommand::Scan),
         _ => arg(MENU_LINK_IN)
             .map(TrayCommand::ToggleIncoming)
             .or_else(|| arg(MENU_LINK_OUT).map(TrayCommand::ToggleOutgoing))

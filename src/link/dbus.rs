@@ -71,6 +71,30 @@ impl DaemonApi {
             .collect()
     }
 
+    /// Cierra el daemon (como "Salir" en el tray).
+    fn quit(&self) {
+        tracing::info!("cierre pedido por D-Bus");
+        tokio::spawn(async {
+            // Dejar que la respuesta D-Bus salga antes de terminar.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            std::process::exit(0);
+        });
+    }
+
+    /// Busca dispositivos en la red durante `seconds` (no hay escaneo
+    /// continuo). Los resultados se leen con `Discovered`.
+    fn scan(&self, seconds: u32) -> fdo::Result<()> {
+        let seconds = seconds.clamp(1, 300);
+        self.link
+            .scan(std::time::Duration::from_secs(u64::from(seconds)))
+            .map_err(failed)
+    }
+
+    #[zbus(property)]
+    fn scanning(&self) -> bool {
+        self.link.is_scanning()
+    }
+
     /// Dispositivos visibles por mDNS aún no emparejados: (id, nombre, dirección).
     fn discovered(&self) -> Vec<(String, String, String)> {
         self.link
@@ -224,6 +248,8 @@ pub trait Daemon {
     fn device_name(&self) -> zbus::Result<String>;
     fn peers(&self) -> zbus::Result<Vec<PeerRow>>;
     fn discovered(&self) -> zbus::Result<Vec<(String, String, String)>>;
+    fn scan(&self, seconds: u32) -> zbus::Result<()>;
+    fn quit(&self) -> zbus::Result<()>;
     fn pair(&self, peer: &str) -> zbus::Result<String>;
     fn respond_pairing(&self, peer: &str, accept: bool) -> zbus::Result<bool>;
     fn unpair(&self, peer: &str) -> zbus::Result<()>;

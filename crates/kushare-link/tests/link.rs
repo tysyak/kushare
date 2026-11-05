@@ -21,6 +21,8 @@ fn fast_config() -> LinkConfig {
         pairing_timeout: Duration::from_secs(3),
         ping_interval: Duration::from_millis(100),
         idle_timeout: Duration::from_millis(500),
+        bt_ping_interval: Duration::from_millis(100),
+        bt_idle_timeout: Duration::from_millis(500),
         write_timeout: Duration::from_secs(2),
         reconnect_min: Duration::from_millis(50),
         reconnect_max: Duration::from_millis(200),
@@ -621,5 +623,28 @@ async fn echoes_of_own_mirrors_are_not_forwarded() {
         b.next_notification().await.key,
         "real",
         "el eco no debe reenviarse"
+    );
+}
+
+#[tokio::test]
+async fn wifi_address_is_learned_from_hello_without_scanning() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, proxy) = paired(dir.path()).await;
+    proxy.cut();
+    // A escucha el enlace en 47816 y reconecta a B "desde" 10.0.0.5.
+    a.mgr.set_tcp_port(47816);
+    let (_proxy, sa, sb) = Proxy::new();
+    let from_a: std::net::SocketAddr = "10.0.0.5:39999".parse().unwrap();
+    let (ra, rb) = tokio::join!(
+        a.mgr
+            .connect(sa, test_transport(), ConnectIntent::Reconnect),
+        b.mgr.accept(sb, Transport::Tcp(from_a)),
+    );
+    ra.unwrap();
+    rb.unwrap();
+    let peers_toml = std::fs::read_to_string(dir.path().join("b/config/peers.toml")).unwrap();
+    assert!(
+        peers_toml.contains("last_tcp_addr = \"10.0.0.5:47816\""),
+        "B debe recordar la IP de origen con el puerto anunciado:\n{peers_toml}"
     );
 }

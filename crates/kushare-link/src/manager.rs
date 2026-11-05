@@ -77,8 +77,17 @@ pub enum ConnectIntent {
 pub struct LinkConfig {
     pub handshake_timeout: Duration,
     pub pairing_timeout: Duration,
+    /// Keepalive por TCP: los routers y NAT cierran conexiones inactivas,
+    /// y una caída de Wi-Fi no siempre se nota en el socket.
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
+    /// Keepalive por Bluetooth, mucho más espaciado para ahorrar energía:
+    /// si el otro dispositivo se aleja o apaga el Bluetooth, la propia pila
+    /// lo detecta (supervision timeout) y el socket falla enseguida; el ping
+    /// solo hace falta para detectar un peer colgado. Debe ser menor que el
+    /// `bt_idle_timeout` del OTRO lado.
+    pub bt_ping_interval: Duration,
+    pub bt_idle_timeout: Duration,
     pub write_timeout: Duration,
     pub reconnect_min: Duration,
     pub reconnect_max: Duration,
@@ -89,11 +98,32 @@ impl Default for LinkConfig {
         Self {
             handshake_timeout: Duration::from_secs(15),
             pairing_timeout: Duration::from_secs(60),
-            ping_interval: Duration::from_secs(20),
-            idle_timeout: Duration::from_secs(60),
+            ping_interval: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(90),
+            bt_ping_interval: Duration::from_secs(240),
+            bt_idle_timeout: Duration::from_secs(600),
             write_timeout: Duration::from_secs(15),
             reconnect_min: Duration::from_secs(5),
             reconnect_max: Duration::from_secs(120),
+        }
+    }
+}
+
+impl LinkConfig {
+    /// Configuración para móviles: reintentos de reconexión mucho más
+    /// espaciados (cada intento despierta la CPU y la radio).
+    pub fn mobile() -> Self {
+        Self {
+            reconnect_min: Duration::from_secs(30),
+            reconnect_max: Duration::from_secs(15 * 60),
+            ..Self::default()
+        }
+    }
+
+    fn keepalive(&self, transport: &Transport) -> (Duration, Duration) {
+        match transport {
+            Transport::Bluetooth(_) => (self.bt_ping_interval, self.bt_idle_timeout),
+            _ => (self.ping_interval, self.idle_timeout),
         }
     }
 }
@@ -249,6 +279,9 @@ struct Inner {
     events: mpsc::UnboundedSender<LinkEvent>,
     next_conn_id: AtomicU64,
     reconnect_wake: Notify,
+    /// Puerto TCP del enlace en este dispositivo (0 = desconocido), que se
+    /// anuncia en el `Hello` (ver `set_tcp_port`).
+    tcp_port: std::sync::atomic::AtomicU16,
 }
 
 struct ActiveLink {
@@ -347,6 +380,7 @@ impl LinkManager {
                 events,
                 next_conn_id: AtomicU64::new(1),
                 reconnect_wake: Notify::new(),
+                tcp_port: std::sync::atomic::AtomicU16::new(0),
             }),
         };
         (manager, events_rx)
@@ -358,6 +392,20 @@ impl LinkManager {
 
     pub fn device_name(&self) -> &str {
         &self.inner.local.name
+    }
+
+    /// Puerto en el que este dispositivo acepta el enlace por TCP; se manda
+    /// en el `Hello` para que el peer pueda reconectar por Wi-Fi sin
+    /// escanear la red.
+    pub fn set_tcp_port(&self, port: u16) {
+        self.inner.tcp_port.store(port, Ordering::Relaxed);
+    }
+
+    /// Reintentar ya la reconexión con los peers desconectados (p. ej. la
+    /// plataforma detectó que volvió el Wi-Fi o que un peer se conectó por
+    /// Bluetooth), sin esperar al backoff.
+    pub fn wake_reconnect(&self) {
+        self.inner.reconnect_wake.notify_one();
     }
 
     // -----------------------------------------------------------------
@@ -466,6 +514,7 @@ impl LinkManager {
                 device_kind: local.kind.clone(),
                 capabilities: local.capabilities.clone(),
                 bt_address: local.bt_address.clone().unwrap_or_default(),
+                tcp_port: u32::from(self.inner.tcp_port.load(Ordering::Relaxed)),
             })))
             .await?;
         let Kind::Hello(hello) = recv_kind(&mut inbound, timeout, "Hello").await? else {
@@ -616,6 +665,18 @@ impl LinkManager {
                 if bt.is_some() && rec.bt_address != bt {
                     rec.bt_address = bt;
                     changed = true;
+                }
+                // Dirección para reconectar por Wi-Fi: IP de origen de esta
+                // conexión + el puerto que el peer dice escuchar.
+                if let (Transport::Tcp(remote), Ok(port)) =
+                    (transport, u16::try_from(hello.tcp_port))
+                    && port != 0
+                {
+                    let addr = SocketAddr::new(remote.ip(), port).to_string();
+                    if rec.last_tcp_addr.as_deref() != Some(addr.as_str()) {
+                        rec.last_tcp_addr = Some(addr);
+                        changed = true;
+                    }
                 }
                 if changed {
                     store.save()?;
@@ -786,11 +847,11 @@ impl LinkManager {
             }
         });
 
+        let (ping_interval, idle_timeout) = self.inner.config.keepalive(&transport);
         let manager = self.clone();
         tokio::spawn(async move {
             let _reader_guard = reader_guard;
-            let cfg = manager.inner.config.clone();
-            let mut ticker = tokio::time::interval(cfg.ping_interval);
+            let mut ticker = tokio::time::interval(ping_interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ticker.tick().await; // el primer tick es inmediato
             let mut last_seen = Instant::now();
@@ -809,7 +870,7 @@ impl LinkManager {
                         }
                     },
                     _ = ticker.tick() => {
-                        if last_seen.elapsed() > cfg.idle_timeout {
+                        if last_seen.elapsed() > idle_timeout {
                             tracing::warn!(%peer_id, "enlace inactivo demasiado tiempo; se cierra");
                             break false;
                         }
@@ -1454,8 +1515,11 @@ impl LinkManager {
     }
 
     /// Bucle de reconexión: intenta, con backoff exponencial, enlazar con
-    /// cada peer emparejado que no esté conectado. Corre indefinidamente;
-    /// lanzarlo con `tokio::spawn`.
+    /// cada peer emparejado que no esté conectado. Entre intentos duerme
+    /// hasta el siguiente que toque (no se despierta periódicamente: en un
+    /// móvil cada despertar cuesta batería), o hasta que algo lo despierte
+    /// (`note_sighting`, `wake_reconnect`, la caída de un enlace).
+    /// Corre indefinidamente; lanzarlo con `tokio::spawn`.
     pub async fn run_reconnect(&self, dialer: impl Dialer) {
         let cfg = self.inner.config.clone();
         let mut backoff: HashMap<String, (Instant, Duration)> = HashMap::new();
@@ -1470,16 +1534,15 @@ impl LinkManager {
             };
             backoff.retain(|id, _| candidates.iter().any(|rec| &rec.device_id == id));
 
-            for peer in candidates {
-                let now = Instant::now();
+            for peer in &candidates {
                 if backoff
                     .get(&peer.device_id)
-                    .is_some_and(|(next, _)| now < *next)
+                    .is_some_and(|(next, _)| Instant::now() < *next)
                 {
                     continue;
                 }
                 let peer_id = peer.device_id.clone();
-                let result = match dialer.dial(peer).await {
+                let result = match dialer.dial(peer.clone()).await {
                     Ok((stream, transport)) => {
                         self.connect(stream, transport, ConnectIntent::Reconnect)
                             .await
@@ -1501,10 +1564,24 @@ impl LinkManager {
                 }
             }
 
+            // Dormir hasta el próximo reintento pendiente; sin peers
+            // desconectados, hasta que algo despierte al bucle.
+            let pending: Vec<Instant> = candidates
+                .iter()
+                .filter(|rec| !self.is_connected(&rec.device_id))
+                .filter_map(|rec| backoff.get(&rec.device_id).map(|(next, _)| *next))
+                .collect();
+            let sleep = match pending.iter().min() {
+                Some(next) => next
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(50)),
+                None if candidates.is_empty() => Duration::from_secs(24 * 3600),
+                None => cfg.reconnect_min,
+            };
             tokio::select! {
-                _ = tokio::time::sleep(cfg.reconnect_min) => {}
-                // Un peer apareció por mDNS o se cayó un enlace: reintentar
-                // ya, sin esperar al backoff.
+                _ = tokio::time::sleep(sleep) => {}
+                // Un peer apareció, cambió la red o se cayó un enlace:
+                // reintentar ya, sin esperar al backoff.
                 _ = self.inner.reconnect_wake.notified() => backoff.clear(),
             }
         }

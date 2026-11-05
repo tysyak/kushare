@@ -188,6 +188,12 @@ impl MdnsScanner {
     pub fn browse_service(&self, service_type: &str) -> anyhow::Result<Receiver<ServiceEvent>> {
         Ok(self.daemon.browse(service_type)?)
     }
+
+    /// Deja de buscar `service_type` (el receptor de `browse_service`
+    /// recibe `SearchStopped` y después se cierra).
+    pub fn stop_browse(&self, service_type: &str) -> anyhow::Result<()> {
+        Ok(self.daemon.stop_browse(service_type)?)
+    }
 }
 
 /// Un peer del enlace persistente visto por mDNS.

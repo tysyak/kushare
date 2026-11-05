@@ -294,6 +294,11 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
                             tracing::warn!(?err, "no se pudo desemparejar");
                         }
                     }
+                    TrayCommand::Scan => {
+                        if let Err(err) = link.scan(std::time::Duration::from_secs(30)) {
+                            tracing::warn!(?err, "no se pudo iniciar el escaneo");
+                        }
+                    }
                     TrayCommand::Pair(id) => {
                         if let Err(err) = link.pair(&id) {
                             tracing::warn!(?err, "no se pudo iniciar el emparejado");
@@ -367,7 +372,7 @@ fn refresh_devices_menu(tray: &Tray, link: &link::LinkHandle) {
         .into_iter()
         .map(|s| (s.device_id, s.device_name))
         .collect();
-    if let Err(err) = tray.set_devices(&paired, &discovered) {
+    if let Err(err) = tray.set_devices(&paired, &discovered, link.is_scanning()) {
         tracing::warn!(?err, "no se pudo actualizar el menú de dispositivos");
     }
 }
