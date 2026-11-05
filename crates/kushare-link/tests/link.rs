@@ -648,3 +648,22 @@ async fn wifi_address_is_learned_from_hello_without_scanning() {
         "B debe recordar la IP de origen con el puerto anunciado:\n{peers_toml}"
     );
 }
+
+#[tokio::test]
+async fn disconnect_all_closes_links_but_keeps_pairing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b, _proxy) = paired(dir.path()).await;
+
+    a.mgr.disconnect_all();
+    a.wait_for("PeerDisconnected", |e| {
+        matches!(e, LinkEvent::PeerDisconnected { .. })
+    })
+    .await;
+    // El otro lado nota el cierre del stream.
+    b.wait_for("PeerDisconnected", |e| {
+        matches!(e, LinkEvent::PeerDisconnected { .. })
+    })
+    .await;
+    assert!(!a.mgr.is_connected(b.mgr.device_id()));
+    assert_eq!(a.mgr.peers().len(), 1, "sigue emparejado");
+}

@@ -1448,6 +1448,31 @@ impl LinkManager {
     // Consulta, descubrimiento y reconexión
     // -----------------------------------------------------------------
 
+    /// Cierra todos los enlaces activos y rechaza los emparejados en curso
+    /// (al "apagar" kushare). No olvida a ningún peer: al volver a abrir el
+    /// enlace, la reconexión es automática.
+    pub fn disconnect_all(&self) {
+        self.inner
+            .pairings
+            .lock()
+            .expect("mutex envenenado")
+            .clear();
+        let closed: Vec<String> = self
+            .inner
+            .links
+            .lock()
+            .expect("mutex envenenado")
+            .drain()
+            .map(|(id, _)| id)
+            .collect();
+        for device_id in closed {
+            let _ = self
+                .inner
+                .events
+                .send(LinkEvent::PeerDisconnected { device_id });
+        }
+    }
+
     pub fn is_connected(&self, peer_id: &str) -> bool {
         self.inner
             .links
