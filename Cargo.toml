@@ -8,6 +8,7 @@ members = [
     "crates/kushare-transfer",
     "crates/kushare-tray",
     "crates/kushare-link",
+    "crates/kushare-dbus",
     ".",
 ]
 
@@ -60,6 +61,10 @@ bluer = { version = "0.17.4", features = ["full"] }
 kushare-link = { version = "0.1.0", path = "crates/kushare-link" }
 zbus = { version = "5.19.0", features = ["tokio"] }
 directories = "6"
+iced = { version = "0.14", features = ["tokio", "svg", "image", "advanced"] }
+kushare-dbus = { version = "0.1.0", path = "crates/kushare-dbus" }
+toml = "0.9"
+serde = { workspace = true, features = ["derive"] }
 
 [package.metadata.deb]
 maintainer = "Cristian Romero Andrade <mascrit@gmail.com>"

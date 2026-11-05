@@ -87,18 +87,9 @@ pub async fn daemon_if_running() -> Option<DaemonProxy<'static>> {
 }
 
 async fn proxy() -> anyhow::Result<DaemonProxy<'static>> {
-    let connection = zbus::Connection::session().await?;
-    // Sin caché de propiedades: si el daemon no corre, zbus avisaría al
-    // intentar poblarla; aquí eso es un caso normal, no un error.
-    let proxy = DaemonProxy::builder(&connection)
-        .cache_properties(zbus::proxy::CacheProperties::No)
-        .build()
-        .await?;
-    // Falla con un mensaje claro si el daemon no está corriendo.
-    proxy.device_id().await.map_err(|_| {
+    kushare_dbus::connect().await.map_err(|_| {
         anyhow::anyhow!("el daemon de kushare no está corriendo (lánzalo con `kushare`)")
-    })?;
-    Ok(proxy)
+    })
 }
 
 pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
@@ -115,7 +106,7 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
             if peers.is_empty() {
                 println!("  (ninguno)");
             }
-            for (id, name, kind, connected, transport, out, inn) in peers {
+            for (id, name, kind, connected, transport, out, inn, _bt) in peers {
                 let state = if connected {
                     format!("conectado por {transport}")
                 } else {

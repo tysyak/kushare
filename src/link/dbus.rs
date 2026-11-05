@@ -9,18 +9,7 @@ use zbus::{fdo, interface};
 
 use super::LinkHandle;
 
-pub const BUS_NAME: &str = "org.kushare.Daemon";
-pub const OBJECT_PATH: &str = "/org/kushare/Daemon";
-
-/// (id, nombre, tipo, conectado, transporte, saliente, entrante)
-pub type PeerRow = (String, String, String, bool, String, bool, bool);
-/// (apps locales, apps del peer, bloqueadas al salir, bloqueadas al entrar)
-pub type AppsReply = (
-    Vec<(String, String)>,
-    Vec<(String, String)>,
-    Vec<String>,
-    Vec<String>,
-);
+pub use kushare_dbus::{AppsReply, BUS_NAME, DaemonProxy, OBJECT_PATH, PeerRow};
 
 pub fn parse_direction(direction: &str) -> fdo::Result<Direction> {
     match direction {
@@ -66,6 +55,7 @@ impl DaemonApi {
                     p.transport.unwrap_or_default(),
                     p.outgoing_enabled,
                     p.incoming_enabled,
+                    p.bt_address.unwrap_or_default(),
                 )
             })
             .collect()
@@ -245,38 +235,4 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
         }
     });
     Ok(connection)
-}
-
-/// Proxy cliente de la misma interfaz, para la CLI.
-#[zbus::proxy(
-    interface = "org.kushare.Daemon",
-    default_service = "org.kushare.Daemon",
-    default_path = "/org/kushare/Daemon"
-)]
-pub trait Daemon {
-    #[zbus(property)]
-    fn device_id(&self) -> zbus::Result<String>;
-    #[zbus(property)]
-    fn device_name(&self) -> zbus::Result<String>;
-    fn peers(&self) -> zbus::Result<Vec<PeerRow>>;
-    fn discovered(&self) -> zbus::Result<Vec<(String, String, String)>>;
-    fn scan(&self, seconds: u32) -> zbus::Result<()>;
-    fn send_file_bt(&self, path: &str, address: &str) -> zbus::Result<()>;
-    fn quit(&self) -> zbus::Result<()>;
-    fn pair(&self, peer: &str) -> zbus::Result<String>;
-    fn respond_pairing(&self, peer: &str, accept: bool) -> zbus::Result<bool>;
-    fn unpair(&self, peer: &str) -> zbus::Result<()>;
-    fn set_direction(&self, peer: &str, direction: &str, enabled: bool) -> zbus::Result<()>;
-    fn set_app_blocked(
-        &self,
-        peer: &str,
-        direction: &str,
-        app_id: &str,
-        blocked: bool,
-    ) -> zbus::Result<()>;
-    fn apps(&self, peer: &str) -> zbus::Result<AppsReply>;
-    #[zbus(signal)]
-    fn pairing_requested(&self, peer_id: String, name: String, pin: String) -> zbus::Result<()>;
-    #[zbus(signal)]
-    fn pairing_finished(&self, peer_id: String, name: String, accepted: bool) -> zbus::Result<()>;
 }

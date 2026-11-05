@@ -1,0 +1,9 @@
+[package]
+name = "kushare-dbus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cliente D-Bus del daemon de kushare (org.kushare.Daemon), compartido por la CLI y la GUI"
+
+[dependencies]
+zbus = { version = "5.19.0", features = ["tokio"] }
