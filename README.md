@@ -53,7 +53,7 @@ El modo normal (`cargo run`, sin subcomando) ya escucha por Bluetooth además de
 cargo run -- send-bt archivo.txt AA:BB:CC:DD:EE:FF   # dirección Bluetooth (MAC) del receptor
 ```
 
-**Limitación de BlueZ, no de kushare**: solo puede haber **un** proceso con el perfil RFCOMM de kushare registrado a la vez en el mismo equipo (`org.bluez.Error.AlreadyExists: UUID already registered` si se intenta un segundo). Si el daemon de fondo (`cargo run` sin subcomando) ya está corriendo con recepción Bluetooth activa, hay que cerrarlo antes de poder usar `send-bt` desde otro proceso en esa misma máquina. No afecta al uso normal, en el que un único proceso de kushare por equipo escucha y envía.
+BlueZ solo admite **un** registro del perfil RFCOMM de kushare por equipo (`org.bluez.Error.AlreadyExists: UUID already registered` si se intenta un segundo). Por eso, si el daemon está corriendo, `send-bt` no registra nada: le pide el envío por D-Bus y el daemon lo hace con su perfil (el resultado llega como notificación). Sin daemon, `send-bt` registra el perfil él mismo y muestra el progreso. El perfil de transferencias y el del [enlace persistente](#enlace-persistente-y-notificaciones) tienen UUID distintos y conviven: se puede enviar un archivo mientras el enlace de notificaciones sigue activo por Bluetooth.
 
 Es interoperable con [`kushare-android`](https://github.com/mascrit/kushare-android): la app Android implementa el mismo UUID de servicio (`b4ac1500-6c92-4e64-8f1e-7e1a0cd4f6a1`) sobre `BluetoothSocket` nativo.
 

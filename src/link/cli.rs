@@ -81,9 +81,19 @@ pub enum LinkCommand {
     },
 }
 
+/// El daemon, si está corriendo (para que otros subcomandos le deleguen).
+pub async fn daemon_if_running() -> Option<DaemonProxy<'static>> {
+    proxy().await.ok()
+}
+
 async fn proxy() -> anyhow::Result<DaemonProxy<'static>> {
     let connection = zbus::Connection::session().await?;
-    let proxy = DaemonProxy::new(&connection).await?;
+    // Sin caché de propiedades: si el daemon no corre, zbus avisaría al
+    // intentar poblarla; aquí eso es un caso normal, no un error.
+    let proxy = DaemonProxy::builder(&connection)
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await?;
     // Falla con un mensaje claro si el daemon no está corriendo.
     proxy.device_id().await.map_err(|_| {
         anyhow::anyhow!("el daemon de kushare no está corriendo (lánzalo con `kushare`)")

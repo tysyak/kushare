@@ -49,6 +49,16 @@ enum Command {
         /// aparece en el log de la instancia receptora al arrancar).
         addr: SocketAddr,
     },
+    /// Envía un archivo por Bluetooth RFCOMM a un dispositivo ya vinculado
+    /// (`bluetoothctl pair <MAC>`), para cuando no hay conectividad IP entre
+    /// ambos. Si el daemon está corriendo, el envío lo hace él (BlueZ solo
+    /// admite un registro del perfil por equipo); si no, este proceso.
+    SendBt {
+        /// Archivo a enviar.
+        file: PathBuf,
+        /// Dirección Bluetooth del receptor, p. ej. AA:BB:CC:DD:EE:FF.
+        address: String,
+    },
     /// Control del enlace persistente del daemon en marcha.
     #[command(flatten)]
     Link(link::cli::LinkCommand),
@@ -91,6 +101,10 @@ fn main() -> anyhow::Result<()> {
             let endpoint_id = random_endpoint_id();
             runtime.block_on(run_send(settings, endpoint_id, file, addr))
         }
+        Some(Command::SendBt { file, address }) => {
+            let endpoint_id = random_endpoint_id();
+            runtime.block_on(run_send_bt(settings, endpoint_id, file, address))
+        }
         Some(Command::Link(command)) => runtime.block_on(link::cli::run(command)),
         None => runtime.block_on(run(settings, cli.link_port)),
     }
@@ -107,8 +121,52 @@ async fn run_send(
     addr: SocketAddr,
 ) -> anyhow::Result<()> {
     println!("Conectando a {addr}...");
-    let mut session = Sender::connect(addr).await?;
+    let session = Sender::connect(addr).await?;
+    send_with_progress(session, settings, endpoint_id, file).await
+}
 
+/// `kushare send-bt`: por el daemon si está corriendo, si no directamente.
+async fn run_send_bt(
+    settings: Settings,
+    endpoint_id: String,
+    file: PathBuf,
+    address: String,
+) -> anyhow::Result<()> {
+    let address: bluer::Address = address.parse().map_err(|_| {
+        anyhow::anyhow!("{address:?} no es una dirección Bluetooth (AA:BB:CC:DD:EE:FF)")
+    })?;
+    let file =
+        std::fs::canonicalize(&file).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+
+    if let Some(daemon) = link::cli::daemon_if_running().await {
+        daemon
+            .send_file_bt(&file.to_string_lossy(), &address.to_string())
+            .await?;
+        println!(
+            "El daemon de kushare está enviando {} a {address}; avisará con una notificación al terminar.",
+            file.display()
+        );
+        return Ok(());
+    }
+
+    println!("Conectando por Bluetooth a {address}...");
+    let session = bluer::Session::new().await?;
+    let bt = kushare_transfer::bt::BtService::register(session).await?;
+    let transfer = bt.connect(address).await?;
+    send_with_progress(transfer, settings, endpoint_id, file).await
+}
+
+/// Envía `file` por una sesión ya establecida (TCP o RFCOMM) imprimiendo el
+/// progreso por stdout.
+async fn send_with_progress<S>(
+    mut session: kushare_transfer::TransferSession<S>,
+    settings: Settings,
+    endpoint_id: String,
+    file: PathBuf,
+) -> anyhow::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let (events_tx, mut events_rx) = mpsc::channel::<TransferEvent>(16);
     let file_for_task = file.clone();
     let device_name = settings.device_name.clone();
@@ -154,6 +212,7 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
     tracing::info!(device_name = %settings.device_name, %endpoint_id, "iniciando kushare");
 
     let (events_tx, mut events_rx) = mpsc::channel::<TransferEvent>(64);
+    let bt_events_tx = events_tx.clone();
 
     let receiver = Receiver::bind(
         settings.listen_port,
@@ -248,6 +307,18 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
     })
     .await?;
     let _dbus = link::dbus::serve(link.clone()).await?;
+
+    // Recepción de archivos por Bluetooth RFCOMM (además de TCP), con el
+    // perfil de transferencias que registró el enlace en la misma sesión BlueZ.
+    if let Some(bt) = link.transfer_bt.clone() {
+        let download_dir = settings.download_dir.clone();
+        tokio::spawn(async move {
+            if let Err(err) = bt.run_receiver(download_dir, bt_events_tx).await {
+                tracing::warn!(?err, "la recepción de archivos por Bluetooth terminó");
+            }
+        });
+        tracing::info!("escuchando transferencias por Bluetooth");
+    }
     let mut link_changes = link.subscribe_changes();
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<TrayCommand>(16);

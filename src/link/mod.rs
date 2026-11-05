@@ -50,6 +50,10 @@ pub struct LinkHandle {
     /// Eventos del enlace re-emitidos (para las señales D-Bus).
     pub events: broadcast::Sender<LinkEvent>,
     bt: Option<BtService>,
+    /// Perfil RFCOMM de transferencias de archivos (otro UUID que el del
+    /// enlace), registrado en la misma sesión BlueZ: lo usan la recepción
+    /// por Bluetooth del daemon y `kushare send-bt` vía D-Bus.
+    pub transfer_bt: Option<BtService>,
     /// Escáner mDNS; solo busca durante [`LinkHandle::scan`].
     scanner: Arc<MdnsScanner>,
     scanning: Arc<std::sync::atomic::AtomicBool>,
@@ -317,11 +321,11 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         .ok_or_else(|| anyhow::anyhow!("no se pudo determinar el directorio HOME"))?;
 
     // Bluetooth es opcional: sin adaptador, el enlace funciona solo por Wi-Fi.
-    let (bt, bt_address) = match start_bluetooth().await {
-        Ok((bt, addr)) => (Some(bt), Some(addr)),
+    let (bt, transfer_bt, bt_address) = match start_bluetooth().await {
+        Ok((bt, transfer, addr)) => (Some(bt), transfer, Some(addr)),
         Err(err) => {
             tracing::warn!(?err, "enlace por Bluetooth no disponible");
-            (None, None)
+            (None, None, None)
         }
     };
 
@@ -345,6 +349,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         changes: watch::channel(0).0,
         events,
         bt: bt.clone(),
+        transfer_bt,
         scanner: Arc::new(MdnsScanner::new()?),
         scanning: Arc::default(),
         advertiser: Arc::default(),
@@ -451,19 +456,35 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
     Ok(handle)
 }
 
-async fn start_bluetooth() -> anyhow::Result<(BtService, String)> {
+/// Registra los dos perfiles RFCOMM del daemon en una misma sesión BlueZ:
+/// el del enlace (con el agente) y el de transferencias (sin agente: BlueZ
+/// admite uno por conexión D-Bus). Si el de transferencias falla (p. ej.
+/// otro proceso `kushare send-bt` lo tiene registrado), el enlace sigue.
+async fn start_bluetooth() -> anyhow::Result<(BtService, Option<BtService>, String)> {
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
     let address = adapter.address().await?.to_string();
-    // Este proceso no registra el perfil de transferencias, así que el
-    // agente BlueZ lo aporta el del enlace.
-    let spec = ProfileSpec {
+    let link_spec = ProfileSpec {
         with_agent: true,
         ..ProfileSpec::link()
     };
-    let bt = BtService::register_profile(session, spec).await?;
+    let bt = BtService::register_profile(session.clone(), link_spec).await?;
     tracing::info!(%address, "enlace escuchando por RFCOMM");
-    Ok((bt, address))
+    let transfer_spec = ProfileSpec {
+        with_agent: false,
+        ..ProfileSpec::transfer()
+    };
+    let transfer = match BtService::register_profile(session, transfer_spec).await {
+        Ok(transfer) => Some(transfer),
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "no se pudo registrar el perfil RFCOMM de transferencias"
+            );
+            None
+        }
+    };
+    Ok((bt, transfer, address))
 }
 
 /// Espejo local de una notificación del peer.

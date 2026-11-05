@@ -71,6 +71,58 @@ impl DaemonApi {
             .collect()
     }
 
+    /// Envía `path` por Bluetooth RFCOMM a `address` (dispositivo ya
+    /// vinculado) con el perfil de transferencias del daemon. Vuelve en
+    /// cuanto empieza; el resultado se avisa con una notificación.
+    fn send_file_bt(&self, path: &str, address: &str) -> fdo::Result<()> {
+        let bt =
+            self.link.transfer_bt.clone().ok_or_else(|| {
+                fdo::Error::Failed("el daemon no tiene Bluetooth disponible".into())
+            })?;
+        let address: bluer::Address = address.parse().map_err(|_| {
+            fdo::Error::InvalidArgs(format!("{address:?} no es una dirección Bluetooth"))
+        })?;
+        let path = std::path::PathBuf::from(path);
+        if !path.is_file() {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{} no es un archivo",
+                path.display()
+            )));
+        }
+        let device_name = self.link.manager.device_name().to_string();
+        tokio::spawn(async move {
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let result = async {
+                let mut session = bt.connect(address).await?;
+                // El progreso no se muestra (envío en segundo plano).
+                let (events, _) = tokio::sync::mpsc::channel(64);
+                kushare_transfer::Sender::send_file(
+                    &mut session,
+                    &kushare_core::random_endpoint_id(),
+                    &device_name,
+                    &path,
+                    events,
+                )
+                .await
+            }
+            .await;
+            let body = match &result {
+                Ok(()) => format!("Enviado \"{file_name}\" por Bluetooth a {address}"),
+                Err(err) => format!("No se pudo enviar \"{file_name}\" a {address}: {err:#}"),
+            };
+            if let Err(err) = &result {
+                tracing::warn!(?err, %address, "envío por Bluetooth fallido");
+            }
+            if let Ok(notifier) = kushare_tray::Notifier::connect().await {
+                let _ = notifier.notify("kushare", &body).await;
+            }
+        });
+        Ok(())
+    }
+
     /// Cierra el daemon (como "Salir" en el tray).
     fn quit(&self) {
         tracing::info!("cierre pedido por D-Bus");
@@ -249,6 +301,7 @@ pub trait Daemon {
     fn peers(&self) -> zbus::Result<Vec<PeerRow>>;
     fn discovered(&self) -> zbus::Result<Vec<(String, String, String)>>;
     fn scan(&self, seconds: u32) -> zbus::Result<()>;
+    fn send_file_bt(&self, path: &str, address: &str) -> zbus::Result<()>;
     fn quit(&self) -> zbus::Result<()>;
     fn pair(&self, peer: &str) -> zbus::Result<String>;
     fn respond_pairing(&self, peer: &str, accept: bool) -> zbus::Result<bool>;
