@@ -36,6 +36,7 @@ pub struct SecureChannel {
     keys: D2DKeys,
     send_seq: i32,
     recv_seq: i32,
+    strict_sequence: bool,
 }
 
 impl SecureChannel {
@@ -44,16 +45,57 @@ impl SecureChannel {
             keys,
             send_seq: 0,
             recv_seq: 0,
+            strict_sequence: false,
         }
+    }
+
+    /// Exige que cada mensaje recibido traiga exactamente el siguiente
+    /// `sequence_number` esperado; si no, [`Self::decrypt_bytes`] falla con
+    /// [`CryptoError::SequenceMismatch`]. Así un mensaje repetido,
+    /// reordenado o descartado por un intermediario se detecta en vez de
+    /// aceptarse en silencio (el HMAC por sí solo no lo impide: un
+    /// `SecureMessage` capturado sigue siendo válido si se reenvía).
+    ///
+    /// Desactivado por defecto porque el camino compatible con Quick Share
+    /// aún no confirma la semántica exacta que espera Android (ver el
+    /// TODO(android-validation) en `decrypt_bytes`); el enlace persistente
+    /// de kushare (`kushare-link`), que solo habla con otro kushare, sí lo
+    /// activa.
+    pub fn with_strict_sequence(mut self) -> Self {
+        self.strict_sequence = true;
+        self
+    }
+
+    /// Versión in situ de [`Self::with_strict_sequence`], para cuando el
+    /// canal ya vive dentro de otra estructura.
+    pub fn set_strict_sequence(&mut self, strict: bool) {
+        self.strict_sequence = strict;
     }
 
     /// Cifra un `OfflineFrame` y devuelve los bytes de `SecureMessage`
     /// listos para enviarse por el framing TCP (ver `kushare_transfer`).
     pub fn encrypt_frame(&mut self, frame: &OfflineFrame) -> Result<Vec<u8>> {
-        self.send_seq += 1;
+        self.encrypt_bytes(&frame.encode_to_vec())
+    }
+
+    /// Descifra y verifica un `SecureMessage` recibido, devolviendo el
+    /// `OfflineFrame` contenido.
+    pub fn decrypt_frame(&mut self, raw: &[u8]) -> Result<OfflineFrame> {
+        let frame_bytes = self.decrypt_bytes(raw)?;
+        Ok(OfflineFrame::decode(frame_bytes.as_slice())?)
+    }
+
+    /// Igual que [`Self::encrypt_frame`] pero para un payload arbitrario
+    /// (p. ej. un `LinkFrame` de `kushare-link` ya codificado), no
+    /// necesariamente un `OfflineFrame`.
+    pub fn encrypt_bytes(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.send_seq = self
+            .send_seq
+            .checked_add(1)
+            .ok_or(CryptoError::InvalidState("contador de secuencia agotado"))?;
 
         let d2d_message = DeviceToDeviceMessage {
-            message: Some(frame.encode_to_vec()),
+            message: Some(plaintext.to_vec()),
             sequence_number: Some(self.send_seq),
         };
 
@@ -88,9 +130,9 @@ impl SecureChannel {
         .encode_to_vec())
     }
 
-    /// Descifra y verifica un `SecureMessage` recibido, devolviendo el
-    /// `OfflineFrame` contenido.
-    pub fn decrypt_frame(&mut self, raw: &[u8]) -> Result<OfflineFrame> {
+    /// Igual que [`Self::decrypt_frame`] pero devuelve el payload en bruto,
+    /// sin decodificarlo como `OfflineFrame`.
+    pub fn decrypt_bytes(&mut self, raw: &[u8]) -> Result<Vec<u8>> {
         let secure_message = SecureMessage::decode(raw)?;
 
         let mut mac = HmacSha256::new_from_slice(&self.keys.decrypt_hmac_key)
@@ -109,16 +151,24 @@ impl SecureChannel {
         let plaintext = cipher.cbc_decrypt(&iv, &header_and_body.body);
 
         let d2d_message = DeviceToDeviceMessage::decode(plaintext.as_slice())?;
-        self.recv_seq += 1;
+        let expected = self
+            .recv_seq
+            .checked_add(1)
+            .ok_or(CryptoError::InvalidState("contador de secuencia agotado"))?;
         // TODO(android-validation): confirmar si Quick Share exige que
         // sequence_number sea estrictamente igual al contador local o solo
-        // creciente; por ahora solo se usa para detectar reordenamiento.
-        let _ = d2d_message.sequence_number;
+        // creciente; mientras tanto solo se exige en modo estricto.
+        if self.strict_sequence && d2d_message.sequence_number != Some(expected) {
+            return Err(CryptoError::SequenceMismatch {
+                expected,
+                got: d2d_message.sequence_number,
+            });
+        }
+        self.recv_seq = expected;
 
-        let frame_bytes = d2d_message
+        d2d_message
             .message
-            .ok_or(CryptoError::MissingField("DeviceToDeviceMessage.message"))?;
-        Ok(OfflineFrame::decode(frame_bytes.as_slice())?)
+            .ok_or(CryptoError::MissingField("DeviceToDeviceMessage.message"))
     }
 }
 
@@ -185,5 +235,51 @@ mod tests {
             .decrypt_frame(&encrypted)
             .expect_err("un mensaje alterado debe fallar la verificación HMAC");
         assert!(matches!(err, CryptoError::SignatureMismatch));
+    }
+
+    #[test]
+    fn raw_bytes_roundtrip() {
+        let (mut sender, mut receiver) = paired_channels();
+        let payload = b"payload arbitrario, no un OfflineFrame".to_vec();
+        let encrypted = sender.encrypt_bytes(&payload).expect("encrypt");
+        assert_eq!(
+            receiver.decrypt_bytes(&encrypted).expect("decrypt"),
+            payload
+        );
+    }
+
+    #[test]
+    fn strict_sequence_rejects_replayed_message() {
+        let (sender, receiver) = paired_channels();
+        let (mut sender, mut receiver) = (
+            sender.with_strict_sequence(),
+            receiver.with_strict_sequence(),
+        );
+
+        let first = sender.encrypt_bytes(b"uno").unwrap();
+        let second = sender.encrypt_bytes(b"dos").unwrap();
+        assert_eq!(receiver.decrypt_bytes(&first).unwrap(), b"uno");
+
+        // Reenviar el primero (replay) debe fallar aunque su HMAC sea válido.
+        let err = receiver.decrypt_bytes(&first).expect_err("replay");
+        assert!(matches!(
+            err,
+            CryptoError::SequenceMismatch {
+                expected: 2,
+                got: Some(1)
+            }
+        ));
+
+        // Un fallo no avanza el contador: el mensaje correcto sigue entrando.
+        assert_eq!(receiver.decrypt_bytes(&second).unwrap(), b"dos");
+    }
+
+    #[test]
+    fn lenient_mode_keeps_accepting_out_of_order_messages() {
+        let (mut sender, mut receiver) = paired_channels();
+        let first = sender.encrypt_bytes(b"uno").unwrap();
+        let second = sender.encrypt_bytes(b"dos").unwrap();
+        assert_eq!(receiver.decrypt_bytes(&second).unwrap(), b"dos");
+        assert_eq!(receiver.decrypt_bytes(&first).unwrap(), b"uno");
     }
 }

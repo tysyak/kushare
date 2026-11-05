@@ -1,0 +1,150 @@
+// Protocolo propio del enlace persistente kushare <-> kushare (escritorio y
+// Android). NO es parte de Quick Share: viaja por su propio servicio mDNS
+// (`_kushare-link._tcp.local.`) / UUID RFCOMM, cifrado con el mismo canal
+// UKEY2 + SecureMessage que las transferencias (ver crates/kushare-link).
+//
+// Cada mensaje en el cable es exactamente un `LinkFrame` codificado.
+// Compatibilidad: solo se AÑADEN campos/variantes; nunca se reutilizan
+// números de campo. `Hello.protocol_version` sube cuando un cambio no sea
+// retrocompatible.
+
+syntax = "proto3";
+
+package kushare.link;
+
+message LinkFrame {
+  oneof kind {
+    Hello hello = 1;
+    AuthProof auth_proof = 2;
+    PairRequest pair_request = 3;
+    PairResponse pair_response = 4;
+    Unpair unpair = 5;
+    Ping ping = 6;
+    Pong pong = 7;
+    DirectionConfig direction_config = 8;
+    AppFilter app_filter = 9;
+    Notification notification = 10;
+    NotificationRemoved notification_removed = 11;
+    InvokeAction invoke_action = 12;
+    Reply reply = 13;
+    Ready ready = 14;
+  }
+}
+
+// Primer mensaje que manda cada lado tras el handshake UKEY2.
+message Hello {
+  uint32 protocol_version = 1;
+  // Identificador estable derivado de `public_key` (ver kushare-link::identity).
+  string device_id = 2;
+  string device_name = 3;
+  // Clave pública Ed25519 a largo plazo (32 bytes).
+  bytes public_key = 4;
+  // "desktop" | "android"; solo informativo para la UI.
+  string device_kind = 5;
+  // Capacidades opcionales que este lado entiende, p. ej. "notifications",
+  // "notification-actions", "notification-reply".
+  repeated string capabilities = 6;
+  // Dirección Bluetooth propia si el emisor la conoce ("AA:BB:..."). En
+  // Android no se puede leer (devuelve 02:00:00:00:00:00), así que va
+  // vacía; el escritorio sí la manda para que el Android pueda reconectar
+  // por RFCOMM si no hay Wi-Fi.
+  string bt_address = 7;
+}
+
+// Prueba de posesión de la clave a largo plazo, atada a esta sesión UKEY2:
+// firma Ed25519 de "kushare-link-v1" || rol || auth_string.
+message AuthProof {
+  bytes signature = 1;
+}
+
+// El iniciador pide emparejarse; ambos lados muestran el PIN derivado del
+// auth_string y el usuario confirma en los dos.
+message PairRequest {}
+
+message PairResponse {
+  bool accepted = 1;
+}
+
+// El emisor ha olvidado a este peer (o nunca lo conoció); el receptor
+// debe olvidarlo también y cerrar.
+message Unpair {}
+
+// "Te conozco y te he autenticado": tras `AuthProof`, el iniciador manda
+// `Ready` (reconexión de un peer ya emparejado) o `PairRequest`; el
+// respondedor contesta `Ready` si también lo conoce, o `Unpair` si no.
+message Ready {}
+
+message Ping {
+  uint64 nonce = 1;
+}
+
+message Pong {
+  uint64 nonce = 1;
+}
+
+// Si las notificaciones de `from_device_id` se reenvían a `to_device_id`.
+// Se sincroniza en ambos sentidos con last-writer-wins por `version`.
+message DirectionConfig {
+  string from_device_id = 1;
+  string to_device_id = 2;
+  bool enabled = 3;
+  uint64 version = 4;
+  // device_id de quien hizo el último cambio (desempate en igualdad).
+  string updated_by = 5;
+}
+
+// Apps cuyas notificaciones NO se reenvían de `from_device_id` a
+// `to_device_id`. El conjunto completo se reemplaza (LWW por `version`).
+message AppFilter {
+  string from_device_id = 1;
+  string to_device_id = 2;
+  repeated string blocked_app_ids = 3;
+  uint64 version = 4;
+  string updated_by = 5;
+}
+
+message NotificationAction {
+  string id = 1;
+  string label = 2;
+  // Acepta texto libre (RemoteInput en Android).
+  bool is_reply = 3;
+}
+
+message Notification {
+  // Identificador estable en el emisor (StatusBarNotification.key en
+  // Android; "<id D-Bus>" en escritorio). Repetir la key actualiza.
+  string key = 1;
+  // Paquete en Android; `app_name` D-Bus (o desktop-entry) en escritorio.
+  string app_id = 2;
+  string app_name = 3;
+  string title = 4;
+  string text = 5;
+  int64 timestamp_ms = 6;
+  // SHA-256 hex del PNG del icono; vacío si no hay icono.
+  string icon_hash = 7;
+  // PNG del icono (~64 px). Solo se envía la primera vez por sesión para
+  // cada `icon_hash`; después el receptor lo tiene en caché.
+  bytes icon_png = 8;
+  repeated NotificationAction actions = 9;
+}
+
+message NotificationRemoved {
+  string key = 1;
+  // false: la notificación `key` del EMISOR desapareció (cerrar el espejo).
+  // true: el usuario descartó en el emisor el espejo de una notificación
+  // del RECEPTOR; el receptor debe cancelar su notificación original.
+  bool owner_is_receiver = 2;
+}
+
+// Pide al dueño original de la notificación `key` que ejecute la acción.
+message InvokeAction {
+  string key = 1;
+  string action_id = 2;
+}
+
+// Respuesta de texto para una acción con `is_reply`.
+message Reply {
+  string key = 1;
+  string action_id = 2;
+  string text = 3;
+}

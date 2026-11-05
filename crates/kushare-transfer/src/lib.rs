@@ -6,5 +6,5 @@ pub mod session;
 pub mod tx;
 
 pub use rx::{Receiver, handle_connection};
-pub use session::TransferSession;
+pub use session::{SessionReader, SessionWriter, TransferSession};
 pub use tx::Sender;

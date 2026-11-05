@@ -1,0 +1,25 @@
+[package]
+name = "kushare-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Enlace persistente kushare ⇄ kushare: emparejado, autenticación y sincronización de notificaciones"
+
+# Sin dependencias específicas de Linux de escritorio: este crate también
+# compila para aarch64-linux-android (kushare-android lo usa vía UniFFI).
+[dependencies]
+anyhow.workspace = true
+tokio = { workspace = true, features = ["io-util", "fs", "sync", "rt", "macros", "time"] }
+tracing.workspace = true
+serde.workspace = true
+prost.workspace = true
+toml = "0.9"
+ed25519-dalek = "2"
+sha2 = "0.10"
+getrandom = "0.4.3"
+kushare-proto = { path = "../kushare-proto" }
+kushare-transfer = { path = "../kushare-transfer", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }

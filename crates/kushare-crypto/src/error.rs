@@ -31,6 +31,9 @@ pub enum CryptoError {
 
     #[error("missing required field in {0}")]
     MissingField(&'static str),
+
+    #[error("SecureMessage out of sequence: expected {expected}, got {got:?}")]
+    SequenceMismatch { expected: i32, got: Option<i32> },
 }
 
 pub type Result<T> = std::result::Result<T, CryptoError>;

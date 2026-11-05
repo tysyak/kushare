@@ -9,6 +9,8 @@ const PROTO_FILES: &[&str] = &[
     "proto/securegcm.proto",
     "proto/securemessage.proto",
     "proto/device_to_device_messages.proto",
+    // Protocolo propio del enlace persistente (no es de Quick Share).
+    "proto/kushare_link.proto",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

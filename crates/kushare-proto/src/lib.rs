@@ -9,6 +9,9 @@
 //! para el resto del workspace.
 include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 
+/// Protocolo propio del enlace persistente kushare ⇄ kushare (ver
+/// `proto/kushare_link.proto`); no forma parte de Quick Share.
+pub use kushare::link;
 pub use location::nearby::connections as offline_wire_formats;
 pub use location::nearby::proto::sharing as sharing_enums;
 pub use nearby::sharing::service::proto as wire_format;
