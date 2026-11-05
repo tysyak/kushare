@@ -49,6 +49,7 @@ pub struct LinkHandle {
     changes: watch::Sender<u64>,
     /// Eventos del enlace re-emitidos (para las señales D-Bus).
     pub events: broadcast::Sender<LinkEvent>,
+    bt: Option<BtService>,
 }
 
 impl LinkHandle {
@@ -110,9 +111,14 @@ impl LinkHandle {
         }
     }
 
-    /// Empieza a emparejar con un peer descubierto por mDNS. Vuelve en
-    /// cuanto la conexión arranca; el PIN llega como `PairingRequested`.
+    /// Empieza a emparejar con un peer descubierto por mDNS o, si
+    /// `reference` es una dirección Bluetooth (`AA:BB:CC:DD:EE:FF`, ya
+    /// vinculada con `bluetoothctl pair`), por RFCOMM. Vuelve en cuanto la
+    /// conexión arranca; el PIN llega como `PairingRequested`.
     pub fn pair(&self, reference: &str) -> anyhow::Result<()> {
+        if let Ok(address) = reference.trim().parse::<bluer::Address>() {
+            return self.pair_bluetooth(address);
+        }
         let id = self.resolve(reference)?;
         let sighting = self
             .discovered
@@ -137,6 +143,33 @@ impl LinkHandle {
             .await;
             if let Err(err) = result {
                 tracing::warn!(?err, peer = %sighting.device_name, "emparejado fallido");
+            }
+        });
+        Ok(())
+    }
+}
+
+impl LinkHandle {
+    fn pair_bluetooth(&self, address: bluer::Address) -> anyhow::Result<()> {
+        let bt = self
+            .bt
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Bluetooth no está disponible en este equipo"))?;
+        let manager = self.manager.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let stream = bt.connect_raw(address).await?;
+                manager
+                    .connect(
+                        stream,
+                        Transport::Bluetooth(address.to_string()),
+                        ConnectIntent::Pair,
+                    )
+                    .await
+            }
+            .await;
+            if let Err(err) = result {
+                tracing::warn!(?err, %address, "emparejado por Bluetooth fallido");
             }
         });
         Ok(())
@@ -225,6 +258,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         discovered: Arc::default(),
         changes: watch::channel(0).0,
         events,
+        bt: bt.clone(),
     };
 
     // TCP
@@ -568,7 +602,7 @@ impl DesktopUi {
     fn on_captured(&mut self, captured: Captured) {
         match captured {
             Captured::Posted(n) => {
-                if n.app_name.eq_ignore_ascii_case("kushare") {
+                if is_notification_bridge(&n.app_id, &n.app_name) {
                     return;
                 }
                 self.handle.manager.post_local_notification(n);
@@ -646,6 +680,24 @@ impl DesktopUi {
             }
         }
     }
+}
+
+/// Notificaciones que NO se reenvían al teléfono: las del propio kushare y
+/// las de otros puentes de notificaciones (KDE Connect muestra aquí las del
+/// teléfono; reenviarlas se las devolvería duplicadas, o crearía un bucle
+/// entre ambos puentes).
+fn is_notification_bridge(app_id: &str, app_name: &str) -> bool {
+    const BRIDGES: &[&str] = &[
+        "kushare",
+        "kde connect",
+        "kdeconnect",
+        "org.kde.kdeconnect.daemon",
+        "gsconnect",
+    ];
+    let (id, name) = (app_id.to_lowercase(), app_name.to_lowercase());
+    BRIDGES
+        .iter()
+        .any(|b| id == *b || name == *b || id.starts_with("org.kde.kdeconnect"))
 }
 
 /// Pide el texto de una respuesta con zenity (o kdialog). `None` si se

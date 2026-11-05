@@ -605,3 +605,21 @@ async fn reconnect_loop_restores_a_dropped_link() {
     assert_eq!(b.next_notification().await.key, "r");
     reconnect.abort();
 }
+
+#[tokio::test]
+async fn echoes_of_own_mirrors_are_not_forwarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, mut b, _proxy) = paired(dir.path()).await;
+
+    // Otro puente (p. ej. KDE Connect) devuelve a A el espejo que B hizo de
+    // una notificación de A: lleva "· a" (el nombre de A) en el título.
+    let mut echo = notification("eco", "kdeconnect");
+    echo.title = "chat · a".into();
+    a.mgr.post_local_notification(echo);
+    a.mgr.post_local_notification(notification("real", "chat"));
+    assert_eq!(
+        b.next_notification().await.key,
+        "real",
+        "el eco no debe reenviarse"
+    );
+}

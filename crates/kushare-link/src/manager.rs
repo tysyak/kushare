@@ -1159,6 +1159,10 @@ impl LinkManager {
     /// que la acepte (dirección activada y app no bloqueada). Repetir la
     /// misma `key` la actualiza en el peer.
     pub fn post_local_notification(&self, n: NotificationData) {
+        if self.is_echo_of_own_mirror(&n) {
+            tracing::debug!(app = %n.app_id, "eco de un espejo de kushare; no se reenvía");
+            return;
+        }
         let icon = n
             .icon_png
             .as_ref()
@@ -1221,6 +1225,20 @@ impl LinkManager {
                 tracing::warn!(%peer_id, "cola del enlace llena; notificación descartada");
             }
         }
+    }
+
+    /// ¿Es `n` un espejo que kushare mostró aquí, devuelto por OTRO puente
+    /// de notificaciones (p. ej. KDE Connect, que reenvía todo lo del
+    /// escritorio al teléfono)? Los espejos de kushare llevan
+    /// "<app> · <dispositivo de origen>" en el nombre de app o subtítulo;
+    /// si una notificación local menciona " · <este dispositivo>", es el
+    /// eco de una notificación nuestra y reenviarla crearía un bucle
+    /// infinito entre los dos puentes (visto en pruebas reales).
+    fn is_echo_of_own_mirror(&self, n: &NotificationData) -> bool {
+        let signature = format!(" · {}", self.inner.local.name);
+        [&n.app_name, &n.title, &n.text]
+            .iter()
+            .any(|field| field.contains(&signature))
     }
 
     /// Una notificación de este dispositivo desapareció: avisar a los peers

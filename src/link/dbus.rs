@@ -80,7 +80,13 @@ impl DaemonApi {
             .collect()
     }
 
+    /// Devuelve el device_id, o la dirección Bluetooth si se empareja por
+    /// RFCOMM (el device_id se conoce al llegar el PIN).
     fn pair(&self, peer: &str) -> fdo::Result<String> {
+        if peer.trim().parse::<bluer::Address>().is_ok() {
+            self.link.pair(peer).map_err(failed)?;
+            return Ok(peer.trim().to_string());
+        }
         let id = self.link.resolve(peer).map_err(failed)?;
         self.link.pair(&id).map_err(failed)?;
         Ok(id)

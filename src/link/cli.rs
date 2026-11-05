@@ -38,7 +38,8 @@ pub enum Toggle {
 pub enum LinkCommand {
     /// Lista los dispositivos emparejados y los visibles en la red.
     Devices,
-    /// Empareja con un dispositivo visible (id, prefijo del id o nombre).
+    /// Empareja con un dispositivo visible en la red (id, prefijo del id o
+    /// nombre) o por Bluetooth (dirección MAC de un dispositivo ya vinculado).
     Pair {
         device: String,
         /// Aceptar el PIN sin preguntar (el otro lado debe confirmarlo igual).
@@ -186,26 +187,33 @@ async fn pair(daemon: &DaemonProxy<'_>, device: &str, yes: bool) -> anyhow::Resu
     // Suscribirse ANTES de pedir el emparejado para no perder el PIN.
     let mut requested = daemon.receive_pairing_requested().await?;
     let mut finished = daemon.receive_pairing_finished().await?;
-    let id = daemon.pair(device).await?;
-    println!("Conectando con {id}… (confirma también en el otro dispositivo)");
+    let target = daemon.pair(device).await?;
+    println!("Conectando con {target}… (confirma también en el otro dispositivo)");
+    // Por Bluetooth aún no se conoce el device_id: se toma el del primer PIN.
+    let mut id = if target.parse::<bluer::Address>().is_ok() {
+        None
+    } else {
+        Some(target)
+    };
 
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             tokio::select! {
                 Some(sig) = requested.next() => {
                     let args = sig.args()?;
-                    if args.peer_id != id {
+                    if id.as_ref().is_some_and(|id| *id != args.peer_id) {
                         continue;
                     }
+                    let peer = id.get_or_insert_with(|| args.peer_id.clone()).clone();
                     println!("\nPIN: {}   ({})", args.pin, args.name);
                     let accept = yes || ask("¿El otro dispositivo muestra el mismo PIN? [s/N] ").await;
-                    if !daemon.respond_pairing(&id, accept).await? {
+                    if !daemon.respond_pairing(&peer, accept).await? {
                         println!("(ya se respondió desde la notificación)");
                     }
                 }
                 Some(sig) = finished.next() => {
                     let args = sig.args()?;
-                    if args.peer_id == id {
+                    if id.as_ref().is_none_or(|id| *id == args.peer_id) {
                         return anyhow::Ok(args.accepted);
                     }
                 }
