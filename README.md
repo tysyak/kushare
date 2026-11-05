@@ -1,6 +1,6 @@
 # kushare
 
-Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para Linux, escrito en Rust.
+Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para Linux, escrito en Rust, que va creciendo hacia algo al estilo de KDE Connect: además de transferir archivos, mantiene un **enlace persistente** con la app [`kushare-android`](https://github.com/mascrit/kushare-android) para **sincronizar notificaciones** en ambas direcciones (ver [Enlace persistente y notificaciones](#enlace-persistente-y-notificaciones)).
 
 Ver [`CLAUDE.md`](./CLAUDE.md) para la especificación completa del proyecto.
 
@@ -13,7 +13,8 @@ Scaffold inicial funcional:
 - **`crates/kushare-core`** — tipos compartidos (`Device`, `TransferEvent`, `Settings`, ...).
 - **`crates/kushare-discovery`** — descubrimiento por mDNS (funcional) y BLE real (`bluer`, feature `ble`): anuncia y escanea kushare-a-kushare, y **detecta** un Android real con Quick Share abierto (UUID `0xFEF3`, confirmado con captura real — ver `crates/kushare-discovery/src/ble.rs`). Lo que no logra es lo inverso: un Android real no reconoce el anuncio de kushare como un peer válido (se intentó imitar el formato capturado y falló — ver `examples/android_mimicry_advertise.rs`).
 - **`crates/kushare-transfer`** — framing, sesión con handshake UKEY2, envío (TX) y recepción (RX) de archivos, genérico sobre el transporte: TCP (`Receiver`/`Sender`) y Bluetooth RFCOMM clásico (`bt::BtService`, feature `bluetooth`, con `bluer`) comparten el mismo código. El transporte RFCOMM es interoperable con una app Android real (ver [`kushare-android`](https://github.com/mascrit/kushare-android), que implementa el mismo protocolo sobre `BluetoothSocket` nativo) — probado en ambos sentidos con hash SHA-256 idéntico.
-- **`crates/kushare-tray`** — icono de bandeja (`tray-icon` con backend `ksni`, sin GTK) y notificaciones D-Bus (`zbus`).
+- **`crates/kushare-tray`** — icono de bandeja (`tray-icon` con backend `ksni`, sin GTK) y notificaciones D-Bus (`zbus`): mostrar con acciones/icono/respuesta, y **capturar** las de otras apps (`monitor.rs`, vía `BecomeMonitor`).
+- **`crates/kushare-link`** — enlace persistente kushare ⇄ kushare: identidad Ed25519, emparejado con PIN, reconexión automática, notificaciones, filtros por app y configuración sincronizada. Sin dependencias de Linux de escritorio: lo usa también la app Android.
 - **`kushare-tui`** (`src/bin/kushare-tui/`) — interfaz de terminal con dos pantallas, "Enviar" y "Recibir", al estilo de la app Quick Share de Android (ver más abajo).
 
 Varias partes del protocolo (ver comentarios `TODO(android-validation)` en el código) se basan en documentación pública de implementaciones de referencia (`Martichou/rquickshare`, `grishka/NearDrop`) y en capturas propias contra un Android real, pero no están completamente confirmadas byte a byte.
@@ -34,7 +35,7 @@ Todos los tests (incluyendo un test de integración de extremo a extremo que hac
 cargo run -- --device-name "mi-portátil"
 ```
 
-Esto levanta el icono de bandeja, empieza a escuchar transferencias entrantes y se anuncia por mDNS como `_FC9F5ED42C8A._tcp.local.`.
+Esto levanta el icono de bandeja, empieza a escuchar transferencias entrantes y se anuncia por mDNS como `_FC9F5ED42C8A._tcp.local.`. También abre el [enlace persistente](#enlace-persistente-y-notificaciones) (TCP 47816 y RFCOMM) y reconecta solo con los dispositivos emparejados. Solo puede correr un daemon por sesión (el segundo falla al registrar `org.kushare.Daemon` en D-Bus).
 
 También hay un modo de envío directo por CLI, sin GUI, útil para probar dos instancias entre sí:
 
@@ -56,11 +57,55 @@ cargo run -- send-bt archivo.txt AA:BB:CC:DD:EE:FF   # dirección Bluetooth (MAC
 
 Es interoperable con [`kushare-android`](https://github.com/mascrit/kushare-android): la app Android implementa el mismo UUID de servicio (`b4ac1500-6c92-4e64-8f1e-7e1a0cd4f6a1`) sobre `BluetoothSocket` nativo.
 
+## Enlace persistente y notificaciones
+
+El daemon (`kushare` sin subcomando) mantiene un enlace con los dispositivos emparejados (hoy, la app Android) y sincroniza sus notificaciones:
+
+- **Ambas direcciones**, cada una activable por separado (*recibir sus notificaciones* / *enviarle las mías*) **desde cualquiera de los dos lados**: el cambio se sincroniza.
+- **Filtro por app** en cada dirección.
+- **Descartar sincronizado**: cerrar una notificación en un lado la quita del otro.
+- **Acciones y respuesta** sobre las notificaciones del teléfono (p. ej. responder un mensaje desde el PC). Si el servidor de notificaciones tiene `inline-reply` (KDE) se responde dentro de la notificación; si no (GNOME, mako, dunst, quickshell…), el botón abre un diálogo de `zenity` o `kdialog`. En sentido contrario no es posible: en Linux un proceso no puede pulsar los botones de la notificación de otra app.
+- **Iconos** de la app (o la foto del contacto) en ambos sentidos.
+
+### Emparejar
+
+```sh
+kushare scan                 # busca dispositivos kushare en la red (15 s; no hay escaneo continuo)
+kushare pair <id|nombre>     # empareja con uno encontrado: ambos lados muestran un PIN de 6 dígitos
+kushare pair AA:BB:CC:DD:EE:FF   # o por Bluetooth, con un dispositivo ya vinculado (bluetoothctl pair)
+```
+
+El PIN aparece también como notificación con *Aceptar*/*Rechazar*, y en el teléfono como diálogo. Hay que confirmarlo en **los dos** lados. Desde el teléfono se puede emparejar igual (pantalla *Dispositivos*).
+
+Si la red Wi-Fi **aísla a los clientes** entre sí (habitual en redes de oficina, universidades, hoteles, o en routers Meraki en modo NAT: los dispositivos no se alcanzan ni con `ping`), el escaneo no encuentra nada: hay que emparejar por **Bluetooth**.
+
+### Controlar
+
+```sh
+kushare devices                        # emparejados (y por dónde están conectados) y los del último escaneo
+kushare notif on|off <dispositivo> [in|out|both]   # in = recibir sus notificaciones, out = enviarle las mías
+kushare apps <dispositivo>             # apps vistas y cuáles están bloqueadas
+kushare block|unblock <dispositivo> in|out <app>
+kushare unpair <dispositivo>           # se olvida en ambos lados
+kushare quit                           # cierra el daemon
+```
+
+`<dispositivo>` acepta el id, un prefijo del id o el nombre. Todo esto también está en el menú del icono de bandeja (*Dispositivos*). Los subcomandos hablan con el daemon por D-Bus (`org.kushare.Daemon` en el bus de sesión), igual que cualquier otra interfaz que se quiera construir.
+
+### Cómo funciona
+
+- **Protocolo propio**, separado de Quick Share ([`kushare_link.proto`](crates/kushare-proto/proto/kushare_link.proto)): servicio mDNS `_kushare-link._tcp.local.` en el puerto TCP **47816**, y RFCOMM con el UUID `6f3a2d10-8c4e-4b7a-9e21-5d0c7b3e9a42` (canal 20). Va sobre el mismo canal cifrado UKEY2 + SecureMessage que las transferencias, con números de secuencia estrictos (se rechazan mensajes repetidos o reordenados).
+- **Identidad y emparejado**: cada dispositivo tiene una clave Ed25519 (`~/.config/kushare/identity.key`, permisos 0600) y su `device_id` se deriva de ella. Al emparejar, el PIN sale del secreto de la sesión UKEY2: si hubiera un intermediario, cada lado vería un PIN distinto. Al reconectar no hay PIN: cada lado firma el secreto de la sesión con su clave y el otro lo verifica contra la guardada (`~/.config/kushare/peers.toml`).
+- **Configuración sincronizada**: cada dirección y cada filtro llevan un número de versión; gana el cambio más reciente (y en empate, el del `device_id` menor), así ambos lados convergen al reconectar aunque se cambie algo sin conexión.
+- **Reconexión**: automática, por Wi-Fi a la última dirección conocida (se aprende en cada conexión, sin escanear) y si no por Bluetooth, con reintentos cada vez más espaciados.
+- **Bajo consumo**: no hay escaneo continuo; el keepalive por Bluetooth es de 4 min (la propia pila Bluetooth detecta si el otro dispositivo se aleja).
+- **Convivencia con KDE Connect / GSConnect**: sus notificaciones no se reenvían (son las del propio teléfono, o ecos), y kushare nunca reenvía una notificación que lleve la firma de uno de sus espejos. Usar ambos a la vez provocaba un bucle infinito antes de estas dos protecciones; aun así, si los dos sincronizan notificaciones verás cada una duplicada.
+
 ## Firewall
 
 Si el puerto de recepción no es alcanzable desde otro dispositivo (error típico del lado emisor: "No route to host"), casi siempre es el firewall del equipo que corre `kushare`, no el protocolo. Pasa sobre todo con interfaces nuevas (p. ej. tethering USB de un teléfono) que el firewall mete por defecto en una zona/perfil restrictivo.
 
-Hay que abrir el puerto TCP en el que escucha la instancia receptora (lo imprime al arrancar; por defecto el SO elige uno libre, o fija uno con `--port`).
+Hay que abrir el puerto TCP en el que escucha la instancia receptora (lo imprime al arrancar; por defecto el SO elige uno libre, o fija uno con `--port`). Para el enlace persistente, además, el puerto **47816/tcp** (fijo; se cambia con `--link-port`) y **mDNS** (5353/udp) para que `kushare scan` encuentre dispositivos.
 
 **firewalld** (Fedora, y lo que usa este equipo de desarrollo):
 
@@ -71,12 +116,19 @@ firewall-cmd --get-active-zones
 # abrir el puerto en esa zona (reemplazar <zona> y <puerto>)
 sudo firewall-cmd --zone=<zona> --add-port=<puerto>/tcp          # temporal, no sobrevive un reinicio
 sudo firewall-cmd --zone=<zona> --add-port=<puerto>/tcp --permanent && sudo firewall-cmd --reload  # persistente
+
+# enlace persistente (cada opción en su propia llamada: algunas versiones no admiten
+# --add-service y --add-port juntos)
+sudo firewall-cmd --zone=<zona> --permanent --add-service=mdns
+sudo firewall-cmd --zone=<zona> --permanent --add-port=47816/tcp
+sudo firewall-cmd --reload
 ```
 
 **ufw** (Debian/Ubuntu):
 
 ```sh
 sudo ufw allow <puerto>/tcp
+sudo ufw allow 47816/tcp && sudo ufw allow 5353/udp   # enlace persistente
 ```
 
 ## `kushare-tui`
