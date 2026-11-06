@@ -21,6 +21,48 @@ pub type AppsReply = (
     Vec<String>,
 );
 
+/// Batería: (conocida, porcentaje, cargando). `conocida = false` si el
+/// peer no tiene batería o aún no la ha mandado.
+pub type BatteryRow = (bool, u32, bool);
+
+/// Reproductor: (id, nombre, título, artista, álbum, estado
+/// "playing"|"paused"|"stopped", puede_reproducir, puede_pausar,
+/// puede_siguiente, puede_anterior).
+pub type PlayerRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    bool,
+    bool,
+    bool,
+    bool,
+);
+
+/// Salida de audio: (id, nombre, activa).
+pub type OutputRow = (String, String, bool);
+
+/// Llamada: (fase "idle"|"ringing"|"active"|"dialing", número, nombre, micrófono silenciado).
+pub type CallRow = (String, String, String, bool);
+
+/// Estado de las funciones extra de un peer: (batería, timbre
+/// ""|"normal"|"vibrate"|"silent", llamada, reproductores, salidas
+/// seleccionables, salidas).
+pub type PeerStateReply = (
+    BatteryRow,
+    String,
+    CallRow,
+    Vec<PlayerRow>,
+    bool,
+    Vec<OutputRow>,
+);
+
+/// Foto de la galería: (id, nombre, fecha en ms, ancho, alto, tamaño en
+/// bytes, ruta local de la miniatura).
+pub type PhotoRow = (String, String, i64, u32, u32, u64, String);
+
 /// Proxy cliente de `org.kushare.Daemon`.
 #[zbus::proxy(
     interface = "org.kushare.Daemon",
@@ -56,12 +98,31 @@ pub trait Daemon {
         blocked: bool,
     ) -> zbus::Result<()>;
     fn apps(&self, peer: &str) -> zbus::Result<AppsReply>;
+    /// Batería, timbre, llamada, reproductores y salidas de audio del peer.
+    fn peer_state(&self, peer: &str) -> zbus::Result<PeerStateReply>;
+    /// `action`: play-pause|play|pause|next|previous|stop. `player` vacío = todos.
+    fn media_command(&self, peer: &str, player: &str, action: &str) -> zbus::Result<()>;
+    fn set_audio_output(&self, peer: &str, output: &str) -> zbus::Result<()>;
+    /// `mode`: normal|vibrate|silent.
+    fn set_ringer(&self, peer: &str, mode: &str) -> zbus::Result<()>;
+    /// `action`: answer|reject|hangup|mute|unmute.
+    fn call_command(&self, peer: &str, action: &str) -> zbus::Result<()>;
+    /// Página de la galería del peer (más reciente primero): (total, fotos).
+    fn photos(&self, peer: &str, offset: u32, limit: u32) -> zbus::Result<(u32, Vec<PhotoRow>)>;
+    /// Oír en el PC la música y las llamadas del teléfono (Bluetooth A2DP +
+    /// HFP). Devuelve los perfiles afectados ("multimedia", "llamadas").
+    fn phone_audio(&self, peer: &str, enable: bool) -> zbus::Result<Vec<String>>;
+    /// Descarga la foto original a la carpeta de descargas; devuelve la ruta.
+    fn fetch_photo(&self, peer: &str, id: &str) -> zbus::Result<String>;
     #[zbus(signal)]
     fn pairing_requested(&self, peer_id: String, name: String, pin: String) -> zbus::Result<()>;
     #[zbus(signal)]
     fn pairing_finished(&self, peer_id: String, name: String, accepted: bool) -> zbus::Result<()>;
     #[zbus(signal)]
     fn peers_changed(&self) -> zbus::Result<()>;
+    /// Cambió la batería, el timbre, la llamada o la multimedia de un peer.
+    #[zbus(signal)]
+    fn peer_state_changed(&self, peer_id: String) -> zbus::Result<()>;
 }
 
 /// Conecta con el daemon en el bus de sesión. Falla si no está corriendo.

@@ -10,6 +10,8 @@ use zbus::{fdo, interface};
 use super::LinkHandle;
 
 pub use kushare_dbus::{AppsReply, BUS_NAME, DaemonProxy, OBJECT_PATH, PeerRow};
+use kushare_dbus::{PeerStateReply, PhotoRow};
+use kushare_link::pb;
 
 pub fn parse_direction(direction: &str) -> fdo::Result<Direction> {
     match direction {
@@ -19,6 +21,88 @@ pub fn parse_direction(direction: &str) -> fdo::Result<Direction> {
             "dirección {other:?} inválida: usa \"in\" (recibir) u \"out\" (enviar)"
         ))),
     }
+}
+
+pub fn parse_media_action(action: &str) -> fdo::Result<pb::MediaAction> {
+    Ok(match action {
+        "play-pause" | "toggle" => pb::MediaAction::MediaPlayPause,
+        "play" => pb::MediaAction::MediaPlay,
+        "pause" => pb::MediaAction::MediaPause,
+        "next" => pb::MediaAction::MediaNext,
+        "previous" | "prev" => pb::MediaAction::MediaPrevious,
+        "stop" => pb::MediaAction::MediaStop,
+        other => {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "acción {other:?} inválida: play-pause, play, pause, next, previous o stop"
+            )));
+        }
+    })
+}
+
+fn peer_state_reply(state: &super::features::PeerState) -> PeerStateReply {
+    let battery = state
+        .battery
+        .as_ref()
+        .filter(|b| b.present)
+        .map_or((false, 0, false), |b| (true, b.percent, b.charging));
+    let ringer = match state.ringer {
+        None => "",
+        Some(pb::Ringer::Normal) => "normal",
+        Some(pb::Ringer::Vibrate) => "vibrate",
+        Some(pb::Ringer::Silent) => "silent",
+    };
+    let call = state.call.as_ref().map_or_else(
+        || ("idle".to_string(), String::new(), String::new(), false),
+        |c| {
+            let phase = match c.phase() {
+                pb::CallPhase::CallIdle => "idle",
+                pb::CallPhase::CallRinging => "ringing",
+                pb::CallPhase::CallActive => "active",
+                pb::CallPhase::CallDialing => "dialing",
+            };
+            (phase.to_string(), c.number.clone(), c.name.clone(), c.muted)
+        },
+    );
+    let players = state
+        .players
+        .iter()
+        .map(|p| {
+            let st = match p.state() {
+                pb::PlaybackState::PlaybackPlaying => "playing",
+                pb::PlaybackState::PlaybackPaused => "paused",
+                pb::PlaybackState::PlaybackStopped => "stopped",
+            };
+            (
+                p.id.clone(),
+                p.name.clone(),
+                p.title.clone(),
+                p.artist.clone(),
+                p.album.clone(),
+                st.to_string(),
+                p.can_play,
+                p.can_pause,
+                p.can_next,
+                p.can_previous,
+            )
+        })
+        .collect();
+    let (selectable, outputs) = state.outputs.as_ref().map_or((false, Vec::new()), |o| {
+        (
+            o.selectable,
+            o.outputs
+                .iter()
+                .map(|o| (o.id.clone(), o.name.clone(), o.active))
+                .collect(),
+        )
+    });
+    (
+        battery,
+        ringer.to_string(),
+        call,
+        players,
+        selectable,
+        outputs,
+    )
 }
 
 fn failed(err: anyhow::Error) -> fdo::Error {
@@ -173,6 +257,130 @@ impl DaemonApi {
         ))
     }
 
+    fn peer_state(&self, peer: &str) -> fdo::Result<PeerStateReply> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        Ok(peer_state_reply(&self.link.features.peer_state(&id)))
+    }
+
+    fn media_command(&self, peer: &str, player: &str, action: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let action = parse_media_action(action)?;
+        self.link
+            .features
+            .media_command(&id, player, action)
+            .map_err(failed)
+    }
+
+    fn set_audio_output(&self, peer: &str, output: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        self.link
+            .features
+            .set_audio_output(&id, output)
+            .map_err(failed)
+    }
+
+    fn set_ringer(&self, peer: &str, mode: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let mode = match mode {
+            "normal" | "sonido" => pb::Ringer::Normal,
+            "vibrate" | "vibrar" | "vibración" => pb::Ringer::Vibrate,
+            "silent" | "silencio" => pb::Ringer::Silent,
+            other => {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "modo {other:?} inválido: normal, vibrate o silent"
+                )));
+            }
+        };
+        self.link.features.set_ringer(&id, mode).map_err(failed)
+    }
+
+    fn call_command(&self, peer: &str, action: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let action = match action {
+            "answer" | "contestar" => pb::CallAction::CallAnswer,
+            "reject" | "rechazar" => pb::CallAction::CallReject,
+            "hangup" | "colgar" => pb::CallAction::CallHangup,
+            "mute" | "silenciar" => pb::CallAction::CallMute,
+            "unmute" => pb::CallAction::CallUnmute,
+            other => {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "acción {other:?} inválida: answer, reject, hangup, mute o unmute"
+                )));
+            }
+        };
+        self.link.features.call_command(&id, action).map_err(failed)
+    }
+
+    async fn photos(
+        &self,
+        peer: &str,
+        offset: u32,
+        limit: u32,
+    ) -> fdo::Result<(u32, Vec<PhotoRow>)> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let (total, photos) = self
+            .link
+            .features
+            .photos(&id, offset, limit)
+            .await
+            .map_err(failed)?;
+        Ok((
+            total,
+            photos
+                .into_iter()
+                .map(|(p, thumb)| {
+                    (
+                        p.id,
+                        p.name,
+                        p.date_ms,
+                        p.width,
+                        p.height,
+                        p.size,
+                        thumb.to_string_lossy().to_string(),
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    async fn fetch_photo(&self, peer: &str, id: &str) -> fdo::Result<String> {
+        let peer_id = self.link.resolve(peer).map_err(failed)?;
+        let path = self
+            .link
+            .features
+            .fetch_photo(&peer_id, id)
+            .await
+            .map_err(failed)?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    /// Conecta/desconecta el audio Bluetooth del teléfono (A2DP + HFP) con
+    /// el PC: su música y sus llamadas se oyen aquí. Devuelve los perfiles
+    /// que quedaron conectados/desconectados ("multimedia", "llamadas").
+    async fn phone_audio(&self, peer: &str, enable: bool) -> fdo::Result<Vec<String>> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let address = self
+            .link
+            .manager
+            .peers()
+            .into_iter()
+            .find(|p| p.device_id == id)
+            .and_then(|p| p.bt_address)
+            .ok_or_else(|| {
+                fdo::Error::Failed(
+                    "no se conoce la dirección Bluetooth del teléfono (emparéjalo por Bluetooth)"
+                        .into(),
+                )
+            })?;
+        super::features::phone_audio(&address, enable)
+            .await
+            .map(|v| v.into_iter().map(str::to_string).collect())
+            .map_err(failed)
+    }
+
+    #[zbus(signal)]
+    async fn peer_state_changed(emitter: &SignalEmitter<'_>, peer_id: &str) -> zbus::Result<()>;
+
     #[zbus(signal)]
     async fn pairing_requested(
         emitter: &SignalEmitter<'_>,
@@ -232,7 +440,31 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
                 LinkEvent::PeerConnected { .. }
                 | LinkEvent::PeerDisconnected { .. }
                 | LinkEvent::PeerUnpaired { .. }
-                | LinkEvent::ConfigChanged { .. } => DaemonApi::peers_changed(emitter).await,
+                | LinkEvent::ConfigChanged { .. } => {
+                    let peer = match &event {
+                        LinkEvent::PeerConnected { device_id, .. }
+                        | LinkEvent::PeerDisconnected { device_id } => Some(device_id.clone()),
+                        _ => None,
+                    };
+                    let result = DaemonApi::peers_changed(emitter).await;
+                    if let Some(peer) = peer {
+                        let _ = DaemonApi::peer_state_changed(emitter, &peer).await;
+                    }
+                    result
+                }
+                LinkEvent::Feature { device_id, feature } => {
+                    use pb::feature::Kind as F;
+                    match feature.kind {
+                        Some(
+                            F::Battery(_)
+                            | F::MediaPlayers(_)
+                            | F::AudioOutputs(_)
+                            | F::RingerMode(_)
+                            | F::CallState(_),
+                        ) => DaemonApi::peer_state_changed(emitter, &device_id).await,
+                        _ => Ok(()),
+                    }
+                }
                 _ => Ok(()),
             };
             if let Err(err) = result {

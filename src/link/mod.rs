@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod dbus;
+pub mod features;
 
 use kushare_discovery::mdns::{
     LINK_SERVICE_TYPE, LinkPeerSighting, MdnsAdvertiser, MdnsScanner, link_peer_from_event,
@@ -37,6 +38,7 @@ const TCP_DIAL_TIMEOUT: Duration = Duration::from_secs(4);
 const REPLY_DIALOG_PREFIX: &str = "kushare-reply:";
 const PAIR_ACCEPT: &str = "kushare-pair-accept";
 const PAIR_REJECT: &str = "kushare-pair-reject";
+const CALL_ACTION_PREFIX: &str = "kushare-call:";
 
 /// Lo que el resto del binario (tray, D-Bus) necesita del enlace.
 #[derive(Clone)]
@@ -61,6 +63,8 @@ pub struct LinkHandle {
     scanning: Arc<std::sync::atomic::AtomicBool>,
     /// Anuncio mDNS del enlace (siempre activo mientras viva el daemon).
     advertiser: Arc<Mutex<Option<MdnsAdvertiser>>>,
+    /// Batería, multimedia, audio, timbre, llamadas y fotos.
+    pub features: Arc<features::Features>,
 }
 
 impl LinkHandle {
@@ -241,10 +245,20 @@ impl LinkHandle {
         if let Some((id, _)) = candidates.iter().find(|(id, _)| id == reference) {
             return Ok(id.clone());
         }
-        let matches: Vec<&(String, String)> = candidates
+        let exact: Vec<&(String, String)> = candidates
             .iter()
             .filter(|(id, name)| id.starts_with(reference) || name.eq_ignore_ascii_case(reference))
             .collect();
+        // Si no hay coincidencia exacta, vale una parte del nombre ("armor").
+        let lower = reference.to_lowercase();
+        let matches = if exact.is_empty() && !lower.is_empty() {
+            candidates
+                .iter()
+                .filter(|(_, name)| name.to_lowercase().contains(&lower))
+                .collect()
+        } else {
+            exact
+        };
         match matches.as_slice() {
             [(id, _)] => Ok(id.clone()),
             [] => anyhow::bail!("ningún dispositivo coincide con {reference:?}"),
@@ -405,6 +419,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         scanning: Arc::default(),
         link_port: Arc::default(),
         advertiser: Arc::default(),
+        features: features::Features::start(manager.clone(), dirs.cache_dir()),
     };
 
     // TCP
@@ -498,6 +513,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
             mirrors: HashMap::new(),
             by_id: HashMap::new(),
             pin_prompts: HashMap::new(),
+            calls: HashMap::new(),
         };
         loop {
             tokio::select! {
@@ -564,6 +580,8 @@ struct DesktopUi {
     by_id: HashMap<u32, Mirror>,
     /// id de la notificación del PIN → device_id.
     pin_prompts: HashMap<u32, String>,
+    /// device_id → id de la notificación de su llamada en curso.
+    calls: HashMap<String, u32>,
 }
 
 impl DesktopUi {
@@ -578,7 +596,51 @@ impl DesktopUi {
     }
 
     async fn on_link_event(&mut self, event: LinkEvent) {
+        // El estado de las funciones extra se actualiza ANTES de re-emitir
+        // el evento, para que quien lo reciba (D-Bus, tray) ya lo vea.
+        let change = match &event {
+            LinkEvent::Feature { device_id, feature } => {
+                self.handle.features.on_remote(device_id, feature.clone())
+            }
+            LinkEvent::PeerConnected { device_id, .. } => {
+                self.handle.features.on_connected(device_id);
+                None
+            }
+            LinkEvent::PeerDisconnected { device_id } => {
+                self.handle.features.on_disconnected(device_id);
+                self.show_call(device_id.clone(), None).await;
+                None
+            }
+            LinkEvent::PeerUnpaired { device_id } => {
+                self.handle.features.forget(device_id);
+                None
+            }
+            _ => None,
+        };
         let _ = self.handle.events.send(event.clone());
+        if let LinkEvent::Feature { device_id, .. } = &event {
+            let changed = change.is_some();
+            match change {
+                Some(features::RemoteChange::Call(call)) => {
+                    self.show_call(device_id.clone(), Some(call)).await;
+                }
+                Some(features::RemoteChange::LowBattery(percent)) => {
+                    let name = self.peer_name(device_id);
+                    let _ = self
+                        .notifier
+                        .notify(
+                            &format!("Batería baja en {name}"),
+                            &format!("Queda un {percent} %"),
+                        )
+                        .await;
+                }
+                _ => {}
+            }
+            if changed {
+                self.handle.bump();
+            }
+            return;
+        }
         match event {
             LinkEvent::PairingRequested {
                 device_id,
@@ -654,11 +716,74 @@ impl DesktopUi {
                     tracing::debug!(?err, id, "no se pudo cerrar la notificación local");
                 }
             }
+            LinkEvent::Feature { .. } => {}
             LinkEvent::ActionRequested { .. } | LinkEvent::ReplyRequested { .. } => {
                 // Nunca ofrecemos acciones de notificaciones del escritorio
                 // (ver kushare_tray::monitor), así que no debería llegar.
                 tracing::debug!("acción remota sobre notificación de escritorio: no soportado");
             }
+        }
+    }
+
+    /// Muestra (o cierra, con `None`/fase inactiva) la notificación de la
+    /// llamada en curso del teléfono, con sus botones.
+    async fn show_call(&mut self, peer_id: String, call: Option<kushare_link::pb::CallState>) {
+        use kushare_link::pb::CallPhase;
+        let phase = call.as_ref().map_or(CallPhase::CallIdle, |c| c.phase());
+        let replaces_id = self.calls.get(&peer_id).copied().unwrap_or(0);
+        let Some(call) = call.filter(|_| phase != CallPhase::CallIdle) else {
+            if let Some(id) = self.calls.remove(&peer_id) {
+                let _ = self.notifier.close(id).await;
+            }
+            return;
+        };
+        let who = if !call.name.is_empty() {
+            call.name.clone()
+        } else if !call.number.is_empty() {
+            call.number.clone()
+        } else {
+            "número desconocido".into()
+        };
+        let peer_name = self.peer_name(&peer_id);
+        let action = |a: &str, label: &str| (format!("{CALL_ACTION_PREFIX}{a}"), label.to_string());
+        let (summary, actions) = match phase {
+            CallPhase::CallRinging => (
+                format!("Llamada entrante: {who}"),
+                vec![action("answer", "Contestar"), action("reject", "Rechazar")],
+            ),
+            _ => (
+                format!("En llamada con {who}"),
+                vec![
+                    action("hangup", "Colgar"),
+                    if call.muted {
+                        action("unmute", "Activar micrófono")
+                    } else {
+                        action("mute", "Silenciar micrófono")
+                    },
+                ],
+            ),
+        };
+        let shown = self
+            .notifier
+            .notify_full(&MirrorNotification {
+                replaces_id,
+                app_name: format!("Teléfono · {peer_name}"),
+                summary,
+                body: if call.name.is_empty() {
+                    String::new()
+                } else {
+                    call.number.clone()
+                },
+                actions,
+                persistent: true,
+                ..Default::default()
+            })
+            .await;
+        match shown {
+            Ok(id) => {
+                self.calls.insert(peer_id, id);
+            }
+            Err(err) => tracing::warn!(?err, "no se pudo mostrar la llamada"),
         }
     }
 
@@ -747,6 +872,26 @@ impl DesktopUi {
                     }
                     return;
                 }
+                if let Some(call_action) = action.strip_prefix(CALL_ACTION_PREFIX)
+                    && let Some(peer) = self
+                        .calls
+                        .iter()
+                        .find(|(_, nid)| **nid == id)
+                        .map(|(p, _)| p.clone())
+                {
+                    use kushare_link::pb::CallAction;
+                    let call_action = match call_action {
+                        "answer" => CallAction::CallAnswer,
+                        "reject" => CallAction::CallReject,
+                        "hangup" => CallAction::CallHangup,
+                        "mute" => CallAction::CallMute,
+                        _ => CallAction::CallUnmute,
+                    };
+                    if let Err(err) = self.handle.features.call_command(&peer, call_action) {
+                        tracing::info!(?err, "orden de llamada fallida");
+                    }
+                    return;
+                }
                 let Some(mirror) = self.by_id.get(&id) else {
                     return;
                 };
@@ -787,6 +932,7 @@ impl DesktopUi {
             }
             NotifierEvent::Closed { id, by_user } => {
                 self.pin_prompts.remove(&id);
+                self.calls.retain(|_, nid| *nid != id);
                 if let Some(mirror) = self.by_id.remove(&id) {
                     self.mirrors
                         .remove(&(mirror.peer_id.clone(), mirror.key.clone()));

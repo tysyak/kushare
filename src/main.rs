@@ -68,18 +68,56 @@ enum Command {
     Link(link::cli::LinkCommand),
 }
 
-/// Icono de bandeja mínimo (un cuadrado sólido). Placeholder hasta que el
-/// proyecto tenga arte propio; `packaging/common/kushare.svg` es el icono
-/// usado por el `.desktop` y los paquetes del sistema, que sí es un diseño
-/// real, aunque simple.
-fn placeholder_icon() -> anyhow::Result<Icon> {
-    const SIZE: u32 = 32;
-    // Azul sólido (0x2E, 0x6F, 0xE3) totalmente opaco.
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for _ in 0..(SIZE * SIZE) {
-        rgba.extend_from_slice(&[0x2E, 0x6F, 0xE3, 0xFF]);
+/// Color primario del esquema de kushare (Material 3, tema claro).
+const BRAND_RGB: [u8; 3] = [0x9d, 0x06, 0xd8];
+
+/// Icono de bandeja: el mismo dibujo que el icono de la app Android y que
+/// `packaging/common/kushare.svg` (círculo de color con el grafo de
+/// "compartir"), rasterizado aquí con antialiasing para no depender de un
+/// motor de SVG.
+fn app_icon() -> anyhow::Result<Icon> {
+    const SIZE: u32 = 64;
+    Ok(Icon::from_rgba(app_icon_rgba(SIZE), SIZE, SIZE)?)
+}
+
+fn app_icon_rgba(size: u32) -> Vec<u8> {
+    // Coordenadas en el viewBox 64×64 del SVG.
+    let nodes = [(20.0f32, 32.0f32), (44.0, 18.0), (44.0, 46.0)];
+    let seg_dist = |px: f32, py: f32, (ax, ay): (f32, f32), (bx, by): (f32, f32)| {
+        let (dx, dy) = (bx - ax, by - ay);
+        let t = (((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        ((px - ax - t * dx).powi(2) + (py - ay - t * dy).powi(2)).sqrt()
+    };
+    // Cobertura (0..1) a partir de una distancia con signo (negativa = dentro).
+    let cover = |d: f32, px_size: f32| (0.5 - d / px_size).clamp(0.0, 1.0);
+    let scale = 64.0 / size as f32;
+    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let (px, py) = ((x as f32 + 0.5) * scale, (y as f32 + 0.5) * scale);
+            let bg = cover(
+                ((px - 32.0).powi(2) + (py - 32.0).powi(2)).sqrt() - 30.0,
+                scale,
+            );
+            let glyph = nodes
+                .iter()
+                .map(|(cx, cy)| ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - 6.0)
+                .chain([
+                    seg_dist(px, py, nodes[0], nodes[1]) - 1.5,
+                    seg_dist(px, py, nodes[0], nodes[2]) - 1.5,
+                ])
+                .fold(f32::MAX, f32::min);
+            let g = cover(glyph, scale);
+            let mix = |c: u8| (f32::from(c) * (1.0 - g) + 255.0 * g).round() as u8;
+            rgba.extend_from_slice(&[
+                mix(BRAND_RGB[0]),
+                mix(BRAND_RGB[1]),
+                mix(BRAND_RGB[2]),
+                (bg * 255.0).round() as u8,
+            ]);
+        }
     }
-    Ok(Icon::from_rgba(rgba, SIZE, SIZE)?)
+    rgba
 }
 
 fn main() -> anyhow::Result<()> {
@@ -327,7 +365,7 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
     let mut link_changes = link.subscribe_changes();
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<TrayCommand>(16);
-    let tray = Tray::new(placeholder_icon()?, cmd_tx)?;
+    let tray = Tray::new(app_icon()?, cmd_tx)?;
     refresh_devices_menu(&tray, &link);
 
     let mut visible = true;
@@ -368,6 +406,30 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
                     TrayCommand::Unpair(id) => {
                         if let Err(err) = link.manager.unpair(&id) {
                             tracing::warn!(?err, "no se pudo desemparejar");
+                        }
+                    }
+                    TrayCommand::Media { peer, player, action } => {
+                        let result = link::dbus::parse_media_action(&action)
+                            .map_err(|e| anyhow::anyhow!("{e}"))
+                            .and_then(|a| link.features.media_command(&peer, &player, a));
+                        if let Err(err) = result {
+                            tracing::warn!(?err, "orden multimedia fallida");
+                        }
+                    }
+                    TrayCommand::Ringer { peer, mode } => {
+                        use kushare_link::pb::Ringer;
+                        let mode = match mode.as_str() {
+                            "silent" => Ringer::Silent,
+                            "vibrate" => Ringer::Vibrate,
+                            _ => Ringer::Normal,
+                        };
+                        if let Err(err) = link.features.set_ringer(&peer, mode) {
+                            tracing::warn!(?err, "no se pudo cambiar el timbre");
+                        }
+                    }
+                    TrayCommand::Output { peer, output } => {
+                        if let Err(err) = link.features.set_audio_output(&peer, &output) {
+                            tracing::warn!(?err, "no se pudo cambiar la salida de audio");
                         }
                     }
                     TrayCommand::SendTo(id) => {
@@ -455,13 +517,52 @@ fn refresh_devices_menu(tray: &Tray, link: &link::LinkHandle) {
         .manager
         .peers()
         .into_iter()
-        .map(|p| DeviceEntry {
-            device_id: p.device_id,
-            name: p.device_name,
-            connected: p.connected,
-            incoming: p.incoming_enabled,
-            outgoing: p.outgoing_enabled,
-            can_send_file: p.bt_address.is_some() && link.transfer_bt.is_some(),
+        .map(|p| {
+            use kushare_link::pb::{PlaybackState, Ringer};
+            let state = link.features.peer_state(&p.device_id);
+            DeviceEntry {
+                battery: state
+                    .battery
+                    .filter(|b| b.present)
+                    .map(|b| (b.percent, b.charging)),
+                ringer: state.ringer.map(|r| {
+                    match r {
+                        Ringer::Normal => "normal",
+                        Ringer::Vibrate => "vibrate",
+                        Ringer::Silent => "silent",
+                    }
+                    .to_string()
+                }),
+                players: state
+                    .players
+                    .iter()
+                    .map(|pl| kushare_tray::PlayerEntry {
+                        id: pl.id.clone(),
+                        label: if pl.title.is_empty() {
+                            pl.name.clone()
+                        } else {
+                            format!("{} — {}", pl.name, pl.title)
+                        },
+                        playing: pl.state() == PlaybackState::PlaybackPlaying,
+                    })
+                    .collect(),
+                outputs: state
+                    .outputs
+                    .filter(|o| o.selectable)
+                    .map(|o| {
+                        o.outputs
+                            .into_iter()
+                            .map(|o| (o.id, o.name, o.active))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                device_id: p.device_id,
+                name: p.device_name,
+                connected: p.connected,
+                incoming: p.incoming_enabled,
+                outgoing: p.outgoing_enabled,
+                can_send_file: p.bt_address.is_some() && link.transfer_bt.is_some(),
+            }
         })
         .collect();
     let discovered: Vec<(String, String)> = link

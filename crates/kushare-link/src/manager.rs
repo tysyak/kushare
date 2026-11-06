@@ -191,7 +191,7 @@ pub struct PeerInfo {
     pub peer_apps: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LinkEvent {
     /// Hay que mostrar el PIN y pedir confirmación; responder con
     /// [`LinkManager::respond_pairing`].
@@ -250,6 +250,12 @@ pub enum LinkEvent {
         key: String,
         action_id: String,
         text: String,
+    },
+    /// Mensaje de una función extra (batería, multimedia, fotos…). El
+    /// enlace no lo interpreta: lo hace la plataforma.
+    Feature {
+        device_id: String,
+        feature: pb::Feature,
     },
 }
 
@@ -960,6 +966,12 @@ impl LinkManager {
                     });
                 }
             }
+            Kind::Feature(feature) => {
+                let _ = self.inner.events.send(LinkEvent::Feature {
+                    device_id: peer_id.to_string(),
+                    feature,
+                });
+            }
             Kind::Unpair(_) => {
                 tracing::info!(%peer_id, "el peer pidió desemparejar");
                 self.forget_peer(peer_id);
@@ -1355,6 +1367,49 @@ impl LinkManager {
                 text: text.to_string(),
             })),
         );
+    }
+
+    /// Manda un mensaje de función extra a `peer_id` (si está conectado).
+    pub fn send_feature(&self, peer_id: &str, feature: pb::Feature) {
+        self.send_to(peer_id, frame(Kind::Feature(feature)));
+    }
+
+    /// Como [`send_feature`](Self::send_feature), pero espera a que haya
+    /// sitio en la cola del enlace en vez de descartar el mensaje: para
+    /// respuestas grandes troceadas (fotos) en las que perder un trozo
+    /// corrompería el resultado.
+    pub async fn send_feature_wait(
+        &self,
+        peer_id: &str,
+        feature: pb::Feature,
+    ) -> anyhow::Result<()> {
+        let outbound = self
+            .inner
+            .links
+            .lock()
+            .expect("mutex envenenado")
+            .get(peer_id)
+            .map(|link| link.outbound.clone())
+            .ok_or_else(|| anyhow::anyhow!("{peer_id} no está conectado"))?;
+        outbound
+            .send(frame(Kind::Feature(feature)))
+            .await
+            .map_err(|_| anyhow::anyhow!("el enlace con {peer_id} se cerró"))
+    }
+
+    /// Manda un mensaje de función extra a todos los peers conectados.
+    pub fn broadcast_feature(&self, feature: pb::Feature) {
+        let ids: Vec<String> = self
+            .inner
+            .links
+            .lock()
+            .expect("mutex envenenado")
+            .keys()
+            .cloned()
+            .collect();
+        for id in ids {
+            self.send_feature(&id, feature.clone());
+        }
     }
 
     fn receive_notification(&self, peer_id: &str, n: pb::Notification) {

@@ -79,6 +79,101 @@ pub enum LinkCommand {
         way: Way,
         app: String,
     },
+    /// Batería, timbre, llamada, reproductores y salidas de audio de un dispositivo.
+    Status { device: String },
+    /// Controla los reproductores del dispositivo. Sin reproductor: todos
+    /// (`kushare media <disp> pause` = pausar todo).
+    Media {
+        device: String,
+        #[arg(value_enum)]
+        action: MediaVerb,
+        /// id o parte del nombre del reproductor (ver `kushare status`).
+        player: Option<String>,
+    },
+    /// Lista las salidas de audio del dispositivo o elige una (id o parte del nombre).
+    Audio {
+        device: String,
+        output: Option<String>,
+    },
+    /// Cambia el modo de timbre del teléfono.
+    Ringer {
+        device: String,
+        #[arg(value_enum)]
+        mode: RingerVerb,
+    },
+    /// Controla la llamada en curso del teléfono.
+    Call {
+        device: String,
+        #[arg(value_enum)]
+        action: CallVerb,
+    },
+    /// Oír en el PC la música y las llamadas del teléfono (Bluetooth A2DP + HFP).
+    PhoneAudio { device: String, state: Toggle },
+    /// Lista las fotos del teléfono (más recientes primero) o descarga una.
+    Photos {
+        device: String,
+        /// Descargar la foto con este id a la carpeta de descargas.
+        #[arg(long)]
+        download: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum MediaVerb {
+    PlayPause,
+    Play,
+    Pause,
+    Next,
+    Previous,
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum RingerVerb {
+    Normal,
+    Vibrate,
+    Silent,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CallVerb {
+    Answer,
+    Reject,
+    Hangup,
+    Mute,
+    Unmute,
+}
+
+fn verb<T: ValueEnum>(v: T) -> String {
+    v.to_possible_value()
+        .map(|p| p.get_name().to_string())
+        .unwrap_or_default()
+}
+
+/// Busca un elemento por id exacto o por parte del nombre (sin mayúsculas).
+fn pick<'a, T>(
+    items: &'a [T],
+    query: &str,
+    id: impl Fn(&T) -> &str,
+    name: impl Fn(&T) -> &str,
+) -> anyhow::Result<&'a T> {
+    if let Some(item) = items.iter().find(|i| id(i) == query) {
+        return Ok(item);
+    }
+    let q = query.to_lowercase();
+    let matches: Vec<&T> = items
+        .iter()
+        .filter(|i| name(i).to_lowercase().contains(&q) || id(i).to_lowercase().contains(&q))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one),
+        [] => anyhow::bail!("ninguno coincide con {query:?}"),
+        _ => anyhow::bail!("{query:?} es ambiguo; usa el id"),
+    }
 }
 
 /// El daemon, si está corriendo (para que otros subcomandos le deleguen).
@@ -198,6 +293,119 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
         LinkCommand::Unblock { device, way, app } => {
             set_blocked(&daemon, &device, way, &app, false).await?
         }
+        LinkCommand::Status { device } => {
+            let ((has_bat, percent, charging), ringer, call, players, _, outputs) =
+                daemon.peer_state(&device).await?;
+            if has_bat {
+                let c = if charging { " (cargando)" } else { "" };
+                println!("Batería: {percent} %{c}");
+            }
+            if !ringer.is_empty() {
+                let r = match ringer.as_str() {
+                    "silent" => "silencio",
+                    "vibrate" => "vibración",
+                    _ => "sonido",
+                };
+                println!("Timbre: {r}");
+            }
+            if call.0 != "idle" {
+                let who = if call.2.is_empty() { &call.1 } else { &call.2 };
+                println!("Llamada: {} {who}", call.0);
+            }
+            println!("Reproductores:");
+            if players.is_empty() {
+                println!("  (ninguno)");
+            }
+            for p in &players {
+                let what = [p.2.as_str(), p.3.as_str()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" — ");
+                println!("  {} [{}] {what}\n    id: {}", p.1, p.5, p.0);
+            }
+            println!("Salidas de audio:");
+            if outputs.is_empty() {
+                println!("  (ninguna)");
+            }
+            for (id, name, active) in &outputs {
+                println!("  {} {name}  ({id})", if *active { "*" } else { " " });
+            }
+        }
+        LinkCommand::Media {
+            device,
+            action,
+            player,
+        } => {
+            let player_id = match player {
+                Some(q) => {
+                    let players = daemon.peer_state(&device).await?.3;
+                    pick(&players, &q, |p| &p.0, |p| &p.1)?.0.clone()
+                }
+                None => String::new(),
+            };
+            daemon
+                .media_command(&device, &player_id, &verb(action))
+                .await?;
+            println!("Hecho.");
+        }
+        LinkCommand::Audio { device, output } => {
+            let (.., selectable, outputs) = daemon.peer_state(&device).await?;
+            match output {
+                None => {
+                    for (id, name, active) in &outputs {
+                        println!("{} {name}  ({id})", if *active { "*" } else { " " });
+                    }
+                }
+                Some(q) => {
+                    if !selectable {
+                        anyhow::bail!("ese dispositivo no permite elegir la salida a distancia");
+                    }
+                    let out = pick(&outputs, &q, |o| &o.0, |o| &o.1)?;
+                    daemon.set_audio_output(&device, &out.0).await?;
+                    println!("Salida: {}", out.1);
+                }
+            }
+        }
+        LinkCommand::Ringer { device, mode } => {
+            daemon.set_ringer(&device, &verb(mode)).await?;
+            println!("Hecho.");
+        }
+        LinkCommand::Call { device, action } => {
+            daemon.call_command(&device, &verb(action)).await?;
+            println!("Hecho.");
+        }
+        LinkCommand::PhoneAudio { device, state } => {
+            let on = matches!(state, Toggle::On);
+            let profiles = daemon.phone_audio(&device, on).await?;
+            if on {
+                println!("Audio del teléfono en el PC: {}", profiles.join(" y "));
+            } else {
+                println!("Audio del teléfono devuelto al teléfono.");
+            }
+        }
+        LinkCommand::Photos {
+            device,
+            download,
+            offset,
+            limit,
+        } => match download {
+            Some(id) => {
+                println!("Descargando…");
+                println!("Guardada en {}", daemon.fetch_photo(&device, &id).await?);
+            }
+            None => {
+                let (total, photos) = daemon.photos(&device, offset, limit).await?;
+                println!(
+                    "{total} fotos; mostrando {} desde la {offset}:",
+                    photos.len()
+                );
+                for (id, name, _date, w, h, size, _thumb) in photos {
+                    println!("  {id:>8}  {name}  {w}×{h}  {} KB", size / 1024);
+                }
+                println!("Descargar: kushare photos {device} --download <id>");
+            }
+        },
     }
     Ok(())
 }

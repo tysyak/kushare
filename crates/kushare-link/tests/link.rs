@@ -667,3 +667,34 @@ async fn disconnect_all_closes_links_but_keeps_pairing() {
     assert!(!a.mgr.is_connected(b.mgr.device_id()));
     assert_eq!(a.mgr.peers().len(), 1, "sigue emparejado");
 }
+
+#[tokio::test]
+async fn features_pass_through_to_the_peer() {
+    use kushare_link::pb::{self, feature::Kind as F};
+    let dir = tempfile::tempdir().unwrap();
+    let (a, mut b, _proxy) = paired(dir.path()).await;
+    let id_a = a.mgr.device_id().to_string();
+
+    a.mgr.broadcast_feature(pb::Feature {
+        kind: Some(F::Battery(pb::BatteryStatus {
+            present: true,
+            percent: 42,
+            charging: true,
+        })),
+    });
+    let LinkEvent::Feature { device_id, feature } = b
+        .wait_for("Feature", |e| matches!(e, LinkEvent::Feature { .. }))
+        .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(device_id, id_a);
+    assert_eq!(
+        feature.kind,
+        Some(F::Battery(pb::BatteryStatus {
+            present: true,
+            percent: 42,
+            charging: true
+        }))
+    );
+}

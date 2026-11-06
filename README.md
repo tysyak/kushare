@@ -107,6 +107,25 @@ kushare quit                           # cierra el daemon
 kushare doctor                         # diagnóstico: puerto, firewall, mDNS, Bluetooth, notificaciones
 ```
 
+### Teléfono: batería, multimedia, audio, timbre, llamadas y fotos
+
+```sh
+kushare status <dispositivo>           # batería, timbre, llamada, reproductores y salidas de audio
+kushare media <dispositivo> play-pause|play|pause|next|previous|stop [reproductor]
+kushare media <dispositivo> pause      # sin reproductor: pausar todo
+kushare audio <dispositivo> [salida]   # listar / elegir su salida de audio
+kushare ringer <dispositivo> normal|vibrate|silent
+kushare call <dispositivo> answer|reject|hangup|mute|unmute
+kushare phone-audio <dispositivo> on|off   # oír en el PC su música y sus llamadas (Bluetooth)
+kushare photos <dispositivo> [--offset N --limit N] [--download <id>]
+```
+
+Lo mismo está en la GUI (páginas *Teléfono* y *Fotos*) y en la bandeja. En sentido contrario, el teléfono ve la batería del portátil y controla sus reproductores (MPRIS) y su salida de audio (`pactl`). Una llamada entrante aparece como notificación con *Contestar*/*Rechazar*.
+
+- **Audio del teléfono en el PC**: el PC hace de manos libres (HFP) y de altavoz (A2DP) del teléfono por Bluetooth. Necesita que PipeWire/WirePlumber tenga los roles `hfp_hf` y `a2dp_sink` (vienen activados por defecto) y, en el teléfono, *Llamadas* y *Audio multimedia* activados para este PC en los ajustes de Bluetooth.
+- **Fotos**: solo del teléfono al PC; las miniaturas se guardan en `~/.cache/kushare/thumbs/` y los originales en *Descargas*. Por Bluetooth una foto de 1 MB tarda unos 25 s.
+- Android no deja a una app cambiar la salida de audio de las demás: desde el PC solo se ve; en el teléfono, *Ajustes → Elegir salida de audio*.
+
 `<dispositivo>` acepta el id, un prefijo del id o el nombre. Todo esto también está en el menú del icono de bandeja (*Dispositivos*). Los subcomandos hablan con el daemon por D-Bus (`org.kushare.Daemon` en el bus de sesión), igual que cualquier otra interfaz que se quiera construir.
 
 ### Cómo funciona

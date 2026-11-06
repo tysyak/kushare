@@ -26,6 +26,12 @@ const MENU_LINK_UNPAIR: &str = "link-unpair:";
 const MENU_LINK_PAIR: &str = "link-pair:";
 const MENU_LINK_SCAN: &str = "link-scan";
 const MENU_LINK_SEND: &str = "link-send:";
+/// `link-media:<acción>|<peer>|<reproductor>` (reproductor vacío = todos).
+const MENU_LINK_MEDIA: &str = "link-media:";
+/// `link-ringer:<modo>|<peer>`.
+const MENU_LINK_RINGER: &str = "link-ringer:";
+/// `link-output:<peer>|<salida>`.
+const MENU_LINK_OUTPUT: &str = "link-output:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -42,6 +48,32 @@ pub enum TrayCommand {
     Scan,
     /// Elegir un archivo y enviarlo a este dispositivo emparejado.
     SendTo(String),
+    /// Orden multimedia: (peer, reproductor o "" = todos, acción
+    /// "play-pause"|"next"|"previous"|"pause").
+    Media {
+        peer: String,
+        player: String,
+        action: String,
+    },
+    /// Modo de timbre: (peer, "normal"|"vibrate"|"silent").
+    Ringer {
+        peer: String,
+        mode: String,
+    },
+    /// Salida de audio del peer.
+    Output {
+        peer: String,
+        output: String,
+    },
+}
+
+/// Un reproductor del peer, para el menú.
+#[derive(Debug, Clone)]
+pub struct PlayerEntry {
+    pub id: String,
+    /// "Spotify — Canción".
+    pub label: String,
+    pub playing: bool,
 }
 
 /// Un dispositivo emparejado, tal como se muestra en el menú.
@@ -54,6 +86,13 @@ pub struct DeviceEntry {
     pub outgoing: bool,
     /// Hay por dónde enviarle archivos (dirección Bluetooth conocida).
     pub can_send_file: bool,
+    /// (porcentaje, cargando), si tiene batería.
+    pub battery: Option<(u32, bool)>,
+    /// "normal" | "vibrate" | "silent", si es un teléfono.
+    pub ringer: Option<String>,
+    pub players: Vec<PlayerEntry>,
+    /// (id, nombre, activa); vacío si no se pueden elegir.
+    pub outputs: Vec<(String, String, bool)>,
 }
 
 /// Icono de bandeja ya registrado; se mantiene vivo mientras este valor no
@@ -151,7 +190,11 @@ fn build_menu(
         } else {
             "desconectado"
         };
-        let sub = Submenu::new(format!("{} ({state})", d.name), true);
+        let battery = d
+            .battery
+            .map(|(p, charging)| format!(" · {p} %{}", if charging { " ⚡" } else { "" }))
+            .unwrap_or_default();
+        let sub = Submenu::new(format!("{} ({state}{battery})", d.name), true);
         sub.append(&CheckMenuItem::with_id(
             format!("{MENU_LINK_IN}{}", d.device_id),
             "Recibir sus notificaciones",
@@ -172,6 +215,7 @@ fn build_menu(
             d.can_send_file,
             None,
         ))?;
+        append_controls(&sub, d)?;
         sub.append(&PredefinedMenuItem::separator())?;
         sub.append(&MenuItem::with_id(
             format!("{MENU_LINK_UNPAIR}{}", d.device_id),
@@ -200,9 +244,104 @@ fn build_menu(
     Ok(menu)
 }
 
+/// Multimedia, timbre y salida de audio del dispositivo (si los tiene).
+fn append_controls(sub: &Submenu, d: &DeviceEntry) -> anyhow::Result<()> {
+    if !d.connected {
+        return Ok(());
+    }
+    let peer = &d.device_id;
+    if !d.players.is_empty() {
+        sub.append(&PredefinedMenuItem::separator())?;
+        let media = Submenu::new("Multimedia", true);
+        for p in &d.players {
+            let player = Submenu::new(
+                format!("{} {}", if p.playing { "▶" } else { "⏸" }, p.label),
+                true,
+            );
+            for (action, label) in [
+                (
+                    "play-pause",
+                    if p.playing { "Pausar" } else { "Reproducir" },
+                ),
+                ("previous", "Anterior"),
+                ("next", "Siguiente"),
+            ] {
+                player.append(&MenuItem::with_id(
+                    format!("{MENU_LINK_MEDIA}{action}|{peer}|{}", p.id),
+                    label,
+                    true,
+                    None,
+                ))?;
+            }
+            media.append(&player)?;
+        }
+        media.append(&PredefinedMenuItem::separator())?;
+        media.append(&MenuItem::with_id(
+            format!("{MENU_LINK_MEDIA}pause|{peer}|"),
+            "Pausar todo",
+            d.players.iter().any(|p| p.playing),
+            None,
+        ))?;
+        sub.append(&media)?;
+    }
+    if !d.outputs.is_empty() {
+        let outputs = Submenu::new("Salida de audio", true);
+        for (id, name, active) in &d.outputs {
+            outputs.append(&CheckMenuItem::with_id(
+                format!("{MENU_LINK_OUTPUT}{peer}|{id}"),
+                name,
+                true,
+                *active,
+                None,
+            ))?;
+        }
+        sub.append(&outputs)?;
+    }
+    if let Some(current) = &d.ringer {
+        let ringer = Submenu::new("Modo de timbre", true);
+        for (mode, label) in [
+            ("normal", "Sonido"),
+            ("vibrate", "Vibración"),
+            ("silent", "Silencio"),
+        ] {
+            ringer.append(&CheckMenuItem::with_id(
+                format!("{MENU_LINK_RINGER}{mode}|{peer}"),
+                label,
+                true,
+                current == mode,
+                None,
+            ))?;
+        }
+        sub.append(&ringer)?;
+    }
+    Ok(())
+}
+
 fn command_for(id: &MenuId) -> Option<TrayCommand> {
     let id = id.0.as_str();
     let arg = |prefix: &str| id.strip_prefix(prefix).map(str::to_string);
+    if let Some(rest) = id.strip_prefix(MENU_LINK_MEDIA) {
+        let mut parts = rest.splitn(3, '|');
+        return Some(TrayCommand::Media {
+            action: parts.next()?.to_string(),
+            peer: parts.next()?.to_string(),
+            player: parts.next()?.to_string(),
+        });
+    }
+    if let Some(rest) = id.strip_prefix(MENU_LINK_RINGER) {
+        let (mode, peer) = rest.split_once('|')?;
+        return Some(TrayCommand::Ringer {
+            peer: peer.to_string(),
+            mode: mode.to_string(),
+        });
+    }
+    if let Some(rest) = id.strip_prefix(MENU_LINK_OUTPUT) {
+        let (peer, output) = rest.split_once('|')?;
+        return Some(TrayCommand::Output {
+            peer: peer.to_string(),
+            output: output.to_string(),
+        });
+    }
     match id {
         MENU_ID_SEND_FILE => Some(TrayCommand::SendFile),
         MENU_ID_TOGGLE_VISIBLE => Some(TrayCommand::ToggleVisible),
@@ -263,6 +402,21 @@ mod tests {
         assert_eq!(
             command_for(&id("link-pair:abc")),
             Some(TrayCommand::Pair("abc".into()))
+        );
+        assert_eq!(
+            command_for(&id("link-media:pause|abc|")),
+            Some(TrayCommand::Media {
+                peer: "abc".into(),
+                player: String::new(),
+                action: "pause".into()
+            })
+        );
+        assert_eq!(
+            command_for(&id("link-output:abc|bluez_output.AA:BB")),
+            Some(TrayCommand::Output {
+                peer: "abc".into(),
+                output: "bluez_output.AA:BB".into()
+            })
         );
         assert_eq!(command_for(&id("otra-cosa")), None);
     }

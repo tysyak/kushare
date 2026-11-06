@@ -40,32 +40,42 @@ pub struct Snapshot {
     /// (id, nombre, dirección)
     pub discovered: Vec<(String, String, String)>,
     pub scanning: bool,
+    /// Estado de las funciones extra de cada peer conectado.
+    pub states: std::collections::HashMap<String, kushare_dbus::PeerStateReply>,
 }
 
 pub async fn snapshot(daemon: DaemonProxy<'static>) -> Result<Snapshot, String> {
     let e = |err: zbus::Error| err.to_string();
+    let peers: Vec<Peer> = daemon
+        .peers()
+        .await
+        .map_err(e)?
+        .into_iter()
+        .map(
+            |(id, name, kind, connected, transport, outgoing, incoming, bt_address)| Peer {
+                id,
+                name,
+                kind,
+                connected,
+                transport,
+                outgoing,
+                incoming,
+                bt_address,
+            },
+        )
+        .collect();
+    let mut states = std::collections::HashMap::new();
+    for p in peers.iter().filter(|p| p.connected) {
+        if let Ok(state) = daemon.peer_state(&p.id).await {
+            states.insert(p.id.clone(), state);
+        }
+    }
     Ok(Snapshot {
+        states,
         device_id: daemon.device_id().await.map_err(e)?,
         device_name: daemon.device_name().await.map_err(e)?,
         link_port: daemon.link_port().await.unwrap_or_default(),
-        peers: daemon
-            .peers()
-            .await
-            .map_err(e)?
-            .into_iter()
-            .map(
-                |(id, name, kind, connected, transport, outgoing, incoming, bt_address)| Peer {
-                    id,
-                    name,
-                    kind,
-                    connected,
-                    transport,
-                    outgoing,
-                    incoming,
-                    bt_address,
-                },
-            )
-            .collect(),
+        peers,
         discovered: daemon.discovered().await.map_err(e)?,
         scanning: daemon.scanning().await.map_err(e)?,
     })
@@ -118,12 +128,20 @@ pub fn events() -> Subscription<Event> {
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     continue;
                 };
-                let (Ok(mut requested), Ok(mut finished), Ok(mut changed), Ok(mut owner)) = (
+                let (
+                    Ok(mut requested),
+                    Ok(mut finished),
+                    Ok(mut changed),
+                    Ok(mut state_changed),
+                    Ok(mut owner),
+                ) = (
                     daemon.receive_pairing_requested().await,
                     daemon.receive_pairing_finished().await,
                     daemon.receive_peers_changed().await,
+                    daemon.receive_peer_state_changed().await,
                     daemon.inner().receive_owner_changed().await,
-                ) else {
+                )
+                else {
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     continue;
                 };
@@ -139,6 +157,7 @@ pub fn events() -> Subscription<Event> {
                             Err(_) => continue,
                         },
                         Some(_) = changed.next() => Event::PeersChanged,
+                        Some(_) = state_changed.next() => Event::PeersChanged,
                         Some(new_owner) = owner.next() => {
                             if new_owner.is_none() {
                                 break; // el daemon se cerró

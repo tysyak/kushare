@@ -4,4 +4,4 @@ pub mod notify;
 pub mod tray;
 
 pub use notify::{MirrorNotification, Notifier, NotifierEvent};
-pub use tray::{DeviceEntry, Tray, TrayCommand};
+pub use tray::{DeviceEntry, PlayerEntry, Tray, TrayCommand};

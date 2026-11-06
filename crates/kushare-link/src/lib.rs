@@ -19,6 +19,8 @@ pub mod pairing;
 pub mod store;
 
 pub use identity::DeviceIdentity;
+/// Mensajes protobuf del enlace (p. ej. [`pb::Feature`]).
+pub use kushare_proto::link as pb;
 pub use manager::{
     ConnectIntent, DialFuture, Dialer, LinkConfig, LinkEvent, LinkManager, LinkStream, LocalDevice,
     NotificationAction, NotificationData, PROTOCOL_VERSION, PeerInfo, RemoteNotification,

@@ -77,61 +77,67 @@ const fn rgb(hex: u32) -> Color {
     )
 }
 
+// Esquema de colores de kushare (ver README del orquestador, "Esquema de
+// colores"): primario violeta #9d06d8 y acento rosa en el terciario. Los
+// roles que la tabla no fija (escalera de contenedores, "on" de secundario
+// y terciario, contorno) son los tonos M3 de la misma paleta. Debe
+// coincidir con `ui/Theme.kt` de kushare-android.
 const LIGHT: Colors = Colors {
-    surface: rgb(0xFAF8FF),
-    container_low: rgb(0xF3F3FC),
-    container: rgb(0xEDEDF7),
-    container_high: rgb(0xE7E7F1),
-    container_highest: rgb(0xE1E2EC),
-    on_surface: rgb(0x1A1B21),
-    on_surface_variant: rgb(0x44464F),
-    outline: rgb(0x757680),
-    primary: rgb(0x2E5BD8),
+    surface: rgb(0xFFF7FE),
+    container_low: rgb(0xFBF0FB),
+    container: rgb(0xF5EAF5),
+    container_high: rgb(0xF0E3F0),
+    container_highest: rgb(0xEBDCEB),
+    on_surface: rgb(0x1E1A1F),
+    on_surface_variant: rgb(0x4C444F),
+    outline: rgb(0x7E7480),
+    primary: rgb(0x9D06D8),
     on_primary: rgb(0xFFFFFF),
-    primary_container: rgb(0xDCE1FF),
-    on_primary_container: rgb(0x001550),
-    secondary: rgb(0x575E71),
+    primary_container: rgb(0xF5D9FF),
+    on_primary_container: rgb(0x320046),
+    secondary: rgb(0x714D7A),
     on_secondary: rgb(0xFFFFFF),
-    secondary_container: rgb(0xDBE2F9),
-    on_secondary_container: rgb(0x141B2C),
-    tertiary: rgb(0x8B4A8E),
+    secondary_container: rgb(0xF9D8FF),
+    on_secondary_container: rgb(0x2A0A33),
+    tertiary: rgb(0x854A63),
     on_tertiary: rgb(0xFFFFFF),
-    tertiary_container: rgb(0xFFD6FB),
-    on_tertiary_container: rgb(0x380B3D),
+    tertiary_container: rgb(0xFFD9E5),
+    on_tertiary_container: rgb(0x360620),
     error: rgb(0xBA1A1A),
 };
 
 const DARK: Colors = Colors {
-    surface: rgb(0x121318),
-    container_low: rgb(0x1A1B21),
-    container: rgb(0x1E1F25),
-    container_high: rgb(0x292A2F),
-    container_highest: rgb(0x34343A),
-    on_surface: rgb(0xE3E2E9),
-    on_surface_variant: rgb(0xC5C6D0),
-    outline: rgb(0x8F909A),
-    primary: rgb(0xB6C4FF),
-    on_primary: rgb(0x002780),
-    primary_container: rgb(0x1240B0),
-    on_primary_container: rgb(0xDCE1FF),
-    secondary: rgb(0xBFC6DC),
-    on_secondary: rgb(0x293041),
-    secondary_container: rgb(0x3F4759),
-    on_secondary_container: rgb(0xDBE2F9),
-    tertiary: rgb(0xFFA9FE),
-    on_tertiary: rgb(0x55195B),
-    tertiary_container: rgb(0x703374),
-    on_tertiary_container: rgb(0xFFD6FB),
+    surface: rgb(0x151217),
+    container_low: rgb(0x1E1A1F),
+    container: rgb(0x231F24),
+    container_high: rgb(0x2D292F),
+    container_highest: rgb(0x38333A),
+    on_surface: rgb(0xE8E0E8),
+    on_surface_variant: rgb(0xCDC3CE),
+    outline: rgb(0x968E98),
+    primary: rgb(0xE4B5FF),
+    on_primary: rgb(0x540078),
+    primary_container: rgb(0x7800AA),
+    on_primary_container: rgb(0xF5D9FF),
+    secondary: rgb(0xDFBCE6),
+    on_secondary: rgb(0x402849),
+    secondary_container: rgb(0x583E61),
+    on_secondary_container: rgb(0xF9D8FF),
+    tertiary: rgb(0xF9B1CD),
+    on_tertiary: rgb(0x501D35),
+    tertiary_container: rgb(0x6A334B),
+    on_tertiary_container: rgb(0xFFD9E5),
     error: rgb(0xFFB4AB),
 };
 
-/// OLED: superficie negro puro y contenedores en una escalera de casi-negros.
+/// OLED: superficie negro puro y contenedores en una escalera de casi-negros
+/// alrededor del "surface variant" #121013 del esquema (igual que Android).
 const OLED: Colors = Colors {
     surface: Color::BLACK,
-    container_low: rgb(0x0A0A0C),
-    container: rgb(0x101013),
-    container_high: rgb(0x17171B),
-    container_highest: rgb(0x1F1F24),
+    container_low: rgb(0x0A090B),
+    container: rgb(0x0F0D10),
+    container_high: rgb(0x151316),
+    container_highest: rgb(0x1C191D),
     ..DARK
 };
 

@@ -94,9 +94,23 @@ impl GuiConfig {
 enum Screen {
     Home,
     Devices,
+    Phone,
+    Photos,
     Send,
     Settings,
 }
+
+/// Galería del teléfono cargada por páginas.
+#[derive(Debug, Clone, Default)]
+struct Gallery {
+    peer: String,
+    total: u32,
+    photos: Vec<kushare_dbus::PhotoRow>,
+    loading: bool,
+    error: Option<String>,
+}
+
+const PHOTO_PAGE: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DaemonState {
@@ -135,6 +149,7 @@ struct App {
     angle: f32,
     /// Informe de `kushare doctor` (None: no se ha pedido; Some(""): en curso).
     doctor: Option<String>,
+    gallery: Gallery,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +201,42 @@ enum Message {
     RunDoctor,
     DoctorDone(String),
     CloseDoctor,
+    // teléfono
+    Media {
+        peer: String,
+        player: String,
+        action: &'static str,
+    },
+    SetOutput {
+        peer: String,
+        output: String,
+    },
+    SetRinger {
+        peer: String,
+        mode: &'static str,
+    },
+    CallCommand {
+        peer: String,
+        action: &'static str,
+    },
+    PhoneAudio {
+        peer: String,
+        enable: bool,
+    },
+    // fotos
+    LoadPhotos {
+        peer: String,
+        more: bool,
+    },
+    PhotosLoaded {
+        peer: String,
+        result: Result<(u32, Vec<kushare_dbus::PhotoRow>), String>,
+    },
+    FetchPhoto {
+        peer: String,
+        id: String,
+    },
+    PhotoFetched(Result<String, String>),
 }
 
 impl App {
@@ -204,6 +255,7 @@ impl App {
             toast: None,
             angle: 0.0,
             doctor: None,
+            gallery: Gallery::default(),
         };
         let tasks = Task::batch([
             iced::system::theme().map(Message::SystemTheme),
@@ -333,6 +385,14 @@ impl App {
             }
             Message::Navigate(screen) => {
                 self.screen = screen;
+                if screen == Screen::Photos
+                    && self.gallery.photos.is_empty()
+                    && !self.gallery.loading
+                    && let Some(peer) = self.phone_peers().first()
+                {
+                    let peer = peer.id.clone();
+                    return Task::done(Message::LoadPhotos { peer, more: false });
+                }
                 if screen == Screen::Devices {
                     return Task::batch([
                         self.refresh(),
@@ -515,6 +575,101 @@ impl App {
                 self.doctor = None;
                 Task::none()
             }
+            Message::Media {
+                peer,
+                player,
+                action,
+            } => self.call("", move |d| async move {
+                d.media_command(&peer, &player, action).await
+            }),
+            Message::SetOutput { peer, output } => self.call("", move |d| async move {
+                d.set_audio_output(&peer, &output).await
+            }),
+            Message::SetRinger { peer, mode } => {
+                self.call("", move |d| async move { d.set_ringer(&peer, mode).await })
+            }
+            Message::CallCommand { peer, action } => {
+                self.call(
+                    "",
+                    move |d| async move { d.call_command(&peer, action).await },
+                )
+            }
+            Message::PhoneAudio { peer, enable } => {
+                let Some(d) = self.daemon.clone() else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        d.phone_audio(&peer, enable)
+                            .await
+                            .map(|p| {
+                                if enable {
+                                    format!("Audio del teléfono en el PC: {}", p.join(" y "))
+                                } else {
+                                    "Audio devuelto al teléfono".to_string()
+                                }
+                            })
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::Done,
+                )
+            }
+            Message::LoadPhotos { peer, more } => {
+                let Some(d) = self.daemon.clone() else {
+                    return Task::none();
+                };
+                if !more || self.gallery.peer != peer {
+                    self.gallery = Gallery {
+                        peer: peer.clone(),
+                        ..Default::default()
+                    };
+                }
+                self.gallery.loading = true;
+                let offset = self.gallery.photos.len() as u32;
+                Task::perform(
+                    async move {
+                        let result = d
+                            .photos(&peer, offset, PHOTO_PAGE)
+                            .await
+                            .map_err(|e| e.to_string());
+                        (peer, result)
+                    },
+                    |(peer, result)| Message::PhotosLoaded { peer, result },
+                )
+            }
+            Message::PhotosLoaded { peer, result } => {
+                if self.gallery.peer == peer {
+                    self.gallery.loading = false;
+                    match result {
+                        Ok((total, photos)) => {
+                            self.gallery.total = total;
+                            self.gallery.photos.extend(photos);
+                            self.gallery.error = None;
+                        }
+                        Err(err) => self.gallery.error = Some(err),
+                    }
+                }
+                Task::none()
+            }
+            Message::FetchPhoto { peer, id } => {
+                let Some(d) = self.daemon.clone() else {
+                    return Task::none();
+                };
+                self.toast = Some("Descargando la foto…".into());
+                Task::perform(
+                    async move { d.fetch_photo(&peer, &id).await.map_err(|e| e.to_string()) },
+                    Message::PhotoFetched,
+                )
+            }
+            Message::PhotoFetched(Ok(path)) => {
+                let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+                self.toast = Some(format!("Guardada en {path}"));
+                Task::none()
+            }
+            Message::PhotoFetched(Err(err)) => {
+                self.toast = Some(err);
+                Task::none()
+            }
         }
     }
 
@@ -525,6 +680,8 @@ impl App {
         let content: Element<'_, Message> = match self.screen {
             Screen::Home => self.home(c),
             Screen::Devices => self.devices(c),
+            Screen::Phone => self.phone(c),
+            Screen::Photos => self.photos(c),
             Screen::Send => self.send(c),
             Screen::Settings => self.settings(c),
         };
@@ -593,6 +750,8 @@ impl App {
                 space().height(16),
                 item(Icon::Home, "Inicio", Screen::Home),
                 item(Icon::Devices, "Dispositivos", Screen::Devices),
+                item(Icon::Phone, "Teléfono", Screen::Phone),
+                item(Icon::Photo, "Fotos", Screen::Photos),
                 item(Icon::Send, "Enviar", Screen::Send),
                 item(Icon::Settings, "Ajustes", Screen::Settings),
             ]
@@ -1093,6 +1252,473 @@ impl App {
         .padding(26)
         .width(Length::Fill)
         .style(style::card(bg, fg, Shape::Hero))
+        .into()
+    }
+
+    /// Peers conectados que son teléfonos (con funciones de teléfono).
+    fn phone_peers(&self) -> Vec<&Peer> {
+        self.snapshot
+            .peers
+            .iter()
+            .filter(|p| p.connected && p.kind == "android")
+            .collect()
+    }
+
+    fn empty_phone<'a>(&self, c: Colors, what: &'a str) -> Element<'a, Message> {
+        container(
+            column![
+                shape_icon(
+                    Icon::Phone,
+                    Blob::Circle,
+                    c.container_highest,
+                    c.on_surface_variant,
+                    72.0,
+                    0.0
+                ),
+                text("Ningún teléfono conectado").size(22).font(EXTRA_BOLD),
+                text(what).size(14).color(c.on_surface_variant),
+            ]
+            .spacing(10)
+            .align_x(Alignment::Center),
+        )
+        .padding(40)
+        .width(Length::Fill)
+        .center_x(Length::Fill)
+        .style(style::card(c.container_high, c.on_surface, Shape::Hero))
+        .into()
+    }
+
+    fn icon_button<'a>(
+        &self,
+        c: Colors,
+        icon: Icon,
+        kind: ButtonKind,
+        msg: Option<Message>,
+    ) -> Element<'a, Message> {
+        let fg = match kind {
+            ButtonKind::Filled => c.on_primary,
+            _ => c.on_secondary_container,
+        };
+        button(icon.view(22.0, fg))
+            .padding(10)
+            .style(style::button(c, kind))
+            .on_press_maybe(msg)
+            .into()
+    }
+
+    fn phone(&self, c: Colors) -> Element<'_, Message> {
+        let phones = self.phone_peers();
+        let mut col = column![self.title(
+            c,
+            "Teléfono",
+            "Batería, timbre, llamadas, multimedia y audio".into()
+        )]
+        .spacing(16);
+        if phones.is_empty() {
+            return col
+                .push(self.empty_phone(c, "Conéctalo en Dispositivos para controlarlo desde aquí."))
+                .into();
+        }
+        for p in phones {
+            col = col.push(self.phone_card(c, p));
+        }
+        col.into()
+    }
+
+    fn phone_card<'a>(&'a self, c: Colors, p: &'a Peer) -> Element<'a, Message> {
+        let Some((battery, ringer, call, players, selectable, outputs)) =
+            self.snapshot.states.get(&p.id)
+        else {
+            return text("Cargando…").into();
+        };
+        let peer = p.id.clone();
+        // Cabecera: nombre y batería.
+        let battery_text = if battery.0 {
+            format!(
+                "{} %{}",
+                battery.1,
+                if battery.2 { " · cargando" } else { "" }
+            )
+        } else {
+            "batería desconocida".into()
+        };
+        let low = battery.0 && battery.1 <= 15 && !battery.2;
+        let header = row![
+            shape_icon(
+                Icon::Battery,
+                Blob::Cookie9,
+                if low { c.error } else { c.primary },
+                c.on_primary,
+                64.0,
+                0.0
+            ),
+            column![
+                text(&p.name).size(26).font(EXTRA_BOLD),
+                text(battery_text).size(15),
+            ]
+            .width(Length::Fill),
+        ]
+        .spacing(18)
+        .align_y(Alignment::Center);
+
+        let mut body = column![header].spacing(14);
+
+        // Llamada en curso.
+        if call.0 != "idle" {
+            let who = if call.2.is_empty() {
+                call.1.clone()
+            } else {
+                call.2.clone()
+            };
+            let label = match call.0.as_str() {
+                "ringing" => format!("Llamada entrante: {who}"),
+                "dialing" => format!("Llamando a {who}…"),
+                _ => format!("En llamada con {who}"),
+            };
+            let mut buttons = row![].spacing(10);
+            if call.0 == "ringing" {
+                buttons = buttons.push(
+                    button(text("Contestar").font(SEMIBOLD))
+                        .padding(Padding::from([9, 18]))
+                        .style(style::button(c, ButtonKind::Filled))
+                        .on_press(Message::CallCommand {
+                            peer: peer.clone(),
+                            action: "answer",
+                        }),
+                );
+                buttons = buttons.push(
+                    button(text("Rechazar").font(SEMIBOLD))
+                        .padding(Padding::from([9, 18]))
+                        .style(style::button(c, ButtonKind::Tonal))
+                        .on_press(Message::CallCommand {
+                            peer: peer.clone(),
+                            action: "reject",
+                        }),
+                );
+            } else {
+                buttons = buttons.push(
+                    button(text("Colgar").font(SEMIBOLD))
+                        .padding(Padding::from([9, 18]))
+                        .style(style::button(c, ButtonKind::Filled))
+                        .on_press(Message::CallCommand {
+                            peer: peer.clone(),
+                            action: "hangup",
+                        }),
+                );
+                buttons = buttons.push(
+                    button(
+                        text(if call.3 {
+                            "Activar micrófono"
+                        } else {
+                            "Silenciar micrófono"
+                        })
+                        .font(SEMIBOLD),
+                    )
+                    .padding(Padding::from([9, 18]))
+                    .style(style::button(c, ButtonKind::Tonal))
+                    .on_press(Message::CallCommand {
+                        peer: peer.clone(),
+                        action: if call.3 { "unmute" } else { "mute" },
+                    }),
+                );
+            }
+            body = body.push(
+                container(
+                    column![
+                        row![
+                            Icon::Phone.view(20.0, c.on_tertiary_container),
+                            text(label).size(18).font(BOLD)
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                        buttons
+                    ]
+                    .spacing(10),
+                )
+                .padding(18)
+                .width(Length::Fill)
+                .style(style::card(
+                    c.tertiary_container,
+                    c.on_tertiary_container,
+                    Shape::List,
+                )),
+            );
+        }
+
+        // Modo de timbre (grupo de botones conectados).
+        if !ringer.is_empty() {
+            let modes = [
+                ("normal", "Sonido"),
+                ("vibrate", "Vibración"),
+                ("silent", "Silencio"),
+            ];
+            let mut seg = row![].spacing(2);
+            for (i, (mode, label)) in modes.iter().enumerate() {
+                seg = seg.push(
+                    button(text(*label).font(SEMIBOLD))
+                        .padding(Padding::from([9, 18]))
+                        .style(style::button(
+                            c,
+                            ButtonKind::Segment {
+                                selected: ringer == mode,
+                                first: i == 0,
+                                last: i == modes.len() - 1,
+                            },
+                        ))
+                        .on_press(Message::SetRinger {
+                            peer: peer.clone(),
+                            mode,
+                        }),
+                );
+            }
+            body = body.push(self.section(c, "Modo de timbre")).push(seg);
+        }
+
+        // Reproductores.
+        body = body.push(
+            row![
+                self.section(c, "Multimedia"),
+                space().width(Length::Fill),
+                button(text("Pausar todo").font(SEMIBOLD))
+                    .padding(Padding::from([7, 16]))
+                    .style(style::button(c, ButtonKind::Outlined))
+                    .on_press_maybe(players.iter().any(|p| p.5 == "playing").then(|| {
+                        Message::Media {
+                            peer: peer.clone(),
+                            player: String::new(),
+                            action: "pause",
+                        }
+                    })),
+            ]
+            .align_y(Alignment::Center),
+        );
+        if players.is_empty() {
+            body = body.push(
+                text("No hay nada reproduciéndose")
+                    .size(14)
+                    .color(c.on_surface_variant),
+            );
+        }
+        for pl in players {
+            let playing = pl.5 == "playing";
+            let media = |action: &'static str| Message::Media {
+                peer: peer.clone(),
+                player: pl.0.clone(),
+                action,
+            };
+            let what = [pl.2.as_str(), pl.3.as_str()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" — ");
+            body = body.push(
+                container(
+                    row![
+                        column![
+                            text(&pl.1).size(13).color(c.on_surface_variant),
+                            text(if what.is_empty() {
+                                "—".to_string()
+                            } else {
+                                what
+                            })
+                            .size(17)
+                            .font(SEMIBOLD),
+                        ]
+                        .width(Length::Fill),
+                        self.icon_button(
+                            c,
+                            Icon::Previous,
+                            ButtonKind::Tonal,
+                            pl.9.then(|| media("previous"))
+                        ),
+                        self.icon_button(
+                            c,
+                            if playing { Icon::Pause } else { Icon::Play },
+                            ButtonKind::Filled,
+                            Some(media("play-pause")),
+                        ),
+                        self.icon_button(
+                            c,
+                            Icon::Next,
+                            ButtonKind::Tonal,
+                            pl.8.then(|| media("next"))
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .padding(Padding::from([12, 18]))
+                .width(Length::Fill)
+                .style(style::card(c.container_highest, c.on_surface, Shape::List)),
+            );
+        }
+
+        // Audio del teléfono en el PC (Bluetooth A2DP + HFP).
+        if !p.bt_address.is_empty() {
+            body =
+                body.push(self.section(c, "Audio del teléfono en el PC"))
+                    .push(
+                        row![
+                    text("Oye aquí su música y sus llamadas, y habla con el micrófono del PC.")
+                        .size(14)
+                        .color(c.on_surface_variant)
+                        .width(Length::Fill),
+                    button(text("Escuchar aquí").font(SEMIBOLD))
+                        .padding(Padding::from([9, 18]))
+                        .style(style::button(c, ButtonKind::Tonal))
+                        .on_press(Message::PhoneAudio { peer: peer.clone(), enable: true }),
+                    button(text("Devolver"))
+                        .style(style::button(c, ButtonKind::Text))
+                        .on_press(Message::PhoneAudio { peer: peer.clone(), enable: false }),
+                ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    );
+        }
+
+        // Salidas de audio del teléfono (informativo si no se pueden elegir).
+        if !outputs.is_empty() {
+            body = body.push(self.section(c, "Salida de audio"));
+            for (id, name, active) in outputs {
+                let msg = (*selectable && !active).then(|| Message::SetOutput {
+                    peer: peer.clone(),
+                    output: id.clone(),
+                });
+                body = body.push(
+                    button(
+                        row![
+                            Icon::Volume.view(
+                                18.0,
+                                if *active {
+                                    c.primary
+                                } else {
+                                    c.on_surface_variant
+                                }
+                            ),
+                            text(name)
+                                .size(15)
+                                .font(if *active { BOLD } else { Font::DEFAULT }),
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding(Padding::from([8, 14]))
+                    .width(Length::Fill)
+                    .style(style::button(c, ButtonKind::Text))
+                    .on_press_maybe(msg),
+                );
+            }
+            if !selectable {
+                body = body.push(
+                    text("Android no deja a otras apps cambiar la salida: elígela en el teléfono.")
+                        .size(13)
+                        .color(c.on_surface_variant),
+                );
+            }
+        }
+
+        container(body)
+            .padding(26)
+            .width(Length::Fill)
+            .style(style::card(c.container_high, c.on_surface, Shape::Hero))
+            .into()
+    }
+
+    fn photos(&self, c: Colors) -> Element<'_, Message> {
+        let phones = self.phone_peers();
+        let g = &self.gallery;
+        let subtitle = if g.total > 0 {
+            format!(
+                "{} de {} fotos · pulsa una para descargarla",
+                g.photos.len(),
+                g.total
+            )
+        } else {
+            "Las fotos de la galería del teléfono".into()
+        };
+        let mut col = column![self.title(c, "Fotos", subtitle)].spacing(16);
+        let Some(phone) = phones.iter().find(|p| p.id == g.peer).or(phones.first()) else {
+            return col
+                .push(self.empty_phone(c, "Conéctalo en Dispositivos para ver sus fotos."))
+                .into();
+        };
+        if g.peer != phone.id && !g.loading {
+            col = col.push(
+                button(text(format!("Ver las fotos de {}", phone.name)).font(SEMIBOLD))
+                    .padding(Padding::from([10, 22]))
+                    .style(style::button(c, ButtonKind::Filled))
+                    .on_press(Message::LoadPhotos {
+                        peer: phone.id.clone(),
+                        more: false,
+                    }),
+            );
+            return col.into();
+        }
+        if let Some(err) = &g.error {
+            col = col.push(text(err).color(c.error));
+        }
+        const COLUMNS: usize = 5;
+        for chunk in g.photos.chunks(COLUMNS) {
+            let mut r = row![].spacing(10);
+            for (id, _name, _date, _w, _h, _size, thumb) in chunk {
+                r = r.push(
+                    button(
+                        iced::widget::image(iced::widget::image::Handle::from_path(thumb))
+                            .width(Length::Fill)
+                            .height(Length::Fixed(150.0))
+                            .content_fit(iced::ContentFit::Cover),
+                    )
+                    .padding(0)
+                    .width(Length::FillPortion(1))
+                    .style(style::button(
+                        c,
+                        ButtonKind::Card {
+                            bg: c.container_high,
+                            fg: c.on_surface,
+                            shape: Shape::List,
+                        },
+                    ))
+                    .on_press(Message::FetchPhoto {
+                        peer: g.peer.clone(),
+                        id: id.clone(),
+                    }),
+                );
+            }
+            for _ in chunk.len()..COLUMNS {
+                r = r.push(space().width(Length::FillPortion(1)));
+            }
+            col = col.push(r);
+        }
+        let more: Element<'_, Message> = if g.loading {
+            text("Cargando…").color(c.on_surface_variant).into()
+        } else if (g.photos.len() as u32) < g.total {
+            button(text("Cargar más").font(SEMIBOLD))
+                .padding(Padding::from([10, 22]))
+                .style(style::button(c, ButtonKind::Tonal))
+                .on_press(Message::LoadPhotos {
+                    peer: g.peer.clone(),
+                    more: true,
+                })
+                .into()
+        } else {
+            space().into()
+        };
+        col.push(
+            row![
+                more,
+                space().width(Length::Fill),
+                button(text("Recargar"))
+                    .style(style::button(c, ButtonKind::Text))
+                    .on_press(Message::LoadPhotos {
+                        peer: g.peer.clone(),
+                        more: false
+                    }),
+                button(text("Abrir Descargas"))
+                    .style(style::button(c, ButtonKind::Text))
+                    .on_press(Message::OpenDownloads),
+            ]
+            .align_y(Alignment::Center),
+        )
         .into()
     }
 

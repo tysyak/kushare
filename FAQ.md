@@ -145,3 +145,22 @@ En el PC: `kushare devices` debe mostrarlo *conectado* y con *recibir: sí*.
 - Borrar la identidad y todos los emparejados del PC: cierra el daemon y
   borra `~/.config/kushare/` (`identity.key`, `peers.toml`). Los dispositivos
   tendrán que volver a emparejarse.
+
+## No oigo en el PC la música o las llamadas del teléfono
+
+`kushare phone-audio <dispositivo> on` (o *Teléfono → Escuchar aquí* en la
+GUI) conecta los perfiles Bluetooth de audio del teléfono. Si responde solo
+"llamadas", o falla:
+
+- En el teléfono: *Ajustes → Bluetooth →* tu PC *→* activa **Audio
+  multimedia** y **Llamadas**.
+- En el PC, WirePlumber debe tener los roles `a2dp_sink` y `hfp_hf` (vienen
+  por defecto; revisa `~/.config/wireplumber/wireplumber.conf.d/` si los
+  cambiaste).
+- El enlace tiene que conocer la dirección Bluetooth del teléfono: empareja
+  kushare por Bluetooth al menos una vez.
+
+## El PC no puede contestar llamadas, ver fotos o poner el teléfono en silencio
+
+Son permisos opcionales del teléfono: en kushare, *Ajustes → Funciones del
+teléfono*, concede **Llamadas**, **Fotos** y **No molestar**.

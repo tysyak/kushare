@@ -6,6 +6,42 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.3.0] - 2026-11-06
+
+### Añadido
+- **Batería**: la del teléfono se ve en la bandeja, la GUI y `kushare status`,
+  con aviso al bajar del 15 %; la del portátil se manda al teléfono (en un
+  sobremesa no se manda nada).
+- **Multimedia**: los reproductores del teléfono (sesiones de Android:
+  YouTube, TIDAL, Spotify…) se controlan desde el PC, y los del PC (MPRIS:
+  mpd, navegadores, clientes de música…) desde el teléfono; anterior,
+  reproducir/pausar, siguiente y *Pausar todo*.
+- **Salida de audio**: el teléfono ve y elige la salida del PC
+  (PipeWire/PulseAudio vía `pactl`, mueve también lo que ya suena); el PC ve
+  la salida del teléfono.
+- **Modo de timbre** del teléfono (sonido, vibración, silencio) desde el PC.
+- **Llamadas**: aviso de llamada entrante con *Contestar*/*Rechazar*, y
+  *Colgar*/*Silenciar micrófono* durante la llamada; **audio del teléfono en
+  el PC** (Bluetooth HFP + A2DP: el PC hace de manos libres y de altavoz).
+- **Fotos**: galería del teléfono en la GUI (miniaturas por páginas) y
+  descarga del original a *Descargas*; también `kushare photos`.
+- GUI: páginas *Teléfono* y *Fotos*. Bandeja: batería, multimedia, salida de
+  audio y timbre por dispositivo.
+- CLI: `status`, `media`, `audio`, `ringer`, `call`, `phone-audio`, `photos`.
+- API D-Bus: `PeerState`, `MediaCommand`, `SetAudioOutput`, `SetRinger`,
+  `CallCommand`, `PhoneAudio`, `Photos`, `FetchPhoto` y la señal
+  `PeerStateChanged`.
+- Protocolo: mensaje `Feature` en `kushare_link.proto` (compatible: los
+  peers antiguos lo ignoran).
+
+### Cambiado
+- **Esquema de colores** violeta (#9d06d8) con acento rosa, igual en la GUI y
+  en Android; OLED con negro puro.
+- **Icono de bandeja** propio (el mismo dibujo que el de la app Android), en
+  vez del cuadrado azul provisional.
+- Los dispositivos también se pueden indicar con una parte del nombre
+  (`kushare status armor`).
+
 ## [0.2.0] - 2026-11-05
 
 ### Añadido
@@ -64,6 +100,7 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
   mDNS y BLE, icono de bandeja con notificaciones D-Bus, `kushare-tui` y
   empaquetado para Arch, Debian y Fedora vía podman.
 
-[Sin publicar]: https://github.com/tysyak/kushare/compare/v0.2.0...HEAD
+[Sin publicar]: https://github.com/tysyak/kushare/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tysyak/kushare/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tysyak/kushare/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tysyak/kushare/commit/cc5ac03

@@ -28,6 +28,9 @@ message LinkFrame {
     InvokeAction invoke_action = 12;
     Reply reply = 13;
     Ready ready = 14;
+    // Funciones extra (batería, multimedia, audio, timbre, fotos, llamadas).
+    // El enlace solo las transporta; cada plataforma las interpreta.
+    Feature feature = 15;
   }
 }
 
@@ -151,4 +154,180 @@ message Reply {
   string key = 1;
   string action_id = 2;
   string text = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Funciones extra. Solo entre peers emparejados y autenticados; no dependen
+// de la configuración de notificaciones. Los mensajes de "estado" se mandan
+// completos (no deltas) al conectar y cada vez que cambian.
+// ---------------------------------------------------------------------------
+
+message Feature {
+  oneof kind {
+    BatteryStatus battery = 1;
+    MediaPlayers media_players = 2;
+    MediaCommand media_command = 3;
+    AudioOutputs audio_outputs = 4;
+    SetAudioOutput set_audio_output = 5;
+    RingerMode ringer_mode = 6;
+    SetRingerMode set_ringer_mode = 7;
+    PhotoListRequest photo_list_request = 8;
+    PhotoList photo_list = 9;
+    PhotoRequest photo_request = 10;
+    PhotoData photo_data = 11;
+    CallState call_state = 12;
+    CallCommand call_command = 13;
+  }
+}
+
+// Batería del emisor. `present = false`: no tiene batería (PC de
+// sobremesa); el receptor no muestra nada.
+message BatteryStatus {
+  bool present = 1;
+  uint32 percent = 2;
+  bool charging = 3;
+}
+
+enum PlaybackState {
+  PLAYBACK_STOPPED = 0;
+  PLAYBACK_PLAYING = 1;
+  PLAYBACK_PAUSED = 2;
+}
+
+message MediaPlayer {
+  // Identificador estable en el emisor (nombre D-Bus MPRIS, paquete
+  // Android + sesión).
+  string id = 1;
+  // Nombre legible del reproductor ("Spotify", "mpd", "YouTube"…).
+  string name = 2;
+  string title = 3;
+  string artist = 4;
+  string album = 5;
+  PlaybackState state = 6;
+  bool can_play = 7;
+  bool can_pause = 8;
+  bool can_next = 9;
+  bool can_previous = 10;
+}
+
+// Lista completa de reproductores del emisor.
+message MediaPlayers {
+  repeated MediaPlayer players = 1;
+}
+
+enum MediaAction {
+  MEDIA_PLAY_PAUSE = 0;
+  MEDIA_PLAY = 1;
+  MEDIA_PAUSE = 2;
+  MEDIA_NEXT = 3;
+  MEDIA_PREVIOUS = 4;
+  MEDIA_STOP = 5;
+}
+
+// `player_id` vacío = todos los reproductores ("pausar todo").
+message MediaCommand {
+  string player_id = 1;
+  MediaAction action = 2;
+}
+
+message AudioOutput {
+  string id = 1;
+  string name = 2;
+  // Es la salida que usa ahora el sistema (por defecto / activa).
+  bool active = 3;
+}
+
+message AudioOutputs {
+  repeated AudioOutput outputs = 1;
+  // El receptor puede pedir cambiarla con `SetAudioOutput`.
+  bool selectable = 2;
+}
+
+message SetAudioOutput {
+  string id = 1;
+}
+
+enum Ringer {
+  RINGER_NORMAL = 0;
+  RINGER_VIBRATE = 1;
+  RINGER_SILENT = 2;
+}
+
+// Modo de timbre del emisor (solo lo manda Android).
+message RingerMode {
+  Ringer mode = 1;
+}
+
+message SetRingerMode {
+  Ringer mode = 1;
+}
+
+// Pide una página de la galería (más reciente primero). La respuesta
+// lleva el mismo `request_id`.
+message PhotoListRequest {
+  uint64 request_id = 1;
+  uint32 offset = 2;
+  uint32 limit = 3;
+}
+
+message PhotoInfo {
+  string id = 1;
+  string name = 2;
+  int64 date_ms = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  uint64 size = 6;
+  // Miniatura JPEG pequeña (~200 px).
+  bytes thumbnail = 7;
+}
+
+message PhotoList {
+  uint64 request_id = 1;
+  uint32 total = 2;
+  repeated PhotoInfo photos = 3;
+}
+
+// Pide la foto original; se responde con uno o varios `PhotoData`.
+message PhotoRequest {
+  uint64 request_id = 1;
+  string id = 2;
+}
+
+// Trozo de la foto original (`offset` en bytes). `last` cierra la
+// respuesta; `error` no vacío = no se pudo leer.
+message PhotoData {
+  uint64 request_id = 1;
+  string id = 2;
+  string name = 3;
+  uint64 offset = 4;
+  bytes data = 5;
+  bool last = 6;
+  string error = 7;
+}
+
+enum CallPhase {
+  CALL_IDLE = 0;
+  CALL_RINGING = 1;
+  CALL_ACTIVE = 2;
+  CALL_DIALING = 3;
+}
+
+message CallState {
+  CallPhase phase = 1;
+  string number = 2;
+  // Nombre del contacto si se conoce.
+  string name = 3;
+  bool muted = 4;
+}
+
+enum CallAction {
+  CALL_ANSWER = 0;
+  CALL_REJECT = 1;
+  CALL_HANGUP = 2;
+  CALL_MUTE = 3;
+  CALL_UNMUTE = 4;
+}
+
+message CallCommand {
+  CallAction action = 1;
 }
