@@ -220,6 +220,8 @@ impl Features {
                 self.on_photo_data(data);
                 return None;
             }
+            // Lo anuncia la señal D-Bus `PhotosChanged` (ver dbus.rs).
+            F::PhotosChanged(_) => return None,
             // Solo tienen sentido hacia un teléfono.
             F::SetRingerMode(_)
             | F::CallCommand(_)
@@ -763,6 +765,15 @@ async fn mpris_command(conn: &zbus::Connection, cmd: &pb::MediaCommand) -> zbus:
 fn pactl() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("pactl");
     cmd.env("LC_ALL", "C").kill_on_drop(true);
+    // Que muera con el daemon: `kushare quit` sale con `process::exit` y
+    // `kill_on_drop` no llega a actuar (quedaban `pactl subscribe` huérfanos).
+    // SAFETY: prctl es async-signal-safe y no toca memoria del proceso padre.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
     cmd
 }
 
@@ -814,11 +825,23 @@ async fn pactl_outputs() -> Option<pb::AudioOutputs> {
 }
 
 /// Extrae (Name, Description) de `pactl list sinks` (con `LC_ALL=C`).
+/// Omite las salidas cuyo puerto activo no está disponible (p. ej. un HDMI
+/// sin nada enchufado): WirePlumber no deja ponerlas por defecto.
 fn parse_sinks(listing: &str, default: &str) -> Vec<pb::AudioOutput> {
     let mut outputs: Vec<pb::AudioOutput> = Vec::new();
+    let mut unavailable_ports: Vec<String> = Vec::new();
+    let mut usable = true;
+    let flush = |outputs: &mut Vec<pb::AudioOutput>, usable: bool| {
+        if !usable {
+            outputs.pop();
+        }
+    };
     for line in listing.lines() {
         let line = line.trim();
         if let Some(name) = line.strip_prefix("Name: ") {
+            flush(&mut outputs, usable);
+            usable = true;
+            unavailable_ports.clear();
             outputs.push(pb::AudioOutput {
                 id: name.to_string(),
                 name: name.to_string(),
@@ -828,8 +851,20 @@ fn parse_sinks(listing: &str, default: &str) -> Vec<pb::AudioOutput> {
             && let Some(last) = outputs.last_mut()
         {
             last.name = desc.to_string();
+        } else if let Some(port) = line.strip_prefix("[Out] ")
+            && line.contains("not available")
+        {
+            if let Some((port, _)) = port.split_once(':') {
+                unavailable_ports.push(port.to_string());
+            }
+        } else if let Some(active) = line.strip_prefix("Active Port: ") {
+            let active = active.trim_start_matches("[Out] ");
+            if unavailable_ports.iter().any(|p| p == active) {
+                usable = false;
+            }
         }
     }
+    flush(&mut outputs, usable);
     outputs
 }
 
@@ -841,6 +876,14 @@ async fn pactl_set_output(id: &str) -> anyhow::Result<()> {
     let status = pactl().args(["set-default-sink", id]).status().await?;
     if !status.success() {
         anyhow::bail!("pactl set-default-sink falló");
+    }
+    // pactl responde bien aunque el gestor de sesión (WirePlumber) rechace
+    // el cambio: comprobarlo.
+    let now = pactl_output(&["get-default-sink"])
+        .await
+        .unwrap_or_default();
+    if now.trim() != id {
+        anyhow::bail!("el servidor de audio no aceptó la salida (¿no está disponible?)");
     }
     // Mover también lo que ya está sonando.
     if let Some(inputs) = pactl_output(&["list", "short", "sink-inputs"]).await {
@@ -910,6 +953,10 @@ mod tests {
         assert_eq!(outs[0].name, "Audio interno");
         assert!(!outs[0].active);
         assert!(outs[1].active);
+        let hdmi = "Sink #1\n\tName: hdmi\n\tDescription: HDMI\n\tPorts:\n\t\t[Out] HDMI1: HDMI 1 (type: HDMI, priority: 500, not available)\n\tActive Port: [Out] HDMI1\nSink #2\n\tName: spk\n\tDescription: Altavoz\n\tActive Port: [Out] Speaker\n";
+        let outs = parse_sinks(hdmi, "spk");
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].id, "spk");
     }
 
     #[test]

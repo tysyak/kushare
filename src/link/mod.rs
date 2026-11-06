@@ -11,6 +11,7 @@ pub mod features;
 use kushare_discovery::mdns::{
     LINK_SERVICE_TYPE, LinkPeerSighting, MdnsAdvertiser, MdnsScanner, link_peer_from_event,
 };
+use kushare_i18n::{t, tf};
 use kushare_link::{
     ConnectIntent, DialFuture, Dialer, LinkConfig, LinkEvent, LinkManager, LinkStream, LocalDevice,
     PeerRecord, RemoteNotification, Transport,
@@ -112,8 +113,18 @@ impl LinkHandle {
             }
             .await;
             let body = match &result {
-                Ok(()) => format!("Enviado \"{file_name}\" por Bluetooth a {address}"),
-                Err(err) => format!("No se pudo enviar \"{file_name}\" a {address}: {err:#}"),
+                Ok(()) => tf(
+                    "daemon.bt_sent",
+                    &[("file", &file_name), ("address", &address)],
+                ),
+                Err(err) => tf(
+                    "daemon.bt_send_failed",
+                    &[
+                        ("file", &file_name),
+                        ("address", &address),
+                        ("error", &format!("{err:#}")),
+                    ],
+                ),
             };
             if let Err(err) = &result {
                 tracing::warn!(?err, %address, "envío por Bluetooth fallido");
@@ -629,8 +640,8 @@ impl DesktopUi {
                     let _ = self
                         .notifier
                         .notify(
-                            &format!("Batería baja en {name}"),
-                            &format!("Queda un {percent} %"),
+                            &tf("daemon.low_battery", &[("name", &name)]),
+                            &tf("daemon.low_battery_detail", &[("percent", &percent)]),
                         )
                         .await;
                 }
@@ -652,11 +663,11 @@ impl DesktopUi {
                     .notifier
                     .notify_full(&MirrorNotification {
                         app_name: "kushare".into(),
-                        summary: format!("Emparejar con {device_name}"),
-                        body: format!("PIN: {pin}\nAcepta solo si el otro dispositivo muestra el mismo código."),
+                        summary: tf("daemon.pair_title", &[("name", &device_name)]),
+                        body: tf("daemon.pair_body", &[("pin", &pin)]),
                         actions: vec![
-                            (PAIR_ACCEPT.into(), "Aceptar".into()),
-                            (PAIR_REJECT.into(), "Rechazar".into()),
+                            (PAIR_ACCEPT.into(), t("daemon.accept").into()),
+                            (PAIR_REJECT.into(), t("daemon.reject").into()),
                         ],
                         persistent: true,
                         ..Default::default()
@@ -687,9 +698,9 @@ impl DesktopUi {
                     let _ = self.notifier.close(id).await;
                 }
                 let body = if accepted {
-                    format!("Emparejado con {device_name}")
+                    tf("daemon.paired", &[("name", &device_name)])
                 } else {
-                    format!("No se emparejó con {device_name}")
+                    tf("daemon.not_paired", &[("name", &device_name)])
                 };
                 let _ = self.notifier.notify("kushare", &body).await;
                 self.handle.bump();
@@ -742,23 +753,26 @@ impl DesktopUi {
         } else if !call.number.is_empty() {
             call.number.clone()
         } else {
-            "número desconocido".into()
+            t("daemon.unknown_number").into()
         };
         let peer_name = self.peer_name(&peer_id);
         let action = |a: &str, label: &str| (format!("{CALL_ACTION_PREFIX}{a}"), label.to_string());
         let (summary, actions) = match phase {
             CallPhase::CallRinging => (
-                format!("Llamada entrante: {who}"),
-                vec![action("answer", "Contestar"), action("reject", "Rechazar")],
+                tf("daemon.call_incoming", &[("who", &who)]),
+                vec![
+                    action("answer", t("daemon.answer")),
+                    action("reject", t("daemon.reject")),
+                ],
             ),
             _ => (
-                format!("En llamada con {who}"),
+                tf("daemon.call_active", &[("who", &who)]),
                 vec![
-                    action("hangup", "Colgar"),
+                    action("hangup", t("daemon.hangup")),
                     if call.muted {
-                        action("unmute", "Activar micrófono")
+                        action("unmute", t("daemon.unmute"))
                     } else {
-                        action("mute", "Silenciar micrófono")
+                        action("mute", t("daemon.mute"))
                     },
                 ],
             ),
@@ -767,7 +781,7 @@ impl DesktopUi {
             .notifier
             .notify_full(&MirrorNotification {
                 replaces_id,
-                app_name: format!("Teléfono · {peer_name}"),
+                app_name: tf("daemon.call_app", &[("name", &peer_name)]),
                 summary,
                 body: if call.name.is_empty() {
                     String::new()
@@ -799,7 +813,7 @@ impl DesktopUi {
         let mut inline_reply_placeholder = None;
         if let Some(reply) = &reply {
             if self.inline_reply {
-                inline_reply_placeholder = Some(format!("Responder en {}", n.app_name));
+                inline_reply_placeholder = Some(tf("daemon.reply_in", &[("app", &n.app_name)]));
             } else {
                 actions.push((
                     format!("{REPLY_DIALOG_PREFIX}{}", reply.id),

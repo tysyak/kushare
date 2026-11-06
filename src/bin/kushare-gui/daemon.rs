@@ -106,6 +106,8 @@ pub enum Event {
     Connected(DaemonProxy<'static>),
     Disconnected,
     PeersChanged,
+    /// La galería de este peer tiene fotos nuevas.
+    PhotosChanged(String),
     PairingRequested {
         id: String,
         name: String,
@@ -133,12 +135,14 @@ pub fn events() -> Subscription<Event> {
                     Ok(mut finished),
                     Ok(mut changed),
                     Ok(mut state_changed),
+                    Ok(mut photos_changed),
                     Ok(mut owner),
                 ) = (
                     daemon.receive_pairing_requested().await,
                     daemon.receive_pairing_finished().await,
                     daemon.receive_peers_changed().await,
                     daemon.receive_peer_state_changed().await,
+                    daemon.receive_photos_changed().await,
                     daemon.inner().receive_owner_changed().await,
                 )
                 else {
@@ -158,6 +162,10 @@ pub fn events() -> Subscription<Event> {
                         },
                         Some(_) = changed.next() => Event::PeersChanged,
                         Some(_) = state_changed.next() => Event::PeersChanged,
+                        Some(sig) = photos_changed.next() => match sig.args() {
+                            Ok(a) => Event::PhotosChanged(a.peer_id),
+                            Err(_) => continue,
+                        },
                         Some(new_owner) = owner.next() => {
                             if new_owner.is_none() {
                                 break; // el daemon se cerró

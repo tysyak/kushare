@@ -378,6 +378,10 @@ impl DaemonApi {
             .map_err(failed)
     }
 
+    /// La galería del peer tiene fotos nuevas.
+    #[zbus(signal)]
+    async fn photos_changed(emitter: &SignalEmitter<'_>, peer_id: &str) -> zbus::Result<()>;
+
     #[zbus(signal)]
     async fn peer_state_changed(emitter: &SignalEmitter<'_>, peer_id: &str) -> zbus::Result<()>;
 
@@ -462,6 +466,9 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
                             | F::RingerMode(_)
                             | F::CallState(_),
                         ) => DaemonApi::peer_state_changed(emitter, &device_id).await,
+                        Some(F::PhotosChanged(_)) => {
+                            DaemonApi::photos_changed(emitter, &device_id).await
+                        }
                         _ => Ok(()),
                     }
                 }

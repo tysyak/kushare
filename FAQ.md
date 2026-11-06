@@ -146,6 +146,21 @@ En el PC: `kushare devices` debe mostrarlo *conectado* y con *recibir: sí*.
   borra `~/.config/kushare/` (`identity.key`, `peers.toml`). Los dispositivos
   tendrán que volver a emparejarse.
 
+## ¿Hacia dónde va el audio: del teléfono al PC o al revés?
+
+Hay dos funciones distintas:
+
+| Función | Dirección | Qué hace |
+|---|---|---|
+| **Audio del teléfono en el PC** (`kushare phone-audio <disp> on`, *Teléfono → Escuchar aquí*) | **teléfono → PC** | El PC hace de **altavoz** (A2DP) y de **manos libres** (HFP) del teléfono por Bluetooth: la música del teléfono suena en el PC y, en una llamada, oyes con los altavoces del PC y hablas con su micrófono. |
+| **Salida de audio** (`kushare audio`, *Salida de audio* en la tarjeta del PC en el teléfono) | ninguna: solo elige altavoz | Elige **por dónde suena cada equipo su propio audio**. Desde el teléfono puedes cambiar la salida del PC (altavoces, HDMI, auriculares…). Al revés solo se ve: Android no deja a una app cambiar la salida de las demás (en el teléfono, *Ajustes → Elegir salida de audio*). |
+
+El audio del PC **no** se manda al teléfono: kushare no convierte el teléfono
+en altavoz del PC.
+
+`kushare phone-audio <disp> off` (o *Devolver*) hace que el audio vuelva a
+sonar en el teléfono.
+
 ## No oigo en el PC la música o las llamadas del teléfono
 
 `kushare phone-audio <dispositivo> on` (o *Teléfono → Escuchar aquí* en la
@@ -159,6 +174,26 @@ GUI) conecta los perfiles Bluetooth de audio del teléfono. Si responde solo
   cambiaste).
 - El enlace tiene que conocer la dirección Bluetooth del teléfono: empareja
   kushare por Bluetooth al menos una vez.
+
+### Elijo el PC como salida en el teléfono y se queda "conectando"
+
+El Bluetooth sí se conecta, pero el teléfono no acepta el **códec** que
+negoció el PC. Pasó con un Ulefone (MediaTek) y **aptX HD**: el teléfono lo
+anuncia, pero su sistema de audio nunca levanta la salida. Solución: que
+PipeWire ofrezca solo códecs que cualquier Android soporta. Crea
+`~/.config/wireplumber/wireplumber.conf.d/51-kushare-bluez-codecs.conf`:
+
+```
+monitor.bluez.properties = {
+  bluez5.codecs = [ sbc sbc_xq aac ldac ]
+}
+```
+
+y reinicia WirePlumber (`systemctl --user restart wireplumber`; el audio se
+corta un segundo). Vuelve a elegir el PC en el teléfono. Para comprobar qué
+códec se usa: `pactl list short sink-inputs` muestra un flujo
+`… (codec AAC)` mientras suena. Ojo: esto aplica a todos los dispositivos
+Bluetooth del PC (los auriculares que solo usen aptX pasarán a SBC o AAC).
 
 ## El PC no puede contestar llamadas, ver fotos o poner el teléfono en silencio
 

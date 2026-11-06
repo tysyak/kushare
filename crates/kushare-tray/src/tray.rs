@@ -12,6 +12,7 @@
 //! reenvía a un `tokio::sync::mpsc::Sender<TrayCommand>` con `try_send`.
 
 use kushare_core::TransferEvent;
+use kushare_i18n::{t, tf};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tokio::sync::mpsc;
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -103,7 +104,7 @@ pub struct Tray {
 
 impl Tray {
     /// Crea el icono de bandeja con su menú contextual ("Enviar archivo" /
-    /// "Hacer visible" / "Salir", tal como pide CLAUDE.md) y empieza a
+    /// "Hacer visible" / t("tray.quit"), tal como pide CLAUDE.md) y empieza a
     /// reenviar los clics del menú por `cmd_tx`.
     pub fn new(icon: Icon, cmd_tx: mpsc::Sender<TrayCommand>) -> anyhow::Result<Self> {
         let menu = build_menu(&[], &[], false)?;
@@ -156,23 +157,23 @@ fn build_menu(
     let menu = Menu::new();
     menu.append(&MenuItem::with_id(
         MENU_ID_SEND_FILE,
-        "Enviar archivo",
+        t("tray.send_file"),
         true,
         None,
     ))?;
     menu.append(&MenuItem::with_id(
         MENU_ID_TOGGLE_VISIBLE,
-        "Hacer visible",
+        t("tray.make_visible"),
         true,
         None,
     ))?;
     menu.append(&PredefinedMenuItem::separator())?;
 
-    let devices = Submenu::new("Dispositivos", true);
+    let devices = Submenu::new(t("tray.devices"), true);
     let scan_label = if scanning {
-        "Buscando…"
+        t("tray.searching")
     } else {
-        "Buscar dispositivos en la red"
+        t("tray.search")
     };
     devices.append(&MenuItem::with_id(
         MENU_LINK_SCAN,
@@ -182,13 +183,13 @@ fn build_menu(
     ))?;
     devices.append(&PredefinedMenuItem::separator())?;
     if paired.is_empty() && discovered.is_empty() {
-        devices.append(&MenuItem::new("(ninguno)", false, None))?;
+        devices.append(&MenuItem::new(t("tray.none"), false, None))?;
     }
     for d in paired {
         let state = if d.connected {
-            "conectado"
+            t("tray.connected")
         } else {
-            "desconectado"
+            t("tray.disconnected")
         };
         let battery = d
             .battery
@@ -197,21 +198,21 @@ fn build_menu(
         let sub = Submenu::new(format!("{} ({state}{battery})", d.name), true);
         sub.append(&CheckMenuItem::with_id(
             format!("{MENU_LINK_IN}{}", d.device_id),
-            "Recibir sus notificaciones",
+            t("tray.receive_notifications"),
             true,
             d.incoming,
             None,
         ))?;
         sub.append(&CheckMenuItem::with_id(
             format!("{MENU_LINK_OUT}{}", d.device_id),
-            "Enviarle mis notificaciones",
+            t("tray.send_notifications"),
             true,
             d.outgoing,
             None,
         ))?;
         sub.append(&MenuItem::with_id(
             format!("{MENU_LINK_SEND}{}", d.device_id),
-            "Enviar archivo…",
+            t("tray.send_file_to"),
             d.can_send_file,
             None,
         ))?;
@@ -219,7 +220,7 @@ fn build_menu(
         sub.append(&PredefinedMenuItem::separator())?;
         sub.append(&MenuItem::with_id(
             format!("{MENU_LINK_UNPAIR}{}", d.device_id),
-            "Desemparejar",
+            t("tray.unpair"),
             true,
             None,
         ))?;
@@ -232,7 +233,7 @@ fn build_menu(
         for (id, name) in discovered {
             devices.append(&MenuItem::with_id(
                 format!("{MENU_LINK_PAIR}{id}"),
-                format!("Emparejar con {name}…"),
+                tf("tray.pair_with", &[("name", name)]),
                 true,
                 None,
             ))?;
@@ -240,7 +241,7 @@ fn build_menu(
     }
     menu.append(&devices)?;
     menu.append(&PredefinedMenuItem::separator())?;
-    menu.append(&MenuItem::with_id(MENU_ID_QUIT, "Salir", true, None))?;
+    menu.append(&MenuItem::with_id(MENU_ID_QUIT, t("tray.quit"), true, None))?;
     Ok(menu)
 }
 
@@ -252,7 +253,7 @@ fn append_controls(sub: &Submenu, d: &DeviceEntry) -> anyhow::Result<()> {
     let peer = &d.device_id;
     if !d.players.is_empty() {
         sub.append(&PredefinedMenuItem::separator())?;
-        let media = Submenu::new("Multimedia", true);
+        let media = Submenu::new(t("tray.media"), true);
         for p in &d.players {
             let player = Submenu::new(
                 format!("{} {}", if p.playing { "▶" } else { "⏸" }, p.label),
@@ -261,10 +262,14 @@ fn append_controls(sub: &Submenu, d: &DeviceEntry) -> anyhow::Result<()> {
             for (action, label) in [
                 (
                     "play-pause",
-                    if p.playing { "Pausar" } else { "Reproducir" },
+                    if p.playing {
+                        t("tray.pause")
+                    } else {
+                        t("tray.play")
+                    },
                 ),
-                ("previous", "Anterior"),
-                ("next", "Siguiente"),
+                ("previous", t("tray.previous")),
+                ("next", t("tray.next")),
             ] {
                 player.append(&MenuItem::with_id(
                     format!("{MENU_LINK_MEDIA}{action}|{peer}|{}", p.id),
@@ -278,14 +283,14 @@ fn append_controls(sub: &Submenu, d: &DeviceEntry) -> anyhow::Result<()> {
         media.append(&PredefinedMenuItem::separator())?;
         media.append(&MenuItem::with_id(
             format!("{MENU_LINK_MEDIA}pause|{peer}|"),
-            "Pausar todo",
+            t("tray.pause_all"),
             d.players.iter().any(|p| p.playing),
             None,
         ))?;
         sub.append(&media)?;
     }
     if !d.outputs.is_empty() {
-        let outputs = Submenu::new("Salida de audio", true);
+        let outputs = Submenu::new(t("tray.output"), true);
         for (id, name, active) in &d.outputs {
             outputs.append(&CheckMenuItem::with_id(
                 format!("{MENU_LINK_OUTPUT}{peer}|{id}"),
@@ -298,11 +303,11 @@ fn append_controls(sub: &Submenu, d: &DeviceEntry) -> anyhow::Result<()> {
         sub.append(&outputs)?;
     }
     if let Some(current) = &d.ringer {
-        let ringer = Submenu::new("Modo de timbre", true);
+        let ringer = Submenu::new(t("tray.ringer"), true);
         for (mode, label) in [
-            ("normal", "Sonido"),
-            ("vibrate", "Vibración"),
-            ("silent", "Silencio"),
+            ("normal", t("tray.ringer_normal")),
+            ("vibrate", t("tray.ringer_vibrate")),
+            ("silent", t("tray.ringer_silent")),
         ] {
             ringer.append(&CheckMenuItem::with_id(
                 format!("{MENU_LINK_RINGER}{mode}|{peer}"),

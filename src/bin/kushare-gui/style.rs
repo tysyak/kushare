@@ -28,10 +28,10 @@ impl ThemeMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            ThemeMode::System => "Sistema",
-            ThemeMode::Light => "Claro",
-            ThemeMode::Dark => "Oscuro",
-            ThemeMode::Oled => "OLED",
+            ThemeMode::System => kushare_i18n::t("gui.theme.system"),
+            ThemeMode::Light => kushare_i18n::t("gui.theme.light"),
+            ThemeMode::Dark => kushare_i18n::t("gui.theme.dark"),
+            ThemeMode::Oled => kushare_i18n::t("gui.theme.oled"),
         }
     }
 }

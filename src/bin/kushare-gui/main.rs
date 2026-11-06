@@ -17,6 +17,7 @@ use iced::widget::{
 use iced::{Alignment, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
 use icons::{Blob, Icon, shape_icon};
 use kushare_dbus::{AppsReply, DaemonProxy};
+use kushare_i18n::{t, tf};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -88,6 +89,14 @@ impl GuiConfig {
     }
 }
 
+/// Contenido de botón con icono y texto (el icono del color del texto).
+fn labeled<'a>(icon: Icon, label: &'a str, fg: Color) -> Element<'a, Message> {
+    row![icon.view(18.0, fg), text(label).font(SEMIBOLD)]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+}
+
 // --- Estado ----------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,10 +116,25 @@ struct Gallery {
     total: u32,
     photos: Vec<kushare_dbus::PhotoRow>,
     loading: bool,
+    /// Hay una consulta de fotos nuevas en curso (no se solapan).
+    polling: bool,
+    /// Llegó otro aviso de fotos nuevas mientras se consultaba: repetir.
+    poll_again: bool,
+    /// Fotos recién llegadas → cuándo, para animar su entrada.
+    fresh: std::collections::HashMap<String, std::time::Instant>,
     error: Option<String>,
 }
 
 const PHOTO_PAGE: u32 = 30;
+/// Respaldo: el teléfono avisa al instante de las fotos nuevas
+/// (`PhotosChanged`); esto solo cubre avisos perdidos o teléfonos antiguos.
+const PHOTO_POLL: Duration = Duration::from_secs(60);
+/// Duración de la animación de entrada de una foto nueva.
+const PHOTO_FADE: Duration = Duration::from_millis(700);
+const PHOTO_HIGHLIGHT: Duration = Duration::from_millis(3000);
+/// Cuántas de las más recientes se piden en cada consulta: pocas, para que
+/// sea barato incluso por Bluetooth (cada una lleva su miniatura).
+const PHOTO_POLL_LIMIT: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DaemonState {
@@ -230,11 +254,20 @@ enum Message {
     },
     PhotosLoaded {
         peer: String,
+        /// Recarga completa: sustituye al mosaico (que sigue visible mientras tanto).
+        replace: bool,
         result: Result<(u32, Vec<kushare_dbus::PhotoRow>), String>,
     },
     FetchPhoto {
         peer: String,
         id: String,
+    },
+    PollPhotos,
+    PhotosPolled {
+        peer: String,
+        /// Cuántas se pidieron (si todas son nuevas, se pide una ventana mayor).
+        limit: u32,
+        result: Result<(u32, Vec<kushare_dbus::PhotoRow>), String>,
     },
     PhotoFetched(Result<String, String>),
 }
@@ -288,7 +321,8 @@ impl App {
         self.config.animations
             && (self.snapshot.scanning
                 || self.snapshot.peers.iter().any(|p| p.connected)
-                || self.pairing.is_some())
+                || self.pairing.is_some()
+                || !self.gallery.fresh.is_empty())
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -301,10 +335,43 @@ impl App {
             let every = if self.snapshot.scanning { 1 } else { 10 };
             subs.push(iced::time::every(Duration::from_secs(every)).map(|_| Message::Refresh));
         }
+        if self.screen == Screen::Photos && !self.gallery.peer.is_empty() && self.gallery.total > 0
+        {
+            subs.push(iced::time::every(PHOTO_POLL).map(|_| Message::PollPhotos));
+        }
         if self.animating() {
             subs.push(iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick));
         }
         Subscription::batch(subs)
+    }
+
+    /// Pide las `limit` fotos más recientes para añadir las nuevas al
+    /// principio del mosaico (sin recargarlo).
+    fn poll_photos(&mut self, limit: u32) -> Task<Message> {
+        let g = &mut self.gallery;
+        let Some(d) = self.daemon.clone() else {
+            return Task::none();
+        };
+        if g.peer.is_empty() || g.loading {
+            return Task::none();
+        }
+        if g.polling {
+            g.poll_again = true;
+            return Task::none();
+        }
+        g.polling = true;
+        let peer = g.peer.clone();
+        Task::perform(
+            async move {
+                let result = d.photos(&peer, 0, limit).await.map_err(|e| e.to_string());
+                (peer, result)
+            },
+            move |(peer, result)| Message::PhotosPolled {
+                peer,
+                limit,
+                result,
+            },
+        )
     }
 
     fn refresh(&self) -> Task<Message> {
@@ -321,7 +388,7 @@ impl App {
         Fut: std::future::Future<Output = zbus::Result<()>> + Send + 'static,
     {
         let Some(d) = self.daemon.clone() else {
-            return Task::done(Message::Done(Err("el daemon no está corriendo".into())));
+            return Task::done(Message::Done(Err(t("gui.error.no_daemon").into())));
         };
         let ok = ok.into();
         let fut = f(d);
@@ -352,6 +419,13 @@ impl App {
                 Task::none()
             }
             Message::Daemon(Event::PeersChanged) | Message::Refresh => self.refresh(),
+            Message::Daemon(Event::PhotosChanged(peer)) => {
+                if self.gallery.peer == peer && self.gallery.total > 0 {
+                    Task::done(Message::PollPhotos)
+                } else {
+                    Task::none()
+                }
+            }
             Message::Daemon(Event::PairingRequested { id, name, pin }) => {
                 self.pairing = Some(Pairing { id, name, pin });
                 Task::none()
@@ -361,9 +435,9 @@ impl App {
                     self.pairing = None;
                 }
                 self.toast = Some(if accepted {
-                    format!("Emparejado con {name}")
+                    tf("gui.toast.paired", &[("name", &name)])
                 } else {
-                    format!("No se emparejó con {name}")
+                    tf("gui.toast.not_paired", &[("name", &name)])
                 });
                 self.refresh()
             }
@@ -381,6 +455,9 @@ impl App {
             }
             Message::Tick => {
                 self.angle = (self.angle + 0.02) % std::f32::consts::TAU;
+                self.gallery
+                    .fresh
+                    .retain(|_, at| at.elapsed() < PHOTO_HIGHLIGHT);
                 Task::none()
             }
             Message::Navigate(screen) => {
@@ -414,20 +491,16 @@ impl App {
                     self.refresh(),
                 ])
             }
-            Message::Unpair(peer) => {
-                self.call(
-                    "Desemparejado",
-                    move |d| async move { d.unpair(&peer).await },
-                )
-            }
+            Message::Unpair(peer) => self.call(t("gui.toast.unpaired"), move |d| async move {
+                d.unpair(&peer).await
+            }),
             Message::Scan => {
                 self.snapshot.scanning = true;
                 self.call("", |d| async move { d.scan(20).await })
             }
-            Message::Pair(target) => self
-                .call("Esperando confirmación del PIN…", move |d| async move {
-                    d.pair(&target).await.map(|_| ())
-                }),
+            Message::Pair(target) => self.call(t("gui.toast.waiting_pin"), move |d| async move {
+                d.pair(&target).await.map(|_| ())
+            }),
             Message::RespondPairing(accept) => {
                 let Some(p) = self.pairing.take() else {
                     return Task::none();
@@ -511,7 +584,7 @@ impl App {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
                 self.call(
-                    format!("Enviando \"{label}\" a {name}… (avisará al terminar)"),
+                    tf("gui.toast.sending", &[("file", &label), ("name", &name)]),
                     move |d| async move { d.send_file_bt(&file.to_string_lossy(), &address).await },
                 )
             }
@@ -526,7 +599,12 @@ impl App {
                     }
                 }
             }
-            Message::QuitDaemon => self.call("Daemon detenido", |d| async move { d.quit().await }),
+            Message::QuitDaemon => {
+                self.call(
+                    t("gui.toast.daemon_stopped"),
+                    |d| async move { d.quit().await },
+                )
+            }
             Message::SetTheme(theme) => {
                 self.config.theme = theme;
                 self.config.save();
@@ -604,9 +682,12 @@ impl App {
                             .await
                             .map(|p| {
                                 if enable {
-                                    format!("Audio del teléfono en el PC: {}", p.join(" y "))
+                                    tf(
+                                        "gui.toast.phone_audio_on",
+                                        &[("profiles", &p.join(t("gui.toast.and")))],
+                                    )
                                 } else {
-                                    "Audio devuelto al teléfono".to_string()
+                                    t("gui.toast.phone_audio_off").to_string()
                                 }
                             })
                             .map_err(|e| e.to_string())
@@ -618,32 +699,54 @@ impl App {
                 let Some(d) = self.daemon.clone() else {
                     return Task::none();
                 };
-                if !more || self.gallery.peer != peer {
+                if self.gallery.peer != peer {
                     self.gallery = Gallery {
                         peer: peer.clone(),
                         ..Default::default()
                     };
                 }
+                if self.gallery.loading {
+                    return Task::none();
+                }
+                // Recarga completa: el mosaico actual sigue visible hasta que
+                // llega el nuevo (nada de pantalla vacía).
+                let replace = !more;
                 self.gallery.loading = true;
-                let offset = self.gallery.photos.len() as u32;
+                let (offset, limit) = if replace {
+                    (0, (self.gallery.photos.len() as u32).max(PHOTO_PAGE))
+                } else {
+                    (self.gallery.photos.len() as u32, PHOTO_PAGE)
+                };
                 Task::perform(
                     async move {
                         let result = d
-                            .photos(&peer, offset, PHOTO_PAGE)
+                            .photos(&peer, offset, limit)
                             .await
                             .map_err(|e| e.to_string());
                         (peer, result)
                     },
-                    |(peer, result)| Message::PhotosLoaded { peer, result },
+                    move |(peer, result)| Message::PhotosLoaded {
+                        peer,
+                        replace,
+                        result,
+                    },
                 )
             }
-            Message::PhotosLoaded { peer, result } => {
+            Message::PhotosLoaded {
+                peer,
+                replace,
+                result,
+            } => {
                 if self.gallery.peer == peer {
                     self.gallery.loading = false;
                     match result {
                         Ok((total, photos)) => {
                             self.gallery.total = total;
-                            self.gallery.photos.extend(photos);
+                            if replace {
+                                self.gallery.photos = photos;
+                            } else {
+                                self.gallery.photos.extend(photos);
+                            }
                             self.gallery.error = None;
                         }
                         Err(err) => self.gallery.error = Some(err),
@@ -651,11 +754,63 @@ impl App {
                 }
                 Task::none()
             }
+            Message::PollPhotos => self.poll_photos(PHOTO_POLL_LIMIT),
+            Message::PhotosPolled {
+                peer,
+                limit,
+                result,
+            } => {
+                let g = &mut self.gallery;
+                if g.peer != peer {
+                    return Task::none();
+                }
+                g.polling = false;
+                // Un fallo puntual (teléfono fuera de alcance) no borra nada.
+                let Ok((total, latest)) = result else {
+                    return Task::none();
+                };
+                let known: std::collections::HashSet<&str> =
+                    g.photos.iter().map(|p| p.0.as_str()).collect();
+                let new: Vec<_> = latest
+                    .iter()
+                    .filter(|p| !known.contains(p.0.as_str()))
+                    .cloned()
+                    .collect();
+                if new.len() == latest.len() && !latest.is_empty() && !g.photos.is_empty() {
+                    // Todas las consultadas son nuevas: puede haber más. Pedir
+                    // una ventana mayor; si tampoco alcanza, recargar entero.
+                    return if limit < PHOTO_PAGE {
+                        self.poll_photos(PHOTO_PAGE)
+                    } else {
+                        Task::done(Message::LoadPhotos { peer, more: false })
+                    };
+                }
+                if !new.is_empty() {
+                    // Las nuevas van al principio, animadas; las cargadas se
+                    // conservan y t("gui.photos.load_more") sigue cuadrando (todo se desplazó igual).
+                    let now = std::time::Instant::now();
+                    for p in &new {
+                        g.fresh.insert(p.0.clone(), now);
+                    }
+                    self.toast = Some(match new.len() {
+                        1 => t("gui.photos.new_one").to_string(),
+                        n => tf("gui.photos.new_many", &[("n", &n)]),
+                    });
+                    let mut photos = new;
+                    photos.append(&mut g.photos);
+                    g.photos = photos;
+                }
+                g.total = total;
+                if std::mem::take(&mut g.poll_again) {
+                    return self.poll_photos(PHOTO_POLL_LIMIT);
+                }
+                Task::none()
+            }
             Message::FetchPhoto { peer, id } => {
                 let Some(d) = self.daemon.clone() else {
                     return Task::none();
                 };
-                self.toast = Some("Descargando la foto…".into());
+                self.toast = Some(t("gui.photos.downloading").into());
                 Task::perform(
                     async move { d.fetch_photo(&peer, &id).await.map_err(|e| e.to_string()) },
                     Message::PhotoFetched,
@@ -663,7 +818,7 @@ impl App {
             }
             Message::PhotoFetched(Ok(path)) => {
                 let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
-                self.toast = Some(format!("Guardada en {path}"));
+                self.toast = Some(tf("gui.photos.saved", &[("path", &path)]));
                 Task::none()
             }
             Message::PhotoFetched(Err(err)) => {
@@ -734,29 +889,40 @@ impl App {
                     ),
                     text(label)
                         .size(12)
-                        .font(if selected { BOLD } else { Font::DEFAULT }),
+                        .font(if selected { BOLD } else { Font::DEFAULT })
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .width(Length::Fill),
                 ]
                 .align_x(Alignment::Center)
+                .width(Length::Fill)
                 .spacing(4),
             )
-            .padding(Padding::from([10, 14]))
-            .width(Length::Fixed(84.0))
+            // Ancho para la etiqueta más larga ("Dispositivos") sin que
+            // descentre el icono.
+            .padding(Padding::from([10, 4]))
+            .width(Length::Fixed(96.0))
             .style(style::button(c, ButtonKind::Nav(selected)))
             .on_press(Message::Navigate(screen))
         };
         container(
-            column![
-                text("ku").size(26).font(EXTRA_BOLD).color(c.primary),
-                space().height(16),
-                item(Icon::Home, "Inicio", Screen::Home),
-                item(Icon::Devices, "Dispositivos", Screen::Devices),
-                item(Icon::Phone, "Teléfono", Screen::Phone),
-                item(Icon::Photo, "Fotos", Screen::Photos),
-                item(Icon::Send, "Enviar", Screen::Send),
-                item(Icon::Settings, "Ajustes", Screen::Settings),
-            ]
-            .spacing(10)
-            .align_x(Alignment::Center),
+            scrollable(
+                column![
+                    text("ku").size(26).font(EXTRA_BOLD).color(c.primary),
+                    space().height(16),
+                    item(Icon::Home, t("gui.nav.home"), Screen::Home),
+                    item(Icon::Devices, t("gui.nav.devices"), Screen::Devices),
+                    item(Icon::Phone, t("gui.nav.phone"), Screen::Phone),
+                    item(Icon::Photo, t("gui.nav.photos"), Screen::Photos),
+                    item(Icon::Send, t("gui.nav.send"), Screen::Send),
+                    item(Icon::Settings, t("gui.nav.settings"), Screen::Settings),
+                ]
+                .spacing(10)
+                .align_x(Alignment::Center),
+            )
+            // Desplazable para ventanas bajas, sin barra visible.
+            .direction(iced::widget::scrollable::Direction::Vertical(
+                iced::widget::scrollable::Scrollbar::hidden(),
+            )),
         )
         .padding(Padding::new(16.0).top(24.0))
         .height(Length::Fill)
@@ -782,23 +948,23 @@ impl App {
         let connected: Vec<&Peer> = self.snapshot.peers.iter().filter(|p| p.connected).collect();
         let (title, detail, icon, blob, active, highlight) = match self.state {
             DaemonState::Connecting => (
-                "Iniciando…",
-                "Conectando con el daemon".to_string(),
+                t("gui.home.starting"),
+                t("gui.home.connecting_daemon").to_string(),
                 Icon::Schedule,
                 Blob::SoftBurst,
                 true,
                 false,
             ),
             DaemonState::NotRunning => (
-                "Apagado",
-                "El daemon de kushare no está corriendo.".to_string(),
+                t("gui.home.off"),
+                t("gui.home.off_detail").to_string(),
                 Icon::Power,
                 Blob::Circle,
                 false,
                 false,
             ),
             DaemonState::Running if !connected.is_empty() => (
-                "Conectado",
+                t("gui.home.connected"),
                 connected
                     .iter()
                     .map(|p| format!("{} · {}", p.name, p.via()))
@@ -814,16 +980,16 @@ impl App {
                 true,
             ),
             DaemonState::Running if self.snapshot.peers.is_empty() => (
-                "Sin emparejar",
-                "Empareja tu teléfono en Dispositivos.".to_string(),
+                t("gui.home.unpaired"),
+                t("gui.home.unpaired_detail").to_string(),
                 Icon::Devices,
                 Blob::Cookie4,
                 false,
                 false,
             ),
             DaemonState::Running => (
-                "Esperando",
-                "Se conectará solo cuando el teléfono esté cerca.".to_string(),
+                t("gui.home.waiting"),
+                t("gui.home.waiting_detail").to_string(),
                 Icon::Schedule,
                 Blob::SoftBurst,
                 true,
@@ -846,11 +1012,13 @@ impl App {
             )
         };
         let daemon_button: Element<'_, Message> = match self.state {
-            DaemonState::NotRunning => button(text("Iniciar").font(SEMIBOLD))
-                .padding(Padding::from([10, 22]))
-                .style(style::button(c, ButtonKind::Filled))
-                .on_press(Message::StartDaemon)
-                .into(),
+            DaemonState::NotRunning => {
+                button(labeled(Icon::PlayCircle, t("gui.home.start"), c.on_primary))
+                    .padding(Padding::from([10, 22]))
+                    .style(style::button(c, ButtonKind::Filled))
+                    .on_press(Message::StartDaemon)
+                    .into()
+            }
             _ => space().into(),
         };
         let hero = container(
@@ -902,8 +1070,8 @@ impl App {
         };
         let actions = row![
             action(
-                "Enviar",
-                "Un archivo a tu teléfono por Bluetooth",
+                t("gui.nav.send"),
+                t("gui.home.send_detail"),
                 Icon::Send,
                 Blob::Clover,
                 c.tertiary_container,
@@ -914,8 +1082,8 @@ impl App {
                 Message::PickFile
             ),
             action(
-                "Recibidos",
-                "Este PC recibe siempre; se guardan en Descargas",
+                t("gui.home.received"),
+                t("gui.home.received_detail"),
                 Icon::Download,
                 Blob::Flower,
                 c.secondary_container,
@@ -939,11 +1107,11 @@ impl App {
                     0.0
                 ),
                 column![
-                    text("Dispositivos y notificaciones").size(22).font(BOLD),
+                    text(t("gui.home.devices_title")).size(22).font(BOLD),
                     text(match self.snapshot.peers.len() {
-                        0 => "Empareja tu teléfono para sincronizar notificaciones".to_string(),
-                        1 => "1 dispositivo emparejado".to_string(),
-                        n => format!("{n} dispositivos emparejados"),
+                        0 => t("gui.home.devices_none").to_string(),
+                        1 => t("gui.home.devices_one").to_string(),
+                        n => tf("gui.home.devices_many", &[("n", &n)]),
                     })
                     .size(14)
                     .color(c.on_surface_variant),
@@ -1002,38 +1170,40 @@ impl App {
         let running = self.state == DaemonState::Running;
         let mut col = column![self.title(
             c,
-            "Dispositivos",
+            t("gui.nav.devices"),
             if running {
-                format!(
-                    "{} conectado(s) de {}",
-                    self.snapshot.peers.iter().filter(|p| p.connected).count(),
-                    self.snapshot.peers.len()
+                tf(
+                    "gui.devices.connected_of",
+                    &[
+                        (
+                            "connected",
+                            &self.snapshot.peers.iter().filter(|p| p.connected).count(),
+                        ),
+                        ("total", &self.snapshot.peers.len()),
+                    ],
                 )
             } else {
-                "El daemon no está corriendo".to_string()
+                t("gui.devices.no_daemon").to_string()
             },
         )]
         .spacing(14);
 
-        col = col.push(self.section(c, "Emparejados"));
+        col = col.push(self.section(c, t("gui.devices.paired")));
         if self.snapshot.peers.is_empty() {
-            col = col.push(
-                text("Todavía no hay ninguno. Empareja por la red o por Bluetooth más abajo.")
-                    .color(c.on_surface_variant),
-            );
+            col = col.push(text(t("gui.devices.none_yet")).color(c.on_surface_variant));
         }
         for p in &self.snapshot.peers {
             col = col.push(self.peer_card(c, p));
         }
 
         let scan_label = if self.snapshot.scanning {
-            "Buscando…"
+            t("gui.devices.searching")
         } else {
-            "Buscar"
+            t("gui.devices.search")
         };
         col = col.push(
             row![
-                container(self.section(c, "En esta red")).width(Length::Fill),
+                container(self.section(c, t("gui.devices.on_network"))).width(Length::Fill),
                 button(
                     row![
                         Icon::Search.view(18.0, c.on_secondary_container),
@@ -1051,9 +1221,9 @@ impl App {
         if self.snapshot.discovered.is_empty() {
             col = col.push(
                 text(if self.snapshot.scanning {
-                    "Buscando dispositivos kushare…"
+                    t("gui.devices.searching_detail")
                 } else {
-                    "Pulsa Buscar. Si la red aísla a los dispositivos, empareja por Bluetooth."
+                    t("gui.devices.search_hint")
                 })
                 .color(c.on_surface_variant),
             );
@@ -1068,7 +1238,7 @@ impl App {
             ));
         }
 
-        col = col.push(self.section(c, "Por Bluetooth"));
+        col = col.push(self.section(c, t("gui.devices.by_bluetooth")));
         let paired_bt: Vec<&str> = self
             .snapshot
             .peers
@@ -1081,7 +1251,7 @@ impl App {
             .filter(|(a, _)| !paired_bt.contains(&a.as_str()))
             .collect();
         if candidates.is_empty() {
-            col = col.push(text("No hay dispositivos Bluetooth vinculados sin emparejar (bluetoothctl pair <MAC>).").color(c.on_surface_variant));
+            col = col.push(text(t("gui.devices.no_bonded")).color(c.on_surface_variant));
         }
         for (addr, name) in candidates {
             col = col.push(self.candidate(
@@ -1118,7 +1288,7 @@ impl App {
                     text(detail).size(13).color(c.on_surface_variant)
                 ]
                 .width(Length::Fill),
-                button(text("Emparejar").font(SEMIBOLD))
+                button(labeled(Icon::Check, t("gui.devices.pair"), c.on_primary))
                     .padding(Padding::from([10, 22]))
                     .style(style::button(c, ButtonKind::Filled))
                     .on_press_maybe(on_pair),
@@ -1170,9 +1340,9 @@ impl App {
             column![
                 text(&p.name).size(26).font(EXTRA_BOLD),
                 text(if p.connected {
-                    format!("Conectado por {}", p.via())
+                    tf("gui.devices.connected_via", &[("via", &p.via())])
                 } else {
-                    "Desconectado".to_string()
+                    t("gui.devices.disconnected").to_string()
                 })
                 .size(14),
             ]
@@ -1186,7 +1356,7 @@ impl App {
             button(
                 row![
                     Icon::Send.view(16.0, c.on_secondary_container),
-                    text("Enviar archivo").font(SEMIBOLD)
+                    text(t("gui.devices.send_file")).font(SEMIBOLD)
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -1201,7 +1371,7 @@ impl App {
                 header,
                 self.switch_row(
                     c,
-                    "Recibir sus notificaciones",
+                    t("gui.devices.receive_notifications"),
                     None,
                     p.incoming,
                     move |on| Message::SetDirection {
@@ -1212,7 +1382,7 @@ impl App {
                 ),
                 self.switch_row(
                     c,
-                    "Enviarle mis notificaciones",
+                    t("gui.devices.send_notifications"),
                     None,
                     p.outgoing,
                     move |on| Message::SetDirection {
@@ -1222,7 +1392,7 @@ impl App {
                     }
                 ),
                 row![
-                    button(text("Apps que recibo").font(SEMIBOLD))
+                    button(labeled(Icon::Apps, t("gui.devices.apps_in"), c.primary))
                         .padding(Padding::from([9, 18]))
                         .style(style::button(c, ButtonKind::Outlined))
                         .on_press(Message::OpenApps {
@@ -1230,7 +1400,7 @@ impl App {
                             name: p.name.clone(),
                             outgoing: false
                         }),
-                    button(text("Apps que envío").font(SEMIBOLD))
+                    button(labeled(Icon::Apps, t("gui.devices.apps_out"), c.primary))
                         .padding(Padding::from([9, 18]))
                         .style(style::button(c, ButtonKind::Outlined))
                         .on_press(Message::OpenApps {
@@ -1240,7 +1410,7 @@ impl App {
                         }),
                     send_button,
                     space().width(Length::Fill),
-                    button(text("Desemparejar"))
+                    button(labeled(Icon::LinkOff, t("gui.devices.unpair"), c.primary))
                         .style(style::button(c, ButtonKind::Text))
                         .on_press(Message::Unpair(p.id.clone())),
                 ]
@@ -1275,7 +1445,7 @@ impl App {
                     72.0,
                     0.0
                 ),
-                text("Ningún teléfono conectado").size(22).font(EXTRA_BOLD),
+                text(t("gui.phone.none")).size(22).font(EXTRA_BOLD),
                 text(what).size(14).color(c.on_surface_variant),
             ]
             .spacing(10)
@@ -1308,15 +1478,11 @@ impl App {
 
     fn phone(&self, c: Colors) -> Element<'_, Message> {
         let phones = self.phone_peers();
-        let mut col = column![self.title(
-            c,
-            "Teléfono",
-            "Batería, timbre, llamadas, multimedia y audio".into()
-        )]
-        .spacing(16);
+        let mut col =
+            column![self.title(c, t("gui.nav.phone"), t("gui.phone.subtitle").into())].spacing(16);
         if phones.is_empty() {
             return col
-                .push(self.empty_phone(c, "Conéctalo en Dispositivos para controlarlo desde aquí."))
+                .push(self.empty_phone(c, t("gui.phone.none_detail")))
                 .into();
         }
         for p in phones {
@@ -1329,7 +1495,7 @@ impl App {
         let Some((battery, ringer, call, players, selectable, outputs)) =
             self.snapshot.states.get(&p.id)
         else {
-            return text("Cargando…").into();
+            return text(t("gui.common.loading")).into();
         };
         let peer = p.id.clone();
         // Cabecera: nombre y batería.
@@ -1337,10 +1503,14 @@ impl App {
             format!(
                 "{} %{}",
                 battery.1,
-                if battery.2 { " · cargando" } else { "" }
+                if battery.2 {
+                    t("gui.phone.charging_suffix")
+                } else {
+                    ""
+                }
             )
         } else {
-            "batería desconocida".into()
+            t("gui.phone.battery_unknown").into()
         };
         let low = battery.0 && battery.1 <= 15 && !battery.2;
         let header = row![
@@ -1371,14 +1541,14 @@ impl App {
                 call.2.clone()
             };
             let label = match call.0.as_str() {
-                "ringing" => format!("Llamada entrante: {who}"),
-                "dialing" => format!("Llamando a {who}…"),
-                _ => format!("En llamada con {who}"),
+                "ringing" => tf("gui.phone.call_incoming", &[("who", &who)]),
+                "dialing" => tf("gui.phone.call_dialing", &[("who", &who)]),
+                _ => tf("gui.phone.call_active", &[("who", &who)]),
             };
             let mut buttons = row![].spacing(10);
             if call.0 == "ringing" {
                 buttons = buttons.push(
-                    button(text("Contestar").font(SEMIBOLD))
+                    button(labeled(Icon::Phone, t("gui.phone.answer"), c.on_primary))
                         .padding(Padding::from([9, 18]))
                         .style(style::button(c, ButtonKind::Filled))
                         .on_press(Message::CallCommand {
@@ -1387,17 +1557,21 @@ impl App {
                         }),
                 );
                 buttons = buttons.push(
-                    button(text("Rechazar").font(SEMIBOLD))
-                        .padding(Padding::from([9, 18]))
-                        .style(style::button(c, ButtonKind::Tonal))
-                        .on_press(Message::CallCommand {
-                            peer: peer.clone(),
-                            action: "reject",
-                        }),
+                    button(labeled(
+                        Icon::Close,
+                        t("gui.phone.reject"),
+                        c.on_secondary_container,
+                    ))
+                    .padding(Padding::from([9, 18]))
+                    .style(style::button(c, ButtonKind::Tonal))
+                    .on_press(Message::CallCommand {
+                        peer: peer.clone(),
+                        action: "reject",
+                    }),
                 );
             } else {
                 buttons = buttons.push(
-                    button(text("Colgar").font(SEMIBOLD))
+                    button(labeled(Icon::CallEnd, t("gui.phone.hangup"), c.on_primary))
                         .padding(Padding::from([9, 18]))
                         .style(style::button(c, ButtonKind::Filled))
                         .on_press(Message::CallCommand {
@@ -1406,14 +1580,15 @@ impl App {
                         }),
                 );
                 buttons = buttons.push(
-                    button(
-                        text(if call.3 {
-                            "Activar micrófono"
+                    button(labeled(
+                        if call.3 { Icon::Mic } else { Icon::MicOff },
+                        if call.3 {
+                            t("gui.phone.unmute")
                         } else {
-                            "Silenciar micrófono"
-                        })
-                        .font(SEMIBOLD),
-                    )
+                            t("gui.phone.mute")
+                        },
+                        c.on_secondary_container,
+                    ))
                     .padding(Padding::from([9, 18]))
                     .style(style::button(c, ButtonKind::Tonal))
                     .on_press(Message::CallCommand {
@@ -1448,38 +1623,46 @@ impl App {
         // Modo de timbre (grupo de botones conectados).
         if !ringer.is_empty() {
             let modes = [
-                ("normal", "Sonido"),
-                ("vibrate", "Vibración"),
-                ("silent", "Silencio"),
+                ("normal", Icon::Volume, t("gui.phone.ringer_normal")),
+                ("vibrate", Icon::Vibration, t("gui.phone.ringer_vibrate")),
+                ("silent", Icon::VolumeOff, t("gui.phone.ringer_silent")),
             ];
             let mut seg = row![].spacing(2);
-            for (i, (mode, label)) in modes.iter().enumerate() {
+            for (i, (mode, icon, label)) in modes.iter().enumerate() {
                 seg = seg.push(
-                    button(text(*label).font(SEMIBOLD))
-                        .padding(Padding::from([9, 18]))
-                        .style(style::button(
-                            c,
-                            ButtonKind::Segment {
-                                selected: ringer == mode,
-                                first: i == 0,
-                                last: i == modes.len() - 1,
-                            },
-                        ))
-                        .on_press(Message::SetRinger {
-                            peer: peer.clone(),
-                            mode,
-                        }),
+                    button(labeled(
+                        *icon,
+                        label,
+                        if ringer == mode {
+                            c.on_primary
+                        } else {
+                            c.on_surface
+                        },
+                    ))
+                    .padding(Padding::from([9, 18]))
+                    .style(style::button(
+                        c,
+                        ButtonKind::Segment {
+                            selected: ringer == mode,
+                            first: i == 0,
+                            last: i == modes.len() - 1,
+                        },
+                    ))
+                    .on_press(Message::SetRinger {
+                        peer: peer.clone(),
+                        mode,
+                    }),
                 );
             }
-            body = body.push(self.section(c, "Modo de timbre")).push(seg);
+            body = body.push(self.section(c, t("gui.phone.ringer"))).push(seg);
         }
 
         // Reproductores.
         body = body.push(
             row![
-                self.section(c, "Multimedia"),
+                self.section(c, t("gui.phone.media")),
                 space().width(Length::Fill),
-                button(text("Pausar todo").font(SEMIBOLD))
+                button(labeled(Icon::Pause, t("gui.phone.pause_all"), c.primary))
                     .padding(Padding::from([7, 16]))
                     .style(style::button(c, ButtonKind::Outlined))
                     .on_press_maybe(players.iter().any(|p| p.5 == "playing").then(|| {
@@ -1494,7 +1677,7 @@ impl App {
         );
         if players.is_empty() {
             body = body.push(
-                text("No hay nada reproduciéndose")
+                text(t("gui.phone.nothing_playing"))
                     .size(14)
                     .color(c.on_surface_variant),
             );
@@ -1555,30 +1738,38 @@ impl App {
 
         // Audio del teléfono en el PC (Bluetooth A2DP + HFP).
         if !p.bt_address.is_empty() {
-            body =
-                body.push(self.section(c, "Audio del teléfono en el PC"))
-                    .push(
-                        row![
-                    text("Oye aquí su música y sus llamadas, y habla con el micrófono del PC.")
+            body = body.push(self.section(c, t("gui.phone.audio_here"))).push(
+                row![
+                    text(t("gui.phone.audio_here_detail"))
                         .size(14)
                         .color(c.on_surface_variant)
                         .width(Length::Fill),
-                    button(text("Escuchar aquí").font(SEMIBOLD))
-                        .padding(Padding::from([9, 18]))
-                        .style(style::button(c, ButtonKind::Tonal))
-                        .on_press(Message::PhoneAudio { peer: peer.clone(), enable: true }),
-                    button(text("Devolver"))
+                    button(labeled(
+                        Icon::Headphones,
+                        t("gui.phone.listen_here"),
+                        c.on_secondary_container
+                    ))
+                    .padding(Padding::from([9, 18]))
+                    .style(style::button(c, ButtonKind::Tonal))
+                    .on_press(Message::PhoneAudio {
+                        peer: peer.clone(),
+                        enable: true
+                    }),
+                    button(labeled(Icon::Undo, t("gui.phone.give_back"), c.primary))
                         .style(style::button(c, ButtonKind::Text))
-                        .on_press(Message::PhoneAudio { peer: peer.clone(), enable: false }),
+                        .on_press(Message::PhoneAudio {
+                            peer: peer.clone(),
+                            enable: false
+                        }),
                 ]
-                        .spacing(10)
-                        .align_y(Alignment::Center),
-                    );
+                .spacing(10)
+                .align_y(Alignment::Center),
+            );
         }
 
         // Salidas de audio del teléfono (informativo si no se pueden elegir).
         if !outputs.is_empty() {
-            body = body.push(self.section(c, "Salida de audio"));
+            body = body.push(self.section(c, t("gui.phone.output")));
             for (id, name, active) in outputs {
                 let msg = (*selectable && !active).then(|| Message::SetOutput {
                     peer: peer.clone(),
@@ -1610,7 +1801,7 @@ impl App {
             }
             if !selectable {
                 body = body.push(
-                    text("Android no deja a otras apps cambiar la salida: elígela en el teléfono.")
+                    text(t("gui.phone.output_readonly"))
                         .size(13)
                         .color(c.on_surface_variant),
                 );
@@ -1628,23 +1819,22 @@ impl App {
         let phones = self.phone_peers();
         let g = &self.gallery;
         let subtitle = if g.total > 0 {
-            format!(
-                "{} de {} fotos · pulsa una para descargarla",
-                g.photos.len(),
-                g.total
+            tf(
+                "gui.photos.count",
+                &[("shown", &g.photos.len()), ("total", &g.total)],
             )
         } else {
-            "Las fotos de la galería del teléfono".into()
+            t("gui.photos.subtitle").into()
         };
-        let mut col = column![self.title(c, "Fotos", subtitle)].spacing(16);
+        let mut col = column![self.title(c, t("gui.nav.photos"), subtitle)].spacing(16);
         let Some(phone) = phones.iter().find(|p| p.id == g.peer).or(phones.first()) else {
             return col
-                .push(self.empty_phone(c, "Conéctalo en Dispositivos para ver sus fotos."))
+                .push(self.empty_phone(c, t("gui.photos.none_detail")))
                 .into();
         };
         if g.peer != phone.id && !g.loading {
             col = col.push(
-                button(text(format!("Ver las fotos de {}", phone.name)).font(SEMIBOLD))
+                button(text(tf("gui.photos.view_of", &[("name", &phone.name)])).font(SEMIBOLD))
                     .padding(Padding::from([10, 22]))
                     .style(style::button(c, ButtonKind::Filled))
                     .on_press(Message::LoadPhotos {
@@ -1657,31 +1847,55 @@ impl App {
         if let Some(err) = &g.error {
             col = col.push(text(err).color(c.error));
         }
+        col = col.push(self.photos_toolbar(c));
         const COLUMNS: usize = 5;
         for chunk in g.photos.chunks(COLUMNS) {
             let mut r = row![].spacing(10);
             for (id, _name, _date, _w, _h, _size, thumb) in chunk {
-                r = r.push(
-                    button(
-                        iced::widget::image(iced::widget::image::Handle::from_path(thumb))
-                            .width(Length::Fill)
-                            .height(Length::Fixed(150.0))
-                            .content_fit(iced::ContentFit::Cover),
-                    )
-                    .padding(0)
-                    .width(Length::FillPortion(1))
-                    .style(style::button(
-                        c,
-                        ButtonKind::Card {
-                            bg: c.container_high,
-                            fg: c.on_surface,
-                            shape: Shape::List,
+                // Entrada animada de las fotos nuevas: aparecen (opacidad) y
+                // llevan un borde del color primario que se desvanece.
+                let age = g.fresh.get(id).map(|at| at.elapsed());
+                let opacity = age.map_or(1.0, |a| {
+                    (a.as_secs_f32() / PHOTO_FADE.as_secs_f32()).clamp(0.0, 1.0)
+                });
+                let glow = age.map_or(0.0, |a| {
+                    1.0 - (a.as_secs_f32() / PHOTO_HIGHLIGHT.as_secs_f32()).clamp(0.0, 1.0)
+                });
+                let tile = container(
+                    iced::widget::image(iced::widget::image::Handle::from_path(thumb))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(150.0))
+                        .content_fit(iced::ContentFit::Cover)
+                        .opacity(opacity),
+                )
+                .padding(if glow > 0.0 { 3 } else { 0 })
+                .style(move |_: &Theme| container::Style {
+                    border: iced::Border {
+                        color: Color {
+                            a: glow,
+                            ..c.primary
                         },
-                    ))
-                    .on_press(Message::FetchPhoto {
-                        peer: g.peer.clone(),
-                        id: id.clone(),
-                    }),
+                        width: if glow > 0.0 { 3.0 } else { 0.0 },
+                        radius: 14.0.into(),
+                    },
+                    ..Default::default()
+                });
+                r = r.push(
+                    button(tile)
+                        .padding(0)
+                        .width(Length::FillPortion(1))
+                        .style(style::button(
+                            c,
+                            ButtonKind::Card {
+                                bg: c.container_high,
+                                fg: c.on_surface,
+                                shape: Shape::List,
+                            },
+                        ))
+                        .on_press(Message::FetchPhoto {
+                            peer: g.peer.clone(),
+                            id: id.clone(),
+                        }),
                 );
             }
             for _ in chunk.len()..COLUMNS {
@@ -1689,36 +1903,83 @@ impl App {
             }
             col = col.push(r);
         }
-        let more: Element<'_, Message> = if g.loading {
-            text("Cargando…").color(c.on_surface_variant).into()
-        } else if (g.photos.len() as u32) < g.total {
-            button(text("Cargar más").font(SEMIBOLD))
-                .padding(Padding::from([10, 22]))
-                .style(style::button(c, ButtonKind::Tonal))
-                .on_press(Message::LoadPhotos {
-                    peer: g.peer.clone(),
-                    more: true,
-                })
-                .into()
+        if g.photos.is_empty() && g.loading {
+            col = col.push(text(t("gui.common.loading")).color(c.on_surface_variant));
+        }
+        // "Cargar más" también al final, para no tener que volver arriba.
+        if !g.loading && (g.photos.len() as u32) < g.total {
+            col = col.push(
+                container(
+                    button(labeled(
+                        Icon::ExpandMore,
+                        t("gui.photos.load_more"),
+                        c.on_secondary_container,
+                    ))
+                    .padding(Padding::from([10, 22]))
+                    .style(style::button(c, ButtonKind::Tonal))
+                    .on_press(Message::LoadPhotos {
+                        peer: g.peer.clone(),
+                        more: true,
+                    }),
+                )
+                .center_x(Length::Fill),
+            );
+        }
+        col.into()
+    }
+
+    /// Barra de acciones de la página Fotos (arriba).
+    fn photos_toolbar(&self, c: Colors) -> Element<'_, Message> {
+        let g = &self.gallery;
+        let status: Element<'_, Message> = if g.loading && !g.photos.is_empty() {
+            row![
+                Icon::Refresh.view(16.0, c.on_surface_variant),
+                text(t("gui.photos.updating")).color(c.on_surface_variant)
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into()
         } else {
             space().into()
         };
-        col.push(
-            row![
-                more,
-                space().width(Length::Fill),
-                button(text("Recargar"))
-                    .style(style::button(c, ButtonKind::Text))
-                    .on_press(Message::LoadPhotos {
-                        peer: g.peer.clone(),
-                        more: false
-                    }),
-                button(text("Abrir Descargas"))
-                    .style(style::button(c, ButtonKind::Text))
-                    .on_press(Message::OpenDownloads),
-            ]
-            .align_y(Alignment::Center),
-        )
+        row![
+            button(labeled(
+                Icon::Refresh,
+                t("gui.photos.reload"),
+                c.on_secondary_container
+            ))
+            .padding(Padding::from([9, 18]))
+            .style(style::button(c, ButtonKind::Tonal))
+            .on_press_maybe((!g.loading).then(|| Message::LoadPhotos {
+                peer: g.peer.clone(),
+                more: false,
+            })),
+            button(labeled(
+                Icon::ExpandMore,
+                t("gui.photos.load_more"),
+                c.primary
+            ))
+            .padding(Padding::from([9, 18]))
+            .style(style::button(c, ButtonKind::Outlined))
+            .on_press_maybe((!g.loading && (g.photos.len() as u32) < g.total).then(|| {
+                Message::LoadPhotos {
+                    peer: g.peer.clone(),
+                    more: true,
+                }
+            })),
+            button(labeled(
+                Icon::Folder,
+                t("gui.common.open_downloads"),
+                c.primary
+            ))
+            .padding(Padding::from([9, 18]))
+            .style(style::button(c, ButtonKind::Outlined))
+            .on_press(Message::OpenDownloads),
+            space().width(Length::Fill),
+            status,
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
         .into()
     }
 
@@ -1742,14 +2003,14 @@ impl App {
                     text(
                         file_label
                             .clone()
-                            .unwrap_or_else(|| "Ningún archivo".into())
+                            .unwrap_or_else(|| t("gui.send.no_file").into())
                     )
                     .size(26)
                     .font(EXTRA_BOLD),
-                    text("Se envía por Bluetooth a un dispositivo emparejado.").size(14),
+                    text(t("gui.send.hint")).size(14),
                 ]
                 .width(Length::Fill),
-                button(text("Elegir archivo").font(SEMIBOLD))
+                button(labeled(Icon::Attach, t("gui.send.pick"), c.on_primary))
                     .padding(Padding::from([10, 22]))
                     .style(style::button(c, ButtonKind::Filled))
                     .on_press(Message::PickFile),
@@ -1766,11 +2027,11 @@ impl App {
         ));
 
         let mut col = column![
-            self.title(c, "Enviar", "Archivos del PC a tus dispositivos".into()),
+            self.title(c, t("gui.nav.send"), t("gui.send.subtitle").into()),
             header
         ]
         .spacing(14);
-        col = col.push(self.section(c, "Destino"));
+        col = col.push(self.section(c, t("gui.send.target")));
         let targets: Vec<&Peer> = self
             .snapshot
             .peers
@@ -1778,10 +2039,7 @@ impl App {
             .filter(|p| !p.bt_address.is_empty())
             .collect();
         if targets.is_empty() {
-            col = col.push(
-                text("No hay dispositivos emparejados con dirección Bluetooth conocida.")
-                    .color(c.on_surface_variant),
-            );
+            col = col.push(text(t("gui.send.no_target")).color(c.on_surface_variant));
         }
         for p in targets {
             let msg = (file_label.is_some() && self.daemon.is_some()).then(|| Message::SendTo {
@@ -1804,7 +2062,7 @@ impl App {
                             text(&p.bt_address).size(13).color(c.on_surface_variant)
                         ]
                         .width(Length::Fill),
-                        button(text("Enviar").font(SEMIBOLD))
+                        button(labeled(Icon::Send, t("gui.nav.send"), c.on_primary))
                             .padding(Padding::from([10, 22]))
                             .style(style::button(c, ButtonKind::Filled))
                             .on_press_maybe(msg),
@@ -1853,8 +2111,8 @@ impl App {
         .spacing(3);
 
         let mut theme_card = column![
-            text("Tema").size(22).font(BOLD),
-            text("OLED usa negro puro: en pantallas OLED los píxeles negros se apagan.")
+            text(t("gui.settings.theme")).size(22).font(BOLD),
+            text(t("gui.settings.theme_detail"))
                 .size(13)
                 .color(c.on_surface_variant),
             space().height(8),
@@ -1864,16 +2122,16 @@ impl App {
         if self.config.theme == ThemeMode::System {
             theme_card = theme_card.push(self.switch_row(
                 c,
-                "Negro puro cuando el sistema esté en oscuro",
-                Some("Con el tema oscuro del sistema, kushare usa el OLED."),
+                t("gui.settings.oled_system"),
+                Some(t("gui.settings.oled_system_detail")),
                 self.config.oled_when_system_dark,
                 Message::SetOledWhenSystemDark,
             ));
         }
         theme_card = theme_card.push(self.switch_row(
             c,
-            "Animaciones",
-            Some("Formas que giran mientras hay conexión o búsqueda."),
+            t("gui.settings.animations"),
+            Some(t("gui.settings.animations_detail")),
             self.config.animations,
             Message::SetAnimations,
         ));
@@ -1881,22 +2139,22 @@ impl App {
         let daemon_card = {
             let (label, action): (&str, Element<'_, Message>) = match self.state {
                 DaemonState::Running => (
-                    "Corriendo",
-                    button(text("Detener").font(SEMIBOLD))
+                    t("gui.settings.daemon_running"),
+                    button(labeled(Icon::Stop, t("gui.settings.stop"), c.primary))
                         .padding(Padding::from([10, 22]))
                         .style(style::button(c, ButtonKind::Outlined))
                         .on_press(Message::QuitDaemon)
                         .into(),
                 ),
                 DaemonState::NotRunning => (
-                    "Detenido",
-                    button(text("Iniciar").font(SEMIBOLD))
+                    t("gui.settings.daemon_stopped"),
+                    button(labeled(Icon::PlayCircle, t("gui.home.start"), c.on_primary))
                         .padding(Padding::from([10, 22]))
                         .style(style::button(c, ButtonKind::Filled))
                         .on_press(Message::StartDaemon)
                         .into(),
                 ),
-                DaemonState::Connecting => ("Conectando…", space().into()),
+                DaemonState::Connecting => (t("gui.settings.daemon_connecting"), space().into()),
             };
             row![
                 shape_icon(
@@ -1908,7 +2166,7 @@ impl App {
                     0.0
                 ),
                 column![
-                    text("Daemon de kushare").size(17).font(SEMIBOLD),
+                    text(t("gui.settings.daemon")).size(17).font(SEMIBOLD),
                     text(label).size(13).color(c.on_surface_variant),
                 ]
                 .width(Length::Fill),
@@ -1926,36 +2184,50 @@ impl App {
             .padding(Padding::from([3, 0]))
         };
         column![
-            self.title(c, "Ajustes", "Apariencia y conexión".into()),
-            self.section(c, "Apariencia"),
+            self.title(c, t("gui.nav.settings"), t("gui.settings.subtitle").into()),
+            self.section(c, t("gui.settings.appearance")),
             container(theme_card)
                 .padding(26)
                 .width(Length::Fill)
                 .style(style::card(c.container_high, c.on_surface, Shape::Wide)),
-            self.section(c, "Conexión"),
+            self.section(c, t("gui.settings.connection")),
             container(daemon_card)
                 .padding(20)
                 .width(Length::Fill)
                 .style(style::card(c.container_high, c.on_surface, Shape::List)),
-            self.section(c, "Diagnóstico"),
+            self.section(c, t("gui.settings.diagnostics")),
             container(
                 row![
-                    shape_icon(Icon::Search, Blob::Cookie6, c.tertiary, c.on_tertiary, 48.0, 0.0),
+                    shape_icon(
+                        Icon::Search,
+                        Blob::Cookie6,
+                        c.tertiary,
+                        c.on_tertiary,
+                        48.0,
+                        0.0
+                    ),
                     column![
-                        text("Comprobar conexión").size(17).font(SEMIBOLD),
+                        text(t("gui.settings.check")).size(17).font(SEMIBOLD),
                         text(if self.snapshot.link_port != 0 {
-                            format!("Puerto del enlace: {}/tcp. Revisa firewall, mDNS, Bluetooth y notificaciones.", self.snapshot.link_port)
+                            tf(
+                                "gui.settings.doctor_port",
+                                &[("port", &self.snapshot.link_port)],
+                            )
                         } else {
-                            "Revisa puerto, firewall, mDNS, Bluetooth y notificaciones.".to_string()
+                            t("gui.settings.check_detail").to_string()
                         })
                         .size(13)
                         .color(c.on_surface_variant),
                     ]
                     .width(Length::Fill),
-                    button(text("Diagnosticar").font(SEMIBOLD))
-                        .padding(Padding::from([10, 22]))
-                        .style(style::button(c, ButtonKind::Tonal))
-                        .on_press(Message::RunDoctor),
+                    button(labeled(
+                        Icon::Health,
+                        t("gui.settings.diagnose"),
+                        c.on_secondary_container
+                    ))
+                    .padding(Padding::from([10, 22]))
+                    .style(style::button(c, ButtonKind::Tonal))
+                    .on_press(Message::RunDoctor),
                 ]
                 .spacing(16)
                 .align_y(Alignment::Center),
@@ -1963,11 +2235,14 @@ impl App {
             .padding(20)
             .width(Length::Fill)
             .style(style::card(c.container_high, c.on_surface, Shape::List)),
-            self.section(c, "Acerca de"),
+            self.section(c, t("gui.settings.about")),
             container(column![
-                info("Nombre", self.snapshot.device_name.clone()),
-                info("Identificador", self.snapshot.device_id.clone()),
-                info("Versión", env!("CARGO_PKG_VERSION").to_string()),
+                info(t("gui.settings.name"), self.snapshot.device_name.clone()),
+                info(t("gui.settings.id"), self.snapshot.device_id.clone()),
+                info(
+                    t("gui.settings.version"),
+                    env!("CARGO_PKG_VERSION").to_string()
+                ),
             ])
             .padding(22)
             .width(Length::Fill)
@@ -2005,11 +2280,10 @@ impl App {
                     72.0,
                     self.angle
                 ),
-                text(format!("Emparejar con {}", p.name))
+                text(tf("gui.pairing.title", &[("name", &p.name)]))
                     .size(26)
                     .font(EXTRA_BOLD),
-                text("Comprueba que el otro dispositivo muestra el mismo código")
-                    .color(c.on_surface_variant),
+                text(t("gui.pairing.hint")).color(c.on_surface_variant),
                 container(text(pin).size(54).font(EXTRA_BOLD))
                     .padding(Padding::from([10, 34]))
                     .style(style::card(
@@ -2018,11 +2292,11 @@ impl App {
                         Shape::List
                     )),
                 row![
-                    button(text("Rechazar").font(SEMIBOLD))
+                    button(labeled(Icon::Close, t("gui.phone.reject"), c.primary))
                         .padding(Padding::from([10, 22]))
                         .style(style::button(c, ButtonKind::Text))
                         .on_press(Message::RespondPairing(false)),
-                    button(text("Coincide").font(SEMIBOLD))
+                    button(labeled(Icon::Check, t("gui.pairing.matches"), c.on_primary))
                         .padding(Padding::from([10, 26]))
                         .style(style::button(c, ButtonKind::Filled))
                         .on_press(Message::RespondPairing(true)),
@@ -2037,12 +2311,12 @@ impl App {
 
     fn apps_dialog<'a>(&self, c: Colors, f: &'a AppFilter) -> Element<'a, Message> {
         let title = if f.outgoing {
-            format!("Apps que envío a {}", f.peer_name)
+            tf("gui.apps.title_out", &[("name", &f.peer_name)])
         } else {
-            format!("Apps que recibo de {}", f.peer_name)
+            tf("gui.apps.title_in", &[("name", &f.peer_name)])
         };
         let list: Element<'a, Message> = match &f.apps {
-            None => text("Cargando…").into(),
+            None => text(t("gui.common.loading")).into(),
             Some((local, remote, out_blocked, in_blocked)) => {
                 let (apps, blocked) = if f.outgoing {
                     (local, out_blocked)
@@ -2050,9 +2324,7 @@ impl App {
                     (remote, in_blocked)
                 };
                 if apps.is_empty() {
-                    text("Las apps aparecen aquí cuando notifican algo por primera vez.")
-                        .color(c.on_surface_variant)
-                        .into()
+                    text(t("gui.apps.hint")).color(c.on_surface_variant).into()
                 } else {
                     scrollable(
                         column(apps.iter().map(|(id, name)| {
@@ -2082,7 +2354,7 @@ impl App {
                 list,
                 row![
                     space().width(Length::Fill),
-                    button(text("Listo").font(SEMIBOLD))
+                    button(labeled(Icon::Check, t("gui.common.done"), c.on_primary))
                         .padding(Padding::from([10, 26]))
                         .style(style::button(c, ButtonKind::Filled))
                         .on_press(Message::CloseApps),
@@ -2095,7 +2367,9 @@ impl App {
 
     fn doctor_dialog<'a>(&self, c: Colors, report: &'a str) -> Element<'a, Message> {
         let body: Element<'a, Message> = if report.is_empty() {
-            text("Diagnosticando…").color(c.on_surface_variant).into()
+            text(t("gui.settings.diagnosing"))
+                .color(c.on_surface_variant)
+                .into()
         } else {
             scrollable(text(report).font(Font::MONOSPACE).size(13))
                 .height(Length::Fixed(380.0))
@@ -2104,11 +2378,13 @@ impl App {
         self.dialog(
             c,
             column![
-                text("Diagnóstico").size(26).font(EXTRA_BOLD),
+                text(t("gui.settings.diagnostics"))
+                    .size(26)
+                    .font(EXTRA_BOLD),
                 body,
                 row![
                     space().width(Length::Fill),
-                    button(text("Cerrar").font(SEMIBOLD))
+                    button(labeled(Icon::Close, t("gui.common.close"), c.on_primary))
                         .padding(Padding::from([10, 26]))
                         .style(style::button(c, ButtonKind::Filled))
                         .on_press(Message::CloseDoctor),

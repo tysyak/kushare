@@ -2821,10 +2821,12 @@ dependencies = [
  "kushare-crypto",
  "kushare-dbus",
  "kushare-discovery",
+ "kushare-i18n",
  "kushare-link",
  "kushare-proto",
  "kushare-transfer",
  "kushare-tray",
+ "libc",
  "ratatui",
  "rfd",
  "serde",
@@ -2883,6 +2885,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kushare-i18n"
+version = "0.3.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "kushare-link"
 version = "0.3.0"
 dependencies = [
@@ -2935,6 +2944,7 @@ dependencies = [
  "freedesktop-icons",
  "futures-util",
  "kushare-core",
+ "kushare-i18n",
  "kushare-link",
  "muda",
  "png 0.18.1",

@@ -137,6 +137,23 @@ Lo mismo está en la GUI (páginas *Teléfono* y *Fotos*) y en la bandeja. En se
 - **Bajo consumo**: no hay escaneo continuo; el keepalive por Bluetooth es de 4 min (la propia pila Bluetooth detecta si el otro dispositivo se aleja).
 - **Convivencia con KDE Connect / GSConnect**: sus notificaciones no se reenvían (son las del propio teléfono, o ecos), y kushare nunca reenvía una notificación que lleve la firma de uno de sus espejos. Usar ambos a la vez provocaba un bucle infinito antes de estas dos protecciones; aun así, si los dos sincronizan notificaciones verás cada una duplicada.
 
+## Traducir
+
+Los textos de la GUI, la bandeja y los avisos del daemon están en
+[`crates/kushare-i18n/locales/es.json`](crates/kushare-i18n/locales/es.json)
+(español, el idioma de referencia), agrupados por pantalla:
+
+```json
+{ "gui": { "nav": { "home": "Inicio" } } }
+```
+
+Para otro idioma, copia `es.json` a `<idioma>.json` (p. ej. `en.json`) y traduce
+los valores sin tocar las claves ni los marcadores `{nombre}`. Sin recompilar:
+ponlo en `~/.local/share/kushare/locales/` y arranca con `KUSHARE_LANG=en` (si
+no, se usa el idioma de `LANG`). Para incluirlo en el binario, añádelo a
+`BUILTIN` en `crates/kushare-i18n/src/lib.rs`. Lo que falte sale en español. Un
+test comprueba que toda clave usada en el código existe en `es.json`.
+
 ## Firewall
 
 Si el puerto de recepción no es alcanzable desde otro dispositivo (error típico del lado emisor: "No route to host"), casi siempre es el firewall del equipo que corre `kushare`, no el protocolo. Pasa sobre todo con interfaces nuevas (p. ej. tethering USB de un teléfono) que el firewall mete por defecto en una zona/perfil restrictivo.

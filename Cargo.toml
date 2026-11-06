@@ -9,6 +9,7 @@ members = [
     "crates/kushare-tray",
     "crates/kushare-link",
     "crates/kushare-dbus",
+    "crates/kushare-i18n",
     ".",
 ]
 
@@ -40,6 +41,7 @@ name = "kushare"
 path = "src/main.rs"
 
 [dependencies]
+libc = "0.2"
 tokio = { workspace = true, features = ["process"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -63,6 +65,7 @@ zbus = { version = "5.19.0", features = ["tokio"] }
 directories = "6"
 iced = { version = "0.14", features = ["tokio", "svg", "image", "advanced"] }
 kushare-dbus = { path = "crates/kushare-dbus" }
+kushare-i18n = { path = "crates/kushare-i18n" }
 toml = "0.9"
 serde = { workspace = true, features = ["derive"] }
 

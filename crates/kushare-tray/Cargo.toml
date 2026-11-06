@@ -13,6 +13,7 @@ tracing.workspace = true
 tray-icon = { version = "0.25.1", default-features = false, features = ["ksni"] }
 zbus = { version = "5.19.0", features = ["tokio"] }
 kushare-core = { path = "../kushare-core" }
+kushare-i18n = { path = "../kushare-i18n" }
 png = "0.18.1"
 freedesktop-icons = "0.4.0"
 kushare-link = { path = "../kushare-link" }

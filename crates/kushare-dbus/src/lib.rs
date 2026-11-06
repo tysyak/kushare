@@ -123,6 +123,9 @@ pub trait Daemon {
     /// Cambió la batería, el timbre, la llamada o la multimedia de un peer.
     #[zbus(signal)]
     fn peer_state_changed(&self, peer_id: String) -> zbus::Result<()>;
+    /// La galería del peer tiene fotos nuevas (pedir las más recientes).
+    #[zbus(signal)]
+    fn photos_changed(&self, peer_id: String) -> zbus::Result<()>;
 }
 
 /// Conecta con el daemon en el bus de sesión. Falla si no está corriendo.

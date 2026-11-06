@@ -177,6 +177,7 @@ message Feature {
     PhotoData photo_data = 11;
     CallState call_state = 12;
     CallCommand call_command = 13;
+    PhotosChanged photos_changed = 14;
   }
 }
 
@@ -304,6 +305,10 @@ message PhotoData {
   bool last = 6;
   string error = 7;
 }
+
+// La galería del emisor cambió (foto o captura nueva): el receptor que la
+// esté mostrando pide las más recientes con `PhotoListRequest`.
+message PhotosChanged {}
 
 enum CallPhase {
   CALL_IDLE = 0;
