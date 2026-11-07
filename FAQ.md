@@ -238,3 +238,23 @@ El daemon mira una vez al día si hay versión nueva y te avisa. En la GUI,
 *Ajustes → Actualizaciones*: descarga el paquete de tu sistema, comprueba su
 SHA-256 y lo instala (pide tu contraseña). En la terminal:
 `kushare update --download`. En el teléfono, *Ajustes → Actualizaciones*.
+
+## ¿El enlace gasta mucha batería? ¿Por dónde va cada cosa?
+
+Desde la 0.5.0 la conexión es **híbrida**: el enlace permanente va por
+Bluetooth (en reposo apenas consume) y lo pesado —fotos, SMS, listas— abre un
+enlace por Wi-Fi solo mientras hace falta (se cierra a los 30 s sin uso). Así
+la radio Wi-Fi del teléfono no se queda despierta y el Bluetooth no se satura
+con transferencias largas. `kushare devices` lo muestra:
+«conectado por bluetooth + datos wifi (192.168.0.17:47816)».
+
+Si el teléfono y el PC no están en la misma red (o la red aísla los
+dispositivos), todo sigue por Bluetooth. Para forzarlo siempre:
+`kushare setting hybrid off` o, en el teléfono, *Ajustes → Conexión híbrida*.
+
+## El bloqueo dinámico no bloquea
+
+Comprueba que esté activado (`kushare setting`) y que tu escritorio atienda
+`loginctl lock-session` (en Hyprland, `lock_cmd` en `hypridle.conf`). Solo
+cuenta el **Bluetooth**: si el teléfono sigue conectado por Wi-Fi no se
+considera cerca ni lejos; se bloquea tras ~30 s sin su Bluetooth.

@@ -6,6 +6,32 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.5.0] - 2026-11-07
+
+### Añadido
+- **Conexión híbrida** (por defecto), como Enlace Móvil: el enlace de
+  control (notificaciones, llamadas, multimedia, timbre, portapapeles,
+  proximidad) va por **Bluetooth**, que en reposo apenas gasta; lo pesado
+  (fotos, galería, SMS, contactos, registro de llamadas, avisos, fondo de
+  pantalla) abre **a demanda** un enlace de datos por **Wi-Fi** con el
+  teléfono, autenticado y cifrado igual, que se cierra solo tras 30 s sin
+  uso (la radio Wi-Fi vuelve a ahorro de energía). El teléfono dice su IP
+  por Bluetooth: no hace falta escanear la red.
+  En casa: 30 miniaturas en 0,5 s (antes ~6 s) y una foto de 3 MB en 0,5 s
+  (antes ~70 s). Sin Wi-Fi común, todo sigue por Bluetooth como antes.
+- Modo **Solo Bluetooth** (el de la 0.4): `kushare setting hybrid off` o
+  *Ajustes → Funciones*.
+- **Bloqueo dinámico** (desactivado por defecto): si el teléfono se aleja
+  (se pierde su Bluetooth ~30 s), el PC avisa con *Cancelar* y bloquea la
+  sesión (`loginctl lock-session`). `kushare setting dynamic-lock on`.
+- `kushare devices` muestra el enlace de datos: «conectado por bluetooth +
+  datos wifi (…)».
+
+### Cambiado
+- El enlace de control se reconecta **primero por Bluetooth** y solo usa
+  Wi-Fi si no hay Bluetooth; si quedó por Wi-Fi, vuelve a Bluetooth en
+  cuanto se puede (un enlace por Bluetooth siempre sustituye a uno por Wi-Fi).
+
 ## [0.4.1] - 2026-11-07
 
 ### Añadido

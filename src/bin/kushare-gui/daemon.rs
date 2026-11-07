@@ -21,7 +21,10 @@ pub struct Peer {
 impl Peer {
     /// "Bluetooth" / "Wi-Fi" según el transporte.
     pub fn via(&self) -> &'static str {
-        if self.transport.starts_with("bluetooth") {
+        // Modo híbrido con el enlace de datos abierto.
+        if self.transport.starts_with("bluetooth") && self.transport.contains("+ datos wifi (") {
+            "Bluetooth + Wi-Fi"
+        } else if self.transport.starts_with("bluetooth") {
             "Bluetooth"
         } else if self.transport.starts_with("wifi") {
             "Wi-Fi"

@@ -8,6 +8,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod dbus;
 pub mod features;
+pub mod proximity;
 pub mod settings;
 
 use kushare_discovery::mdns::{
@@ -45,6 +46,7 @@ const CALL_ACTION_PREFIX: &str = "kushare-call:";
 const PHOTO_VIEW: &str = "kushare-photo-view";
 const PHOTO_COPY: &str = "kushare-photo-copy";
 const PHOTO_GALLERY: &str = "kushare-photo-gallery";
+const LOCK_CANCEL: &str = "kushare-lock-cancel";
 const RECEIVE_ACCEPT: &str = "kushare-receive-accept";
 const RECEIVE_REJECT: &str = "kushare-receive-reject";
 /// Sin respuesta en este tiempo, el envío por Wi-Fi se rechaza.
@@ -367,10 +369,26 @@ struct DesktopDialer {
 }
 
 impl Dialer for DesktopDialer {
+    /// El enlace de control va primero por Bluetooth (bajo consumo, siempre
+    /// abierto: notificaciones, llamadas, proximidad); por Wi-Fi solo si no
+    /// hay Bluetooth. En modo híbrido lo pesado abre aparte un enlace de
+    /// datos por Wi-Fi (ver `Features::ensure_bulk`).
     fn dial(&self, peer: PeerRecord) -> DialFuture {
         let bt = self.bt.clone();
         Box::pin(async move {
             let mut last_err = anyhow::anyhow!("{} no tiene dirección conocida", peer.device_name);
+            if let (Some(bt), Some(bt_addr)) = (bt, peer.bt_address.as_deref()) {
+                let address: bluer::Address = bt_addr.parse()?;
+                match bt.connect_raw(address).await {
+                    Ok(stream) => {
+                        return Ok((
+                            Box::new(stream) as Box<dyn LinkStream>,
+                            Transport::Bluetooth(bt_addr.to_string()),
+                        ));
+                    }
+                    Err(err) => last_err = err,
+                }
+            }
             if let Some(addr) = peer
                 .last_tcp_addr
                 .as_deref()
@@ -386,14 +404,6 @@ impl Dialer for DesktopDialer {
                     Ok(Err(err)) => last_err = err.into(),
                     Err(_) => last_err = anyhow::anyhow!("tiempo agotado conectando a {addr}"),
                 }
-            }
-            if let (Some(bt), Some(bt_addr)) = (bt, peer.bt_address.as_deref()) {
-                let address: bluer::Address = bt_addr.parse()?;
-                let stream = bt.connect_raw(address).await?;
-                return Ok((
-                    Box::new(stream) as Box<dyn LinkStream>,
-                    Transport::Bluetooth(bt_addr.to_string()),
-                ));
             }
             Err(last_err)
         })
@@ -525,7 +535,48 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
     // Reconexión
     {
         let manager = manager.clone();
+        let bt = bt.clone();
         tokio::spawn(async move { manager.run_reconnect(DesktopDialer { bt }).await });
+    }
+
+    // Si el control quedó por Wi-Fi (p. ej. el Bluetooth estuvo apagado),
+    // volver a pasarlo a Bluetooth en cuanto se pueda: el nuevo enlace
+    // sustituye al de Wi-Fi (ver la regla de duplicados del manager).
+    if let Some(bt) = bt.clone() {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                ticker.tick().await;
+                for peer in manager.peers() {
+                    let on_wifi = manager
+                        .control_transport(&peer.device_id)
+                        .is_some_and(|t| !t.starts_with("bluetooth"));
+                    let Some(addr) = peer.bt_address.as_deref() else {
+                        continue;
+                    };
+                    if !on_wifi {
+                        continue;
+                    }
+                    let Ok(address) = addr.parse::<bluer::Address>() else {
+                        continue;
+                    };
+                    match bt.connect_raw(address).await {
+                        Ok(stream) => {
+                            let result = manager
+                                .connect(
+                                    stream,
+                                    Transport::Bluetooth(addr.to_string()),
+                                    ConnectIntent::Reconnect,
+                                )
+                                .await;
+                            tracing::info!(peer = %peer.device_id, ok = result.is_ok(), "control de vuelta a Bluetooth");
+                        }
+                        Err(err) => tracing::debug!(?err, "el Bluetooth aún no está disponible"),
+                    }
+                }
+            }
+        });
     }
 
     // Notificaciones
@@ -570,6 +621,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         .features
         .take_new_photos()
         .expect("el receptor de fotos nuevas se toma una sola vez");
+    let (proximity_tx, mut proximity_rx) = mpsc::unbounded_channel();
     let loop_handle = handle.clone();
     tokio::spawn(async move {
         let mut ui = DesktopUi {
@@ -582,6 +634,9 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
             calls: HashMap::new(),
             receive_prompts: HashMap::new(),
             photo_prompts: HashMap::new(),
+            proximity: proximity::Proximity::default(),
+            proximity_tx,
+            lock_prompts: HashMap::new(),
         };
         loop {
             tokio::select! {
@@ -590,6 +645,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
                 Some(e) = notifier_events.recv() => ui.on_notifier_event(e).await,
                 Some(r) = receive_rx.recv() => ui.ask_receive(r).await,
                 Some(p) = new_photos.recv() => ui.show_new_photos(p).await,
+                Some(e) = proximity_rx.recv() => ui.on_proximity(e).await,
                 else => break,
             }
         }
@@ -698,9 +754,51 @@ struct DesktopUi {
     receive_prompts: HashMap<u32, tokio::sync::oneshot::Sender<bool>>,
     /// id del aviso de foto nueva → (peer, id de la foto).
     photo_prompts: HashMap<u32, (String, String)>,
+    proximity: proximity::Proximity,
+    proximity_tx: mpsc::UnboundedSender<proximity::ProximityEvent>,
+    /// Aviso de bloqueo dinámico: id → (peer, cancelar).
+    lock_prompts: HashMap<u32, (String, Arc<std::sync::atomic::AtomicBool>)>,
 }
 
 impl DesktopUi {
+    async fn on_proximity(&mut self, event: proximity::ProximityEvent) {
+        match event {
+            proximity::ProximityEvent::Warn { peer, cancel } => {
+                let name = self.peer_name(&peer);
+                let shown = self
+                    .notifier
+                    .notify_full(&MirrorNotification {
+                        app_name: "kushare".into(),
+                        summary: tf("daemon.lock_title", &[("name", &name)]),
+                        body: t("daemon.lock_body").into(),
+                        actions: vec![(LOCK_CANCEL.into(), t("daemon.lock_cancel").into())],
+                        persistent: true,
+                        ..Default::default()
+                    })
+                    .await;
+                if let Ok(id) = shown {
+                    self.lock_prompts.insert(id, (peer, cancel));
+                }
+            }
+            proximity::ProximityEvent::Done { peer } => self.close_lock_prompt(&peer).await,
+        }
+    }
+
+    async fn close_lock_prompt(&mut self, peer: &str) {
+        let ids: Vec<u32> = self
+            .lock_prompts
+            .iter()
+            .filter(|(_, (p, _))| p == peer)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            if let Some((_, cancel)) = self.lock_prompts.remove(&id) {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            let _ = self.notifier.close(id).await;
+        }
+    }
+
     /// Aviso "Foto nueva en …" con la miniatura y los botones Ver, Copiar y Galería.
     async fn show_new_photos(&mut self, new: features::NewPhotos) {
         let Some(first) = new.photos.first() else {
@@ -843,16 +941,30 @@ impl DesktopUi {
             LinkEvent::Feature { device_id, feature } => {
                 self.handle.features.on_remote(device_id, feature.clone())
             }
-            LinkEvent::PeerConnected { device_id, .. } => {
+            LinkEvent::PeerConnected {
+                device_id,
+                transport,
+                ..
+            } => {
                 self.handle.features.on_connected(device_id);
+                self.proximity.on_connected(device_id, transport);
+                if transport.starts_with("bluetooth") {
+                    self.close_lock_prompt(device_id).await;
+                }
                 None
             }
             LinkEvent::PeerDisconnected { device_id } => {
+                self.proximity.on_disconnected(
+                    device_id,
+                    self.handle.features.settings.get().dynamic_lock,
+                    self.proximity_tx.clone(),
+                );
                 self.handle.features.on_disconnected(device_id);
                 self.show_call(device_id.clone(), None).await;
                 None
             }
             LinkEvent::PeerUnpaired { device_id } => {
+                self.proximity.on_unpaired(device_id);
                 self.handle.features.forget(device_id);
                 None
             }
@@ -1107,6 +1219,12 @@ impl DesktopUi {
     async fn on_notifier_event(&mut self, event: NotifierEvent) {
         match event {
             NotifierEvent::ActionInvoked { id, action } => {
+                if action == LOCK_CANCEL
+                    && let Some((_, cancel)) = self.lock_prompts.remove(&id)
+                {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
                 if let Some((peer, photo)) = self.photo_prompts.get(&id).cloned() {
                     self.on_photo_action(&peer, &photo, &action);
                     return;

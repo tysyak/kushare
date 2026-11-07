@@ -153,12 +153,23 @@ impl DaemonApi {
             .peers()
             .into_iter()
             .map(|p| {
+                // Modo híbrido: "bluetooth (…) + datos wifi (…)" con el
+                // enlace de datos abierto, o "… + datos wifi disponible".
+                let mut transport = p.transport.unwrap_or_default();
+                if let Some(bulk) = &p.bulk_transport {
+                    transport = format!("{transport} + datos {bulk}");
+                } else if p.connected
+                    && self.link.features.settings.get().hybrid
+                    && self.link.features.lan_address(&p.device_id).is_some()
+                {
+                    transport = format!("{transport} + datos wifi disponible");
+                }
                 (
                     p.device_id,
                     p.device_name,
                     p.device_kind,
                     p.connected,
-                    p.transport.unwrap_or_default(),
+                    transport,
                     p.outgoing_enabled,
                     p.incoming_enabled,
                     p.bt_address.unwrap_or_default(),

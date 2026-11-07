@@ -27,7 +27,10 @@
     "photo_new_many": "{n} new photos on {name}",
     "photo_view": "View",
     "photo_copy": "Copy",
-    "photo_gallery": "Gallery"
+    "photo_gallery": "Gallery",
+    "lock_title": "{name} moved away",
+    "lock_body": "This PC will lock in 10 s (dynamic lock).",
+    "lock_cancel": "Cancel"
   },
   "gui": {
     "apps": {
@@ -187,7 +190,11 @@
       "receive_confirm": "Ask before receiving over Wi-Fi",
       "receive_confirm_detail": "Over Wi-Fi anyone on the network can send you files; over Bluetooth only bonded devices.",
       "photo_notify": "Notify about new photos",
-      "photo_notify_detail": "A notification with the thumbnail when the phone has a new photo or screenshot."
+      "photo_notify_detail": "A notification with the thumbnail when the phone has a new photo or screenshot.",
+      "hybrid": "Hybrid connection (recommended)",
+      "hybrid_detail": "Control, calls and notifications over Bluetooth (low power); photos, texts and lists over Wi-Fi when the phone is on the same network. Off: everything over Bluetooth.",
+      "dynamic_lock": "Dynamic lock",
+      "dynamic_lock_detail": "Locks this PC when the phone moves away (Bluetooth lost for about 30 s). It warns first with “Cancel”."
     },
     "theme": {
       "dark": "Dark",

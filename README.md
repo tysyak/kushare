@@ -135,7 +135,7 @@ kushare dial <dispositivo> <número>    # llama desde el teléfono (admite letra
 kushare phone-notifs <dispositivo> [--dismiss <key>]
 kushare clipboard [--copy N | --clear] # historial del portapapeles
 kushare pc-audio [--output X | --input X]   # salida y micrófono de este PC
-kushare setting [nombre on|off]        # clipboard-sync, clipboard-history, photo-prefetch, photo-notify, update-check, receive-confirm
+kushare setting [nombre on|off]        # clipboard-sync, clipboard-history, photo-prefetch, photo-notify, update-check, receive-confirm, hybrid, dynamic-lock
 kushare update [--download]            # ¿hay versión nueva? (descarga verificada con SHA-256)
 ```
 
@@ -148,6 +148,22 @@ Lo mismo está en la GUI (páginas *Teléfono* y *Fotos*) y en la bandeja. En se
 - Android no deja a una app cambiar la salida de audio de las demás: desde el PC solo se ve; en el teléfono, *Ajustes → Elegir salida de audio*.
 
 `<dispositivo>` acepta el id, un prefijo del id o el nombre. Todo esto también está en el menú del icono de bandeja (*Dispositivos*). Los subcomandos hablan con el daemon por D-Bus (`org.kushare.Daemon` en el bus de sesión), igual que cualquier otra interfaz que se quiera construir.
+
+### ¿Por dónde va cada cosa? (conexión híbrida)
+
+| Qué | Por dónde | Por qué |
+|---|---|---|
+| Notificaciones, llamadas, multimedia, timbre, portapapeles, batería, proximidad | **Bluetooth** (enlace de control, siempre abierto) | En reposo apenas gasta (*sniff mode*, un ping cada 4 min). |
+| Fotos, galería, SMS, contactos, registro de llamadas, avisos, fondo de pantalla | **Wi-Fi** (enlace de datos, a demanda) | ~100 veces más rápido; la radio termina en segundos y se cierra a los 30 s sin uso. |
+
+Igual que Enlace Móvil (Bluetooth para llamadas y presencia, Wi-Fi local para
+lo demás), sin nube. El teléfono le dice al PC su IP por Bluetooth: no hay
+escaneo. Sin Wi-Fi común (o con `kushare setting hybrid off`, o en el teléfono
+*Ajustes → Conexión híbrida* apagado) todo va por Bluetooth.
+
+**Bloqueo dinámico** (`kushare setting dynamic-lock on`): si el teléfono se
+aleja y se pierde su Bluetooth ~30 s, el PC avisa (con *Cancelar*) y bloquea
+la sesión con `loginctl lock-session` (lo atienden hypridle, GNOME, KDE…).
 
 ### Cómo funciona
 

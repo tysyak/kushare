@@ -23,6 +23,11 @@ pub struct Settings {
     pub receive_confirm: bool,
     /// Avisar en el escritorio de las fotos nuevas del teléfono.
     pub photo_notify: bool,
+    /// Modo híbrido: control por Bluetooth y lo pesado por Wi-Fi (si el
+    /// teléfono está en la misma red). Apagado = todo por Bluetooth.
+    pub hybrid: bool,
+    /// Bloquear la sesión si el teléfono se aleja (se pierde el Bluetooth).
+    pub dynamic_lock: bool,
 }
 
 impl Default for Settings {
@@ -34,6 +39,8 @@ impl Default for Settings {
             update_check: true,
             receive_confirm: true,
             photo_notify: true,
+            hybrid: true,
+            dynamic_lock: false,
         }
     }
 }
@@ -46,6 +53,8 @@ pub const NAMES: &[&str] = &[
     "update-check",
     "receive-confirm",
     "photo-notify",
+    "hybrid",
+    "dynamic-lock",
 ];
 
 impl Settings {
@@ -57,6 +66,8 @@ impl Settings {
             "update-check" => self.update_check,
             "receive-confirm" => self.receive_confirm,
             "photo-notify" => self.photo_notify,
+            "hybrid" => self.hybrid,
+            "dynamic-lock" => self.dynamic_lock,
             _ => return None,
         })
     }
@@ -69,6 +80,8 @@ impl Settings {
             "update-check" => &mut self.update_check,
             "receive-confirm" => &mut self.receive_confirm,
             "photo-notify" => &mut self.photo_notify,
+            "hybrid" => &mut self.hybrid,
+            "dynamic-lock" => &mut self.dynamic_lock,
             _ => return None,
         })
     }

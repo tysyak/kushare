@@ -26,6 +26,7 @@ fn fast_config() -> LinkConfig {
         write_timeout: Duration::from_secs(2),
         reconnect_min: Duration::from_millis(50),
         reconnect_max: Duration::from_millis(200),
+        bulk_idle: Duration::from_millis(400),
     }
 }
 
@@ -696,5 +697,121 @@ async fn features_pass_through_to_the_peer() {
             percent: 42,
             charging: true
         }))
+    );
+}
+
+fn photo_list(request_id: u64) -> kushare_link::pb::Feature {
+    use kushare_link::pb::{self, feature::Kind as F};
+    pb::Feature {
+        kind: Some(F::PhotoList(pb::PhotoList {
+            request_id,
+            total: 1,
+            photos: Vec::new(),
+        })),
+    }
+}
+
+#[tokio::test]
+async fn bulk_lane_carries_heavy_traffic_even_if_control_stalls() {
+    use kushare_link::pb::feature::Kind as F;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b, control) = paired(dir.path()).await;
+    let (id_a, id_b) = (a.mgr.device_id().to_string(), b.mgr.device_id().to_string());
+
+    // a abre el enlace de datos; no cuenta como una conexión nueva.
+    let (_bulk, ra, rb) = link(&a, &b, ConnectIntent::Bulk).await;
+    assert_eq!(ra.unwrap(), id_b);
+    assert_eq!(rb.unwrap(), id_a);
+    eventually("enlace de datos en ambos lados", || {
+        a.mgr.has_bulk(&id_b) && b.mgr.has_bulk(&id_a)
+    })
+    .await;
+    assert!(b.mgr.peers()[0].bulk_transport.is_some());
+
+    // Con el control congelado, lo pesado sigue llegando (va por datos).
+    control.freeze();
+    b.mgr.send_feature(&id_a, photo_list(7));
+    let LinkEvent::Feature { feature, .. } = a
+        .wait_for("PhotoList por el enlace de datos", |e| {
+            matches!(e, LinkEvent::Feature { .. })
+        })
+        .await
+    else {
+        unreachable!()
+    };
+    assert!(matches!(feature.kind, Some(F::PhotoList(l)) if l.request_id == 7));
+    let _ = &mut b;
+}
+
+#[tokio::test]
+async fn bulk_lane_closes_after_idle_and_control_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, _control) = paired(dir.path()).await;
+    let id_b = b.mgr.device_id().to_string();
+    let (_bulk, ra, _) = link(&a, &b, ConnectIntent::Bulk).await;
+    ra.unwrap();
+    eventually("enlace de datos abierto", || a.mgr.has_bulk(&id_b)).await;
+    // Sin tráfico se cierra solo; el de control sigue.
+    eventually("enlace de datos cerrado por inactividad", || {
+        !a.mgr.has_bulk(&id_b)
+    })
+    .await;
+    assert!(a.mgr.is_connected(&id_b));
+}
+
+#[tokio::test]
+async fn unknown_device_cannot_open_a_bulk_lane() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_a, b, _control) = paired(dir.path()).await;
+    let stranger = node(dir.path(), "c");
+    let (_p, rc, rb) = link(&stranger, &b, ConnectIntent::Bulk).await;
+    assert!(rc.is_err());
+    assert!(rb.is_err());
+    assert!(!b.mgr.has_bulk(stranger.mgr.device_id()));
+}
+
+#[tokio::test]
+async fn bluetooth_control_link_replaces_a_wifi_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, _first) = paired(dir.path()).await; // transporte de prueba ("test")
+    let id_b = b.mgr.device_id().to_string();
+    // Un segundo enlace de control por "Bluetooth": debe quedarse ese, en
+    // los dos lados, aunque lo inicie cualquiera.
+    let (_bt, sa, sb) = Proxy::new();
+    let bt = || Transport::Bluetooth("AA:BB:CC:DD:EE:FF".into());
+    let (ra, rb) = tokio::join!(
+        b.mgr.connect(sb, bt(), ConnectIntent::Reconnect),
+        a.mgr.accept(sa, bt()),
+    );
+    ra.unwrap();
+    rb.unwrap();
+    eventually("control por Bluetooth en ambos lados", || {
+        a.mgr
+            .control_transport(&id_b)
+            .is_some_and(|t| t.starts_with("bluetooth"))
+            && b.mgr
+                .control_transport(a.mgr.device_id())
+                .is_some_and(|t| t.starts_with("bluetooth"))
+    })
+    .await;
+    // Y un enlace por Wi-Fi posterior no lo desplaza.
+    let (_wifi, sa, sb) = Proxy::new();
+    let (ra, _) = tokio::join!(
+        a.mgr
+            .connect(sa, test_transport(), ConnectIntent::Reconnect),
+        b.mgr.accept(sb, test_transport()),
+    );
+    assert!(
+        ra.is_err()
+            || a.mgr
+                .control_transport(&id_b)
+                .unwrap()
+                .starts_with("bluetooth")
+    );
+    assert!(
+        a.mgr
+            .control_transport(&id_b)
+            .unwrap()
+            .starts_with("bluetooth")
     );
 }

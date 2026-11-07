@@ -79,7 +79,12 @@ message Unpair {}
 // "Te conozco y te he autenticado": tras `AuthProof`, el iniciador manda
 // `Ready` (reconexión de un peer ya emparejado) o `PairRequest`; el
 // respondedor contesta `Ready` si también lo conoce, o `Unpair` si no.
-message Ready {}
+message Ready {
+  // Conexión adicional de DATOS (modo híbrido): el control sigue por el
+  // enlace principal (normalmente Bluetooth) y por esta, normalmente Wi-Fi,
+  // va solo el tráfico pesado. Se cierra sola tras un rato sin uso.
+  bool bulk = 1;
+}
 
 message Ping {
   uint64 nonce = 1;
@@ -196,6 +201,7 @@ message Feature {
     Wallpaper wallpaper = 30;
     PhotoDelete photo_delete = 31;
     CommandResult command_result = 32;
+    LanAddress lan_address = 33;
   }
 }
 
@@ -540,4 +546,12 @@ message CommandResult {
   string error = 3;
   // "done" | "confirm" (hay que confirmarlo en el teléfono).
   string status = 4;
+}
+
+// Dónde escucha el emisor por la red local (modo híbrido): el receptor
+// abre ahí, cuando lo necesita, un enlace de datos (`Ready.bulk`) para el
+// tráfico pesado. `addrs` vacío = no usar Wi-Fi (solo Bluetooth o sin red).
+message LanAddress {
+  repeated string addrs = 1;
+  uint32 port = 2;
 }

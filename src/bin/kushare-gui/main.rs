@@ -2737,6 +2737,20 @@ impl App {
         let features_card = column![
             self.switch_row(
                 c,
+                t("gui.settings.hybrid"),
+                Some(t("gui.settings.hybrid_detail")),
+                self.setting("hybrid"),
+                |on| Message::SetSetting("hybrid".into(), on),
+            ),
+            self.switch_row(
+                c,
+                t("gui.settings.dynamic_lock"),
+                Some(t("gui.settings.dynamic_lock_detail")),
+                self.setting("dynamic-lock"),
+                |on| Message::SetSetting("dynamic-lock".into(), on),
+            ),
+            self.switch_row(
+                c,
                 t("gui.settings.prefetch"),
                 Some(t("gui.settings.prefetch_detail")),
                 self.setting("photo-prefetch"),
@@ -3150,7 +3164,7 @@ impl App {
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, on)| *on)
-            .unwrap_or(name != "clipboard-history")
+            .unwrap_or(!matches!(name, "clipboard-history" | "dynamic-lock"))
     }
 }
 

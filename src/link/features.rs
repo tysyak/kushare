@@ -57,6 +57,8 @@ const PHOTO_CACHE_MAX_BYTES: u64 = 400 * 1024 * 1024;
 const PREFETCH_DELAY_ON_CONNECT: Duration = Duration::from_secs(20);
 /// Los contactos cambian poco: se reutilizan unos minutos.
 const CONTACTS_TTL: Duration = Duration::from_secs(600);
+/// Tiempo para conectar el enlace de datos por Wi-Fi (si no, Bluetooth).
+const BULK_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Umbral para avisar de batería baja del teléfono.
 pub const LOW_BATTERY: u32 = 15;
 
@@ -147,6 +149,10 @@ pub struct Features {
     /// Fotos descargándose ahora (peer, id), para no pedirlas dos veces.
     inflight: Mutex<HashSet<(String, String)>>,
     contacts: Mutex<HashMap<String, (Instant, Vec<pb::Contact>)>>,
+    /// Dónde escucha cada teléfono en la red local (modo híbrido).
+    lan: Mutex<HashMap<String, Vec<std::net::SocketAddr>>>,
+    /// Evita abrir dos enlaces de datos a la vez con el mismo peer.
+    bulk_opening: tokio::sync::Mutex<()>,
     wallpapers: Mutex<HashMap<String, WallpaperInfo>>,
     cache_dir: PathBuf,
     /// Órdenes hacia las tareas locales (MPRIS, pactl).
@@ -188,6 +194,8 @@ impl Features {
             downloads: Mutex::default(),
             inflight: Mutex::default(),
             contacts: Mutex::default(),
+            lan: Mutex::default(),
+            bulk_opening: tokio::sync::Mutex::new(()),
             wallpapers: Mutex::default(),
             cache_dir: cache_dir.to_path_buf(),
             commands,
@@ -368,6 +376,23 @@ impl Features {
                 self.clipboard.on_remote(peer_id, c.text);
                 return None;
             }
+            F::LanAddress(lan) => {
+                drop(peers);
+                let port = u16::try_from(lan.port).unwrap_or(0);
+                let addrs: Vec<std::net::SocketAddr> = lan
+                    .addrs
+                    .iter()
+                    .filter_map(|a| a.parse::<std::net::IpAddr>().ok())
+                    .filter(|ip| port != 0 && is_lan(ip))
+                    .map(|ip| std::net::SocketAddr::new(ip, port))
+                    .collect();
+                tracing::debug!(%peer_id, ?addrs, "dirección de red local del peer");
+                self.lan
+                    .lock()
+                    .expect("mutex envenenado")
+                    .insert(peer_id.to_string(), addrs);
+                return None;
+            }
             // La GUI se entera por la señal D-Bus `PhotosChanged` (ver
             // dbus.rs); aquí solo se precargan las nuevas.
             F::PhotosChanged(_) => {
@@ -415,6 +440,63 @@ impl Features {
         self.manager
             .send_feature(peer_id, pb::Feature { kind: Some(kind) });
         Ok(())
+    }
+
+    /// Modo híbrido: abre (si hace falta y se puede) el enlace de datos por
+    /// Wi-Fi con `peer_id` antes de pedirle algo pesado. Si no hay Wi-Fi, o
+    /// falla, no pasa nada: todo sigue por el enlace de control (Bluetooth).
+    pub async fn ensure_bulk(&self, peer_id: &str) {
+        if !self.settings.get().hybrid || self.manager.has_bulk(peer_id) {
+            return;
+        }
+        let addrs = self
+            .lan
+            .lock()
+            .expect("mutex envenenado")
+            .get(peer_id)
+            .cloned()
+            .unwrap_or_default();
+        if addrs.is_empty() {
+            return;
+        }
+        let _guard = self.bulk_opening.lock().await;
+        if self.manager.has_bulk(peer_id) {
+            return;
+        }
+        for addr in addrs {
+            let stream = match tokio::time::timeout(
+                BULK_CONNECT_TIMEOUT,
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            {
+                Ok(Ok(stream)) => stream,
+                _ => {
+                    tracing::debug!(%addr, "enlace de datos: no se pudo conectar");
+                    continue;
+                }
+            };
+            let _ = stream.set_nodelay(true);
+            let connect = self.manager.connect(
+                stream,
+                kushare_link::Transport::Tcp(addr),
+                kushare_link::ConnectIntent::Bulk,
+            );
+            match tokio::time::timeout(BULK_CONNECT_TIMEOUT * 3, connect).await {
+                Ok(Ok(_)) => return,
+                Ok(Err(err)) => tracing::debug!(%addr, ?err, "enlace de datos rechazado"),
+                Err(_) => tracing::debug!(%addr, "enlace de datos: handshake lento"),
+            }
+        }
+    }
+
+    /// Dirección de red local conocida de `peer_id` (para el estado).
+    pub fn lan_address(&self, peer_id: &str) -> Option<std::net::SocketAddr> {
+        self.lan
+            .lock()
+            .expect("mutex envenenado")
+            .get(peer_id)
+            .and_then(|a| a.first().copied())
     }
 
     fn new_request_id(&self) -> u64 {
@@ -514,6 +596,7 @@ impl Features {
         offset: u32,
         limit: u32,
     ) -> anyhow::Result<pb::SmsThreads> {
+        self.ensure_bulk(peer_id).await;
         let reply = self
             .request(
                 peer_id,
@@ -541,6 +624,7 @@ impl Features {
         limit: u32,
         before_ms: i64,
     ) -> anyhow::Result<Vec<pb::SmsMessage>> {
+        self.ensure_bulk(peer_id).await;
         let thread_id = thread_id.to_string();
         let reply = self
             .request(
@@ -584,6 +668,7 @@ impl Features {
         peer_id: &str,
         limit: u32,
     ) -> anyhow::Result<Vec<pb::CallLogEntry>> {
+        self.ensure_bulk(peer_id).await;
         let reply = self
             .request(
                 peer_id,
@@ -611,6 +696,7 @@ impl Features {
         {
             return Ok(list.clone());
         }
+        self.ensure_bulk(peer_id).await;
         let reply = self
             .request(
                 peer_id,
@@ -648,6 +734,7 @@ impl Features {
         &self,
         peer_id: &str,
     ) -> anyhow::Result<Vec<(pb::Notification, Option<PathBuf>)>> {
+        self.ensure_bulk(peer_id).await;
         let have_icons = self.manager.cached_icon_hashes();
         let reply = self
             .request(
@@ -704,6 +791,7 @@ impl Features {
                 });
             }
         }
+        self.ensure_bulk(peer_id).await;
         let reply = self
             .request(
                 peer_id,
@@ -793,6 +881,7 @@ impl Features {
         offset: u32,
         limit: u32,
     ) -> anyhow::Result<(u32, Vec<PhotoEntry>)> {
+        self.ensure_bulk(peer_id).await;
         let dir = self.thumb_dir(peer_id);
         create_private_dir(&dir)?;
         let have = cached_thumbnails(&dir);
@@ -949,6 +1038,7 @@ impl Features {
         id: &str,
         background: bool,
     ) -> anyhow::Result<PathBuf> {
+        self.ensure_bulk(peer_id).await;
         let request_id = self.new_request_id();
         let (tx, rx) = oneshot::channel();
         let dir = self.photo_dir(peer_id);
@@ -1211,6 +1301,17 @@ fn cached_thumbnails(dir: &Path) -> Vec<String> {
         .collect();
     thumbs.sort_by_key(|t| std::cmp::Reverse(t.0));
     thumbs.into_iter().take(1000).map(|(_, id)| id).collect()
+}
+
+/// Solo direcciones de la red local (no Internet): el enlace de datos no
+/// debe salir de casa aunque alguien mande otra cosa.
+fn is_lan(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => {
+            (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 /// Nombre original de una foto en caché (`<id>__<nombre>` → `<nombre>`).

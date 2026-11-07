@@ -71,6 +71,9 @@ pub enum ConnectIntent {
     Pair,
     /// Reconectar con un peer ya emparejado, sin intervención del usuario.
     Reconnect,
+    /// Enlace adicional de datos (modo híbrido) con un peer emparejado:
+    /// lleva solo el tráfico pesado y se cierra solo tras `bulk_idle`.
+    Bulk,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +94,9 @@ pub struct LinkConfig {
     pub write_timeout: Duration,
     pub reconnect_min: Duration,
     pub reconnect_max: Duration,
+    /// El enlace de datos se cierra tras este tiempo sin tráfico (para que
+    /// la radio Wi-Fi vuelva a ahorro de energía).
+    pub bulk_idle: Duration,
 }
 
 impl Default for LinkConfig {
@@ -105,6 +111,7 @@ impl Default for LinkConfig {
             write_timeout: Duration::from_secs(15),
             reconnect_min: Duration::from_secs(5),
             reconnect_max: Duration::from_secs(120),
+            bulk_idle: Duration::from_secs(30),
         }
     }
 }
@@ -181,6 +188,8 @@ pub struct PeerInfo {
     pub device_kind: String,
     pub connected: bool,
     pub transport: Option<String>,
+    /// Transporte del enlace de datos abierto ahora (modo híbrido), si hay.
+    pub bulk_transport: Option<String>,
     /// Dirección Bluetooth conocida del peer (para reconectar por RFCOMM).
     pub bt_address: Option<String>,
     pub outgoing_enabled: bool,
@@ -281,6 +290,8 @@ struct Inner {
     store: Mutex<PeerStore>,
     icon_dir: PathBuf,
     links: Mutex<HashMap<String, ActiveLink>>,
+    /// Enlaces de datos (modo híbrido), aparte de los de control.
+    bulk: Mutex<HashMap<String, ActiveLink>>,
     pairings: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     events: mpsc::UnboundedSender<LinkEvent>,
     next_conn_id: AtomicU64,
@@ -296,6 +307,9 @@ struct ActiveLink {
     transport: String,
     outbound: mpsc::Sender<pb::LinkFrame>,
     sent_icons: Arc<Mutex<HashSet<String>>>,
+    /// Última actividad (ms UNIX) en cualquier sentido; solo la usa el
+    /// enlace de datos para cerrarse cuando no se usa.
+    activity: Arc<std::sync::atomic::AtomicU64>,
     /// Soltarlo (al reemplazar o cerrar el enlace) termina su bucle.
     _cancel: oneshot::Sender<()>,
 }
@@ -315,6 +329,7 @@ impl Drop for AbortOnDrop {
 
 /// Un enlace ya autenticado, antes de registrarse.
 struct Established {
+    bulk: bool,
     peer_id: String,
     peer_name: String,
     initiator_id: String,
@@ -382,6 +397,7 @@ impl LinkManager {
                 store: Mutex::new(store),
                 icon_dir,
                 links: Mutex::new(HashMap::new()),
+                bulk: Mutex::new(HashMap::new()),
                 pairings: Mutex::new(HashMap::new()),
                 events,
                 next_conn_id: AtomicU64::new(1),
@@ -561,6 +577,7 @@ impl LinkManager {
             }
         };
 
+        let mut bulk = intent == ConnectIntent::Bulk;
         let pair = match role {
             Role::Initiator => match (intent, known) {
                 (ConnectIntent::Pair, _) => {
@@ -570,7 +587,9 @@ impl LinkManager {
                     true
                 }
                 (ConnectIntent::Reconnect, true) => {
-                    writer.send(&frame(Kind::Ready(pb::Ready {}))).await?;
+                    writer
+                        .send(&frame(Kind::Ready(pb::Ready { bulk: false })))
+                        .await?;
                     match recv_kind(&mut inbound, timeout, "Ready").await? {
                         Kind::Ready(_) => false,
                         Kind::Unpair(_) => {
@@ -580,15 +599,28 @@ impl LinkManager {
                         other => anyhow::bail!("respuesta inesperada a Ready: {other:?}"),
                     }
                 }
-                (ConnectIntent::Reconnect, false) => {
+                (ConnectIntent::Bulk, true) => {
+                    writer
+                        .send(&frame(Kind::Ready(pb::Ready { bulk: true })))
+                        .await?;
+                    match recv_kind(&mut inbound, timeout, "Ready").await? {
+                        Kind::Ready(r) if r.bulk => false,
+                        Kind::Ready(_) => anyhow::bail!("{peer_id} no admite enlace de datos"),
+                        other => anyhow::bail!("respuesta inesperada a Ready: {other:?}"),
+                    }
+                }
+                (ConnectIntent::Reconnect | ConnectIntent::Bulk, false) => {
                     let _ = writer.send(&frame(Kind::Unpair(pb::Unpair {}))).await;
                     anyhow::bail!("{peer_id} no está emparejado");
                 }
             },
             Role::Responder => {
                 match recv_kind(&mut inbound, cfg.pairing_timeout, "Ready/PairRequest").await? {
-                    Kind::Ready(_) if known => {
-                        writer.send(&frame(Kind::Ready(pb::Ready {}))).await?;
+                    Kind::Ready(r) if known => {
+                        bulk = r.bulk;
+                        writer
+                            .send(&frame(Kind::Ready(pb::Ready { bulk: r.bulk })))
+                            .await?;
                         false
                     }
                     Kind::Ready(_) => {
@@ -695,6 +727,7 @@ impl LinkManager {
             Role::Responder => peer_id.clone(),
         };
         Ok(Established {
+            bulk,
             peer_id,
             peer_name,
             initiator_id,
@@ -773,7 +806,11 @@ impl LinkManager {
 
     /// Registra el enlace (resolviendo duplicados) y lanza sus tareas.
     fn start_link(&self, est: Established, transport: Transport) -> anyhow::Result<()> {
+        if est.bulk {
+            return self.start_bulk_link(est, transport);
+        }
         let Established {
+            bulk: _,
             peer_id,
             peer_name,
             initiator_id,
@@ -794,8 +831,19 @@ impl LinkManager {
                 // Ambos lados aplican la misma regla y conservan el mismo:
                 // - mismo iniciador → el más nuevo (el viejo está muerto);
                 // - distinto iniciador → el que inició el device_id menor.
-                let keep_new = existing.initiator_id == initiator_id
-                    || initiator_id == std::cmp::min(self.device_id(), peer_id.as_str());
+                // - Bluetooth frente a Wi-Fi → siempre el de Bluetooth (el de
+                //   control debe ir por la radio de bajo consumo; lo pesado
+                //   va aparte por Wi-Fi). Ambos lados ven el mismo transporte.
+                let (old_bt, new_bt) = (
+                    existing.transport.starts_with("bluetooth"),
+                    transport_label.starts_with("bluetooth"),
+                );
+                let keep_new = if old_bt != new_bt {
+                    new_bt
+                } else {
+                    existing.initiator_id == initiator_id
+                        || initiator_id == std::cmp::min(self.device_id(), peer_id.as_str())
+                };
                 if !keep_new {
                     tracing::debug!(%peer_id, "enlace duplicado descartado");
                     anyhow::bail!("ya hay un enlace activo con {peer_id}");
@@ -810,6 +858,7 @@ impl LinkManager {
                     transport: transport_label.clone(),
                     outbound: outbound.clone(),
                     sent_icons: Arc::default(),
+                    activity: Arc::default(),
                     _cancel: cancel_tx,
                 },
             );
@@ -907,6 +956,139 @@ impl LinkManager {
             // salir antes de cerrar.
         });
         Ok(())
+    }
+
+    /// Registra un enlace de datos (modo híbrido): sin pings, sin eventos
+    /// de conexión, y se cierra solo tras `bulk_idle` sin tráfico o si se
+    /// cae el enlace de control.
+    fn start_bulk_link(&self, est: Established, transport: Transport) -> anyhow::Result<()> {
+        let Established {
+            peer_id,
+            mut writer,
+            mut inbound,
+            reader_guard,
+            initiator_id,
+            ..
+        } = est;
+        if !self.is_connected(&peer_id) {
+            anyhow::bail!("no hay enlace de control con {peer_id}: no se abre el de datos");
+        }
+        let conn_id = self.inner.next_conn_id.fetch_add(1, Ordering::Relaxed);
+        let (outbound, mut out_rx) = mpsc::channel::<pb::LinkFrame>(OUTBOUND_QUEUE);
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let activity: Arc<std::sync::atomic::AtomicU64> = Arc::new(now_ms().into());
+        let transport_label = transport.to_string();
+        // Uno solo por peer: el nuevo sustituye al anterior.
+        self.inner.bulk.lock().expect("mutex envenenado").insert(
+            peer_id.clone(),
+            ActiveLink {
+                conn_id,
+                initiator_id,
+                transport: transport_label.clone(),
+                outbound: outbound.clone(),
+                sent_icons: Arc::default(),
+                activity: activity.clone(),
+                _cancel: cancel_tx,
+            },
+        );
+        tracing::info!(%peer_id, transport = %transport_label, "enlace de datos abierto");
+
+        let write_timeout = self.inner.config.write_timeout;
+        let writer_activity = activity.clone();
+        let mut writer_task = tokio::spawn(async move {
+            while let Some(frame) = out_rx.recv().await {
+                writer_activity.store(now_ms(), Ordering::Relaxed);
+                match tokio::time::timeout(write_timeout, writer.send(&frame)).await {
+                    Ok(Ok(())) => writer_activity.store(now_ms(), Ordering::Relaxed),
+                    _ => break,
+                }
+            }
+        });
+        let idle = self.inner.config.bulk_idle;
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let _reader_guard = reader_guard;
+            let mut ticker = tokio::time::interval((idle / 2).min(Duration::from_secs(2)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = &mut cancel_rx => break,
+                    _ = &mut writer_task => break,
+                    frame = inbound.recv() => match frame {
+                        None => break,
+                        Some(frame) => {
+                            activity.store(now_ms(), Ordering::Relaxed);
+                            if manager.handle_frame(&peer_id, frame, &outbound).is_break() {
+                                break;
+                            }
+                        }
+                    },
+                    _ = ticker.tick() => {
+                        let quiet = now_ms().saturating_sub(activity.load(Ordering::Relaxed));
+                        if quiet > idle.as_millis() as u64 || !manager.is_connected(&peer_id) {
+                            break;
+                        }
+                    }
+                }
+            }
+            let mut bulk = manager.inner.bulk.lock().expect("mutex envenenado");
+            if bulk.get(&peer_id).is_some_and(|l| l.conn_id == conn_id) {
+                bulk.remove(&peer_id);
+                tracing::info!(%peer_id, "enlace de datos cerrado");
+            }
+        });
+        Ok(())
+    }
+
+    /// Cola por la que mandar `feature` a `peer_id`: lo pesado por el enlace
+    /// de datos si hay uno abierto; lo demás, por el de control.
+    fn lane(&self, peer_id: &str, feature: &pb::Feature) -> Option<mpsc::Sender<pb::LinkFrame>> {
+        if is_heavy(feature)
+            && let Some(link) = self
+                .inner
+                .bulk
+                .lock()
+                .expect("mutex envenenado")
+                .get(peer_id)
+        {
+            link.activity.store(now_ms(), Ordering::Relaxed);
+            return Some(link.outbound.clone());
+        }
+        self.inner
+            .links
+            .lock()
+            .expect("mutex envenenado")
+            .get(peer_id)
+            .map(|link| link.outbound.clone())
+    }
+
+    /// Transporte del enlace de control con `peer_id`, si está conectado.
+    pub fn control_transport(&self, peer_id: &str) -> Option<String> {
+        self.inner
+            .links
+            .lock()
+            .expect("mutex envenenado")
+            .get(peer_id)
+            .map(|l| l.transport.clone())
+    }
+
+    /// ¿Hay un enlace de datos abierto con `peer_id`?
+    pub fn has_bulk(&self, peer_id: &str) -> bool {
+        self.inner
+            .bulk
+            .lock()
+            .expect("mutex envenenado")
+            .contains_key(peer_id)
+    }
+
+    /// Transporte del enlace de datos abierto con `peer_id`, si hay.
+    pub fn bulk_transport(&self, peer_id: &str) -> Option<String> {
+        self.inner
+            .bulk
+            .lock()
+            .expect("mutex envenenado")
+            .get(peer_id)
+            .map(|l| l.transport.clone())
     }
 
     fn handle_frame(
@@ -1216,6 +1398,11 @@ impl LinkManager {
             .lock()
             .expect("mutex envenenado")
             .remove(peer_id);
+        self.inner
+            .bulk
+            .lock()
+            .expect("mutex envenenado")
+            .remove(peer_id);
         if removed {
             let _ = self.inner.events.send(LinkEvent::PeerUnpaired {
                 device_id: peer_id.to_string(),
@@ -1371,7 +1558,11 @@ impl LinkManager {
 
     /// Manda un mensaje de función extra a `peer_id` (si está conectado).
     pub fn send_feature(&self, peer_id: &str, feature: pb::Feature) {
-        self.send_to(peer_id, frame(Kind::Feature(feature)));
+        if let Some(lane) = self.lane(peer_id, &feature)
+            && lane.try_send(frame(Kind::Feature(feature))).is_err()
+        {
+            tracing::warn!(%peer_id, "cola del enlace llena; mensaje descartado");
+        }
     }
 
     /// Como [`send_feature`](Self::send_feature), pero espera a que haya
@@ -1384,12 +1575,7 @@ impl LinkManager {
         feature: pb::Feature,
     ) -> anyhow::Result<()> {
         let outbound = self
-            .inner
-            .links
-            .lock()
-            .expect("mutex envenenado")
-            .get(peer_id)
-            .map(|link| link.outbound.clone())
+            .lane(peer_id, &feature)
             .ok_or_else(|| anyhow::anyhow!("{peer_id} no está conectado"))?;
         outbound
             .send(frame(Kind::Feature(feature)))
@@ -1407,12 +1593,8 @@ impl LinkManager {
     ) -> anyhow::Result<()> {
         loop {
             let free = self
-                .inner
-                .links
-                .lock()
-                .expect("mutex envenenado")
-                .get(peer_id)
-                .map(|link| link.outbound.capacity())
+                .lane(peer_id, &feature)
+                .map(|lane| lane.capacity())
                 .ok_or_else(|| anyhow::anyhow!("{peer_id} no está conectado"))?;
             if free + 1 >= OUTBOUND_QUEUE {
                 break;
@@ -1557,6 +1739,7 @@ impl LinkManager {
             .lock()
             .expect("mutex envenenado")
             .clear();
+        self.inner.bulk.lock().expect("mutex envenenado").clear();
         let closed: Vec<String> = self
             .inner
             .links
@@ -1584,6 +1767,7 @@ impl LinkManager {
     pub fn peers(&self) -> Vec<PeerInfo> {
         let store = self.inner.store.lock().expect("mutex envenenado");
         let links = self.inner.links.lock().expect("mutex envenenado");
+        let bulk = self.inner.bulk.lock().expect("mutex envenenado");
         store
             .peers()
             .map(|rec| {
@@ -1594,6 +1778,7 @@ impl LinkManager {
                     device_kind: rec.device_kind.clone(),
                     connected: link.is_some(),
                     transport: link.map(|l| l.transport.clone()),
+                    bulk_transport: bulk.get(&rec.device_id).map(|l| l.transport.clone()),
                     bt_address: rec.bt_address.clone(),
                     outgoing_enabled: rec.outgoing.value,
                     incoming_enabled: rec.incoming.value,
@@ -1746,6 +1931,32 @@ fn validate_hello(hello: &pb::Hello, local_id: &str) -> anyhow::Result<()> {
         anyhow::bail!("conexión con uno mismo");
     }
     Ok(())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+/// ¿Va por el enlace de datos (modo híbrido)? Las respuestas grandes: fotos,
+/// listas de SMS/contactos/llamadas/avisos y el fondo de pantalla.
+pub fn is_heavy(feature: &pb::Feature) -> bool {
+    use pb::feature::Kind as F;
+    matches!(
+        feature.kind,
+        Some(
+            F::PhotoList(_)
+                | F::PhotoData(_)
+                | F::SmsThreads(_)
+                | F::SmsMessages(_)
+                | F::CallLog(_)
+                | F::Contacts(_)
+                | F::ActiveNotifications(_)
+                | F::Wallpaper(_)
+        )
+    )
 }
 
 /// SHA-256 hex de un icono PNG (la `icon_hash` de [`pb::Notification`]).
