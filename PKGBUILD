@@ -13,6 +13,9 @@ license=('GPL-3.0-or-later')
 #   de ventana; en un escritorio X11 puro esta dependencia sigue
 #   satisfaciéndose porque el paquete `wayland` solo aporta la librería
 #   cliente, no un compositor.
+# !lto: el LTO de makepkg deja el código C de `ring` (TLS del actualizador) como
+# bitcode de GCC que lld no sabe enlazar ("undefined symbol: ring_core_…").
+options=('!lto')
 depends=('dbus' 'bluez' 'wayland' 'libxkbcommon')
 optdepends=('yazi: selector de archivos en kushare-tui (pantalla Enviar)'
             'zenity: responder notificaciones del teléfono si el servidor no tiene inline-reply'
