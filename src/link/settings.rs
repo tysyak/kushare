@@ -21,6 +21,8 @@ pub struct Settings {
     /// Preguntar antes de aceptar archivos por Wi-Fi (Quick Share): a ese
     /// receptor puede conectarse cualquiera de la red.
     pub receive_confirm: bool,
+    /// Avisar en el escritorio de las fotos nuevas del teléfono.
+    pub photo_notify: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +33,7 @@ impl Default for Settings {
             photo_prefetch: true,
             update_check: true,
             receive_confirm: true,
+            photo_notify: true,
         }
     }
 }
@@ -42,6 +45,7 @@ pub const NAMES: &[&str] = &[
     "photo-prefetch",
     "update-check",
     "receive-confirm",
+    "photo-notify",
 ];
 
 impl Settings {
@@ -52,6 +56,7 @@ impl Settings {
             "photo-prefetch" => self.photo_prefetch,
             "update-check" => self.update_check,
             "receive-confirm" => self.receive_confirm,
+            "photo-notify" => self.photo_notify,
             _ => return None,
         })
     }
@@ -63,6 +68,7 @@ impl Settings {
             "photo-prefetch" => &mut self.photo_prefetch,
             "update-check" => &mut self.update_check,
             "receive-confirm" => &mut self.receive_confirm,
+            "photo-notify" => &mut self.photo_notify,
             _ => return None,
         })
     }

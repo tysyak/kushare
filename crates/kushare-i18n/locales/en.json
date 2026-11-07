@@ -22,7 +22,12 @@
     "update_title": "A new version of kushare is available: {version}",
     "update_body": "Get it from kushare → Settings → Updates.",
     "receive_title": "{name} wants to send you files",
-    "receive_body": "{files} · {size}\nAccept only if you expected it: anyone on the network can send over Wi-Fi."
+    "receive_body": "{files} · {size}\nAccept only if you expected it: anyone on the network can send over Wi-Fi.",
+    "photo_new": "New photo on {name}",
+    "photo_new_many": "{n} new photos on {name}",
+    "photo_view": "View",
+    "photo_copy": "Copy",
+    "photo_gallery": "Gallery"
   },
   "gui": {
     "apps": {
@@ -180,7 +185,9 @@
       "update_check": "Check for updates",
       "update_check_detail": "Looks for a new version on GitHub once a day.",
       "receive_confirm": "Ask before receiving over Wi-Fi",
-      "receive_confirm_detail": "Over Wi-Fi anyone on the network can send you files; over Bluetooth only bonded devices."
+      "receive_confirm_detail": "Over Wi-Fi anyone on the network can send you files; over Bluetooth only bonded devices.",
+      "photo_notify": "Notify about new photos",
+      "photo_notify_detail": "A notification with the thumbnail when the phone has a new photo or screenshot."
     },
     "theme": {
       "dark": "Dark",

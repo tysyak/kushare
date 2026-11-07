@@ -42,6 +42,9 @@ const REPLY_DIALOG_PREFIX: &str = "kushare-reply:";
 const PAIR_ACCEPT: &str = "kushare-pair-accept";
 const PAIR_REJECT: &str = "kushare-pair-reject";
 const CALL_ACTION_PREFIX: &str = "kushare-call:";
+const PHOTO_VIEW: &str = "kushare-photo-view";
+const PHOTO_COPY: &str = "kushare-photo-copy";
+const PHOTO_GALLERY: &str = "kushare-photo-gallery";
 const RECEIVE_ACCEPT: &str = "kushare-receive-accept";
 const RECEIVE_REJECT: &str = "kushare-receive-reject";
 /// Sin respuesta en este tiempo, el envío por Wi-Fi se rechaza.
@@ -563,6 +566,10 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         });
     }
 
+    let mut new_photos = handle
+        .features
+        .take_new_photos()
+        .expect("el receptor de fotos nuevas se toma una sola vez");
     let loop_handle = handle.clone();
     tokio::spawn(async move {
         let mut ui = DesktopUi {
@@ -574,6 +581,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
             pin_prompts: HashMap::new(),
             calls: HashMap::new(),
             receive_prompts: HashMap::new(),
+            photo_prompts: HashMap::new(),
         };
         loop {
             tokio::select! {
@@ -581,6 +589,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
                 Some(c) = captured.recv() => ui.on_captured(c),
                 Some(e) = notifier_events.recv() => ui.on_notifier_event(e).await,
                 Some(r) = receive_rx.recv() => ui.ask_receive(r).await,
+                Some(p) = new_photos.recv() => ui.show_new_photos(p).await,
                 else => break,
             }
         }
@@ -687,9 +696,90 @@ struct DesktopUi {
     calls: HashMap<String, u32>,
     /// id de la notificación "¿aceptar archivos?" → respuesta.
     receive_prompts: HashMap<u32, tokio::sync::oneshot::Sender<bool>>,
+    /// id del aviso de foto nueva → (peer, id de la foto).
+    photo_prompts: HashMap<u32, (String, String)>,
 }
 
 impl DesktopUi {
+    /// Aviso "Foto nueva en …" con la miniatura y los botones Ver, Copiar y Galería.
+    async fn show_new_photos(&mut self, new: features::NewPhotos) {
+        let Some(first) = new.photos.first() else {
+            return;
+        };
+        let name = self.peer_name(&new.peer);
+        let summary = if new.photos.len() == 1 {
+            tf("daemon.photo_new", &[("name", &name)])
+        } else {
+            tf(
+                "daemon.photo_new_many",
+                &[("n", &new.photos.len()), ("name", &name)],
+            )
+        };
+        let shown = self
+            .notifier
+            .notify_full(&MirrorNotification {
+                app_name: "kushare".into(),
+                summary,
+                body: first.info.name.clone(),
+                icon_path: Some(first.thumb.clone()),
+                actions: vec![
+                    ("default".into(), t("daemon.photo_view").into()),
+                    (PHOTO_VIEW.into(), t("daemon.photo_view").into()),
+                    (PHOTO_COPY.into(), t("daemon.photo_copy").into()),
+                    (PHOTO_GALLERY.into(), t("daemon.photo_gallery").into()),
+                ],
+                ..Default::default()
+            })
+            .await;
+        match shown {
+            Ok(id) => {
+                // Solo se recuerdan los últimos avisos.
+                if self.photo_prompts.len() > 20 {
+                    self.photo_prompts.clear();
+                }
+                self.photo_prompts
+                    .insert(id, (new.peer, first.info.id.clone()));
+            }
+            Err(err) => tracing::debug!(?err, "no se pudo avisar de la foto nueva"),
+        }
+    }
+
+    fn on_photo_action(&self, peer: &str, photo: &str, action: &str) {
+        let features = self.handle.features.clone();
+        let (peer, photo, action) = (peer.to_string(), photo.to_string(), action.to_string());
+        tokio::spawn(async move {
+            if action == PHOTO_GALLERY {
+                let gui = std::env::current_exe()
+                    .ok()
+                    .and_then(|e| e.parent().map(|d| d.join("kushare-gui")))
+                    .filter(|p| p.is_file())
+                    .unwrap_or_else(|| "kushare-gui".into());
+                let _ = std::process::Command::new(gui)
+                    .env("KUSHARE_GUI_SCREEN", "photos")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                return;
+            }
+            // La original suele estar ya precargada; si no, se descarga ahora.
+            let path = match features.fetch_photo(&peer, &photo).await {
+                Ok(path) => path,
+                Err(err) => {
+                    tracing::info!(?err, "no se pudo abrir la foto nueva");
+                    return;
+                }
+            };
+            if action == PHOTO_COPY {
+                if let Err(err) = features.clipboard.copy_file(&path) {
+                    tracing::info!(?err, "no se pudo copiar la foto");
+                }
+            } else {
+                let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+            }
+        });
+    }
+
     async fn ask_receive(&mut self, r: ReceiveRequest) {
         self.receive_prompts.retain(|_, tx| !tx.is_closed());
         let total: u64 = r.files.iter().map(|f| f.1).sum();
@@ -1017,6 +1107,10 @@ impl DesktopUi {
     async fn on_notifier_event(&mut self, event: NotifierEvent) {
         match event {
             NotifierEvent::ActionInvoked { id, action } => {
+                if let Some((peer, photo)) = self.photo_prompts.get(&id).cloned() {
+                    self.on_photo_action(&peer, &photo, &action);
+                    return;
+                }
                 if action == RECEIVE_ACCEPT || action == RECEIVE_REJECT {
                     if let Some(answer) = self.receive_prompts.remove(&id) {
                         let _ = answer.send(action == RECEIVE_ACCEPT);

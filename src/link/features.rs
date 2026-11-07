@@ -128,6 +128,14 @@ pub struct WallpaperInfo {
     pub colors: Vec<u32>,
 }
 
+/// Fotos nuevas en la galería de un peer (para el aviso del escritorio).
+#[derive(Debug, Clone)]
+pub struct NewPhotos {
+    pub peer: String,
+    /// La más reciente primero.
+    pub photos: Vec<PhotoEntry>,
+}
+
 pub struct Features {
     manager: LinkManager,
     peers: Mutex<HashMap<String, PeerState>>,
@@ -144,6 +152,11 @@ pub struct Features {
     /// Órdenes hacia las tareas locales (MPRIS, pactl).
     commands: mpsc::UnboundedSender<LocalCommand>,
     prefetch: mpsc::UnboundedSender<String>,
+    /// Fecha de la foto más reciente ya vista de cada peer (para avisar
+    /// solo de las nuevas).
+    newest_seen: Mutex<HashMap<String, i64>>,
+    new_photos: mpsc::UnboundedSender<NewPhotos>,
+    new_photos_rx: Mutex<Option<mpsc::UnboundedReceiver<NewPhotos>>>,
     pub settings: Arc<SettingsStore>,
     pub clipboard: Arc<Clipboard>,
 }
@@ -164,6 +177,7 @@ impl Features {
     ) -> Arc<Self> {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (prefetch, prefetch_rx) = mpsc::unbounded_channel();
+        let (new_photos, new_photos_rx) = mpsc::unbounded_channel();
         let clipboard = Clipboard::start(manager.clone(), settings.clone(), data_dir);
         let features = Arc::new(Self {
             manager,
@@ -178,6 +192,9 @@ impl Features {
             cache_dir: cache_dir.to_path_buf(),
             commands,
             prefetch,
+            newest_seen: Mutex::default(),
+            new_photos,
+            new_photos_rx: Mutex::new(Some(new_photos_rx)),
             settings,
             clipboard,
         });
@@ -185,6 +202,11 @@ impl Features {
         tokio::spawn(local_task(features.clone(), command_rx));
         tokio::spawn(prefetch_task(features.clone(), prefetch_rx));
         features
+    }
+
+    /// Receptor de los avisos de fotos nuevas (solo se puede tomar una vez).
+    pub fn take_new_photos(&self) -> Option<mpsc::UnboundedReceiver<NewPhotos>> {
+        self.new_photos_rx.lock().expect("mutex envenenado").take()
     }
 
     pub fn peer_state(&self, peer_id: &str) -> PeerState {
@@ -1044,6 +1066,37 @@ impl Features {
         Ok(status)
     }
 
+    /// Avisa (una vez) de las fotos nuevas `new` de `peer`.
+    fn announce(&self, peer: &str, new: &[PhotoEntry]) {
+        let Some(first) = new.first() else {
+            return;
+        };
+        if !self.settings.get().photo_notify {
+            return;
+        }
+        // No repetir el aviso del mismo lote.
+        static LAST: Mutex<Option<String>> = Mutex::new(None);
+        let key = format!("{peer}/{}", first.info.id);
+        {
+            let mut last = LAST.lock().expect("mutex envenenado");
+            if last.as_deref() == Some(key.as_str()) {
+                return;
+            }
+            *last = Some(key);
+        }
+        let photos = new
+            .iter()
+            .map(|p| PhotoEntry {
+                original: self.original_path(peer, &p.info.id),
+                ..p.clone()
+            })
+            .collect();
+        let _ = self.new_photos.send(NewPhotos {
+            peer: peer.to_string(),
+            photos,
+        });
+    }
+
     /// Deja la caché de originales por debajo de [`PHOTO_CACHE_MAX_BYTES`]
     /// (borra primero las que hace más que no se usan).
     fn prune_photo_cache(&self) {
@@ -1087,7 +1140,10 @@ async fn prefetch_task(features: Arc<Features>, mut rx: mpsc::UnboundedReceiver<
             peers.insert(p);
         }
         for peer in peers {
-            if !features.settings.get().photo_prefetch || !features.manager.is_connected(&peer) {
+            let settings = features.settings.get();
+            if !(settings.photo_prefetch || settings.photo_notify)
+                || !features.manager.is_connected(&peer)
+            {
                 continue;
             }
             let list = match features.list_photos(&peer, 0, PREFETCH_COUNT).await {
@@ -1097,19 +1153,45 @@ async fn prefetch_task(features: Arc<Features>, mut rx: mpsc::UnboundedReceiver<
                     continue;
                 }
             };
-            for photo in list {
-                if photo.original.is_some() || photo.info.size > PREFETCH_MAX_BYTES {
-                    continue;
+            // Nuevas: posteriores a la más reciente ya vista. La primera vez
+            // (al arrancar) solo se toma nota, sin avisar.
+            let newest = list.iter().map(|p| p.info.date_ms).max().unwrap_or(0);
+            let seen = features
+                .newest_seen
+                .lock()
+                .expect("mutex envenenado")
+                .insert(peer.clone(), newest);
+            let new: Vec<PhotoEntry> = match seen {
+                Some(seen) => list
+                    .iter()
+                    .filter(|p| p.info.date_ms > seen)
+                    .cloned()
+                    .collect(),
+                None => Vec::new(),
+            };
+            if settings.photo_prefetch {
+                // Las nuevas primero, para que "Ver" del aviso sea instantáneo.
+                for photo in new.iter().chain(list.iter()) {
+                    if features.original_path(&peer, &photo.info.id).is_some()
+                        || photo.info.size > PREFETCH_MAX_BYTES
+                    {
+                        continue;
+                    }
+                    if !features.manager.is_connected(&peer) {
+                        break;
+                    }
+                    match features.download(&peer, &photo.info.id, true).await {
+                        Ok(path) => tracing::debug!(?path, "foto precargada"),
+                        Err(err) => tracing::debug!(?err, "precarga de foto fallida"),
+                    }
+                    // Avisar en cuanto esté la primera nueva (no esperar a las demás).
+                    if !new.is_empty() && photo.info.id == new[0].info.id {
+                        features.announce(&peer, &new);
+                    }
                 }
-                if !features.manager.is_connected(&peer) {
-                    break;
-                }
-                match features.download(&peer, &photo.info.id, true).await {
-                    Ok(path) => tracing::debug!(?path, "foto precargada"),
-                    Err(err) => tracing::debug!(?err, "precarga de foto fallida"),
-                }
+                features.prune_photo_cache();
             }
-            features.prune_photo_cache();
+            features.announce(&peer, &new);
         }
     }
 }

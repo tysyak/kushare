@@ -1,6 +1,6 @@
 # Maintainer: Cristian Romero Andrade <mascrit@gmail.com>
 pkgname=kushare
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="Archivos y notificaciones entre tu PC Linux y tu teléfono (Quick Share, enlace con kushare-android)"
 arch=('x86_64' 'aarch64')

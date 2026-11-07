@@ -2751,6 +2751,13 @@ impl App {
             ),
             self.switch_row(
                 c,
+                t("gui.settings.photo_notify"),
+                Some(t("gui.settings.photo_notify_detail")),
+                self.setting("photo-notify"),
+                |on| Message::SetSetting("photo-notify".into(), on),
+            ),
+            self.switch_row(
+                c,
                 t("gui.settings.receive_confirm"),
                 Some(t("gui.settings.receive_confirm_detail")),
                 self.setting("receive-confirm"),

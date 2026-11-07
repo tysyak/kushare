@@ -21,7 +21,7 @@ Después de instalar, abre los puertos del enlace en el firewall si tienes uno (
 - **Teléfono**: fondo de pantalla, batería, timbre, llamada en curso, multimedia, audio del teléfono en el PC, y la salida/entrada de audio de este PC.
 - **Mensajes**: los SMS del teléfono (buscar, leer, responder, nuevos).
 - **Llamadas**: marcador con letras (busca contactos por nombre, número o teclas T9) y llamadas recientes.
-- **Fotos**: galería al instante (con caché), visor propio (abrir, copiar, guardar como, eliminar).
+- **Fotos**: galería al instante (con caché), visor propio (abrir, copiar, guardar como, eliminar). Cuando el teléfono tiene una foto nueva, el escritorio avisa con su miniatura (*Ver*, *Copiar*, *Galería*).
 - **Avisos**: las notificaciones que hay en el teléfono, con acciones, respuesta y descartar.
 - **Portapapeles**: compartido con el teléfono, con historial opcional.
 - **Enviar**, **Dispositivos** (emparejar, notificaciones por dirección, filtro por app) y **Ajustes** (tema, idioma, funciones, actualizaciones, diagnóstico).
@@ -135,7 +135,7 @@ kushare dial <dispositivo> <número>    # llama desde el teléfono (admite letra
 kushare phone-notifs <dispositivo> [--dismiss <key>]
 kushare clipboard [--copy N | --clear] # historial del portapapeles
 kushare pc-audio [--output X | --input X]   # salida y micrófono de este PC
-kushare setting [nombre on|off]        # clipboard-sync, clipboard-history, photo-prefetch, update-check, receive-confirm
+kushare setting [nombre on|off]        # clipboard-sync, clipboard-history, photo-prefetch, photo-notify, update-check, receive-confirm
 kushare update [--download]            # ¿hay versión nueva? (descarga verificada con SHA-256)
 ```
 

@@ -6,6 +6,17 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.4.1] - 2026-11-07
+
+### Añadido
+- **Aviso de foto nueva**: cuando el teléfono tiene una foto o captura nueva,
+  una notificación del escritorio con la miniatura y los botones *Ver* (la
+  original, ya precargada), *Copiar* y *Galería*. Se apaga en *Ajustes →
+  Funciones* (`photo-notify`). No avisa de las que ya había al conectar.
+
+### Cambiado
+- PKGBUILD sin LTO (`ring` no enlazaba con el LTO de makepkg).
+
 ## [0.4.0] - 2026-11-07
 
 "Enlace Móvil" para Linux: el teléfono entero desde el PC.

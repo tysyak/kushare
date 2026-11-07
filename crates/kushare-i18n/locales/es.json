@@ -22,7 +22,12 @@
     "update_title": "Hay una versión nueva de kushare: {version}",
     "update_body": "Ábrela desde kushare → Ajustes → Actualizaciones.",
     "receive_title": "{name} quiere enviarte archivos",
-    "receive_body": "{files} · {size}\nAcepta solo si lo esperabas: por Wi-Fi puede enviarte cualquiera de la red."
+    "receive_body": "{files} · {size}\nAcepta solo si lo esperabas: por Wi-Fi puede enviarte cualquiera de la red.",
+    "photo_new": "Foto nueva en {name}",
+    "photo_new_many": "{n} fotos nuevas en {name}",
+    "photo_view": "Ver",
+    "photo_copy": "Copiar",
+    "photo_gallery": "Galería"
   },
   "gui": {
     "apps": {
@@ -180,7 +185,9 @@
       "update_check": "Buscar actualizaciones",
       "update_check_detail": "Mira una vez al día si hay una versión nueva en GitHub.",
       "receive_confirm": "Preguntar antes de recibir por Wi-Fi",
-      "receive_confirm_detail": "Por Wi-Fi puede enviarte archivos cualquiera de la red; por Bluetooth solo los dispositivos vinculados."
+      "receive_confirm_detail": "Por Wi-Fi puede enviarte archivos cualquiera de la red; por Bluetooth solo los dispositivos vinculados.",
+      "photo_notify": "Avisar de fotos nuevas",
+      "photo_notify_detail": "Una notificación con la miniatura cuando el teléfono tiene una foto o captura nueva."
     },
     "theme": {
       "dark": "Oscuro",
