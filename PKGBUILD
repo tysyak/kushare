@@ -1,6 +1,6 @@
 # Maintainer: Cristian Romero Andrade <mascrit@gmail.com>
 pkgname=kushare
-pkgver=0.3.1
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="Archivos y notificaciones entre tu PC Linux y tu teléfono (Quick Share, enlace con kushare-android)"
 arch=('x86_64' 'aarch64')
@@ -55,6 +55,7 @@ package() {
   install -Dm644 "packaging/common/kushare.service" "$pkgdir/usr/lib/systemd/user/kushare.service"
   install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 "FAQ.md" "$pkgdir/usr/share/doc/$pkgname/FAQ.md"
+  install -Dm644 "SECURITY.md" "$pkgdir/usr/share/doc/$pkgname/SECURITY.md"
   install -Dm644 "CHANGELOG.md" "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
   install -Dm644 "packaging/common/kushare.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/kushare.svg"
   install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

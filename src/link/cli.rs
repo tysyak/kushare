@@ -119,6 +119,68 @@ pub enum LinkCommand {
         offset: u32,
         #[arg(long, default_value_t = 20)]
         limit: u32,
+        /// Borrar del teléfono la foto con este id (puede pedir confirmarlo allí).
+        #[arg(long)]
+        delete: Option<String>,
+    },
+    /// SMS del teléfono: sin más, las conversaciones; con `--thread`, sus
+    /// mensajes; con `--to` y un texto, manda un SMS.
+    Sms {
+        device: String,
+        #[arg(long)]
+        thread: Option<String>,
+        /// Número al que mandar el SMS.
+        #[arg(long)]
+        to: Option<String>,
+        /// Texto del SMS (con `--to`).
+        text: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+    /// Registro de llamadas del teléfono.
+    Calls {
+        device: String,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+    /// Llama desde el teléfono (admite letras: 1-800-FLORES).
+    Dial { device: String, number: String },
+    /// Busca en los contactos del teléfono.
+    Contacts {
+        device: String,
+        search: Option<String>,
+    },
+    /// Notificaciones que hay ahora en el teléfono; `--dismiss <key>` descarta una.
+    PhoneNotifs {
+        device: String,
+        #[arg(long)]
+        dismiss: Option<String>,
+    },
+    /// Historial del portapapeles (`--clear` lo borra; `--copy <n>` copia una entrada).
+    Clipboard {
+        #[arg(long)]
+        clear: bool,
+        #[arg(long)]
+        copy: Option<usize>,
+    },
+    /// Ajustes del daemon (sin argumentos los lista): clipboard-sync,
+    /// clipboard-history, photo-prefetch, update-check.
+    Setting {
+        name: Option<String>,
+        #[arg(value_enum)]
+        state: Option<Toggle>,
+    },
+    /// Salidas y entradas de audio del PC; `--output`/`--input` elige (id o parte del nombre).
+    PcAudio {
+        #[arg(long)]
+        output: Option<String>,
+        #[arg(long)]
+        input: Option<String>,
+    },
+    /// Busca una versión nueva de kushare (`--download` la descarga verificada).
+    Update {
+        #[arg(long)]
+        download: bool,
     },
 }
 
@@ -389,25 +451,216 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
             download,
             offset,
             limit,
-        } => match download {
-            Some(id) => {
+            delete,
+        } => match (download, delete) {
+            (_, Some(id)) => match daemon.delete_photo(&device, &id).await?.as_str() {
+                "confirm" => println!("Confírmalo en el teléfono (te llegó un aviso)."),
+                _ => println!("Borrada."),
+            },
+            (Some(id), None) => {
                 println!("Descargando…");
-                println!("Guardada en {}", daemon.fetch_photo(&device, &id).await?);
+                println!("Guardada en {}", daemon.save_photo(&device, &id, "").await?);
             }
-            None => {
+            (None, None) => {
                 let (total, photos) = daemon.photos(&device, offset, limit).await?;
                 println!(
                     "{total} fotos; mostrando {} desde la {offset}:",
                     photos.len()
                 );
-                for (id, name, _date, w, h, size, _thumb) in photos {
+                for (id, name, _date, w, h, size, _thumb, _orig) in photos {
                     println!("  {id:>8}  {name}  {w}×{h}  {} KB", size / 1024);
                 }
                 println!("Descargar: kushare photos {device} --download <id>");
             }
         },
+        LinkCommand::Sms {
+            device,
+            thread,
+            to,
+            text,
+            limit,
+        } => match (to, thread) {
+            (Some(to), _) => {
+                let text = text.ok_or_else(|| anyhow::anyhow!("falta el texto del SMS"))?;
+                daemon.send_sms(&device, &to, &text).await?;
+                println!("Enviado.");
+            }
+            (None, Some(thread)) => {
+                let mut msgs = daemon.sms_messages(&device, &thread, limit, 0).await?;
+                msgs.reverse();
+                for (_id, _addr, body, date, outgoing, _read, failed) in msgs {
+                    let who = if outgoing {
+                        "→ enviado"
+                    } else {
+                        "← recibido"
+                    };
+                    let mark = if failed { " (falló)" } else { "" };
+                    println!("[{}] {who}{mark}: {body}", fmt_date(date));
+                }
+            }
+            (None, None) => {
+                let (total, threads) = daemon.sms_threads(&device, 0, limit).await?;
+                println!("{total} conversaciones:");
+                for (id, address, name, snippet, date, unread, _count, _out) in threads {
+                    let who = if name.is_empty() { address } else { name };
+                    let dot = if unread { "●" } else { " " };
+                    let snippet: String = snippet.chars().take(60).collect();
+                    println!("{dot} {id:>6}  {}  {who}: {snippet}", fmt_date(date));
+                }
+                println!("Leer: kushare sms {device} --thread <id>");
+            }
+        },
+        LinkCommand::Calls { device, limit } => {
+            for (number, name, date, duration, kind) in daemon.call_log(&device, limit).await? {
+                let who = if name.is_empty() {
+                    number
+                } else {
+                    format!("{name} ({number})")
+                };
+                println!(
+                    "{}  {kind:<9} {who}  {}:{:02}",
+                    fmt_date(date),
+                    duration / 60,
+                    duration % 60
+                );
+            }
+        }
+        LinkCommand::Dial { device, number } => {
+            daemon.dial(&device, &number).await?;
+            println!("Llamando desde el teléfono…");
+        }
+        LinkCommand::Contacts { device, search } => {
+            let search = search.map(|s| s.to_lowercase());
+            for (name, numbers, starred) in daemon.contacts(&device, false).await? {
+                if search.as_ref().is_some_and(|q| {
+                    !name.to_lowercase().contains(q) && !numbers.iter().any(|n| n.contains(q))
+                }) {
+                    continue;
+                }
+                let star = if starred { "★" } else { " " };
+                println!("{star} {name}: {}", numbers.join(", "));
+            }
+        }
+        LinkCommand::PhoneNotifs { device, dismiss } => match dismiss {
+            Some(key) => {
+                daemon.dismiss_phone_notification(&device, &key).await?;
+                println!("Descartada.");
+            }
+            None => {
+                for (key, _app_id, app, title, text, date, _icon, _actions) in
+                    daemon.phone_notifications(&device).await?
+                {
+                    println!(
+                        "[{}] {app} · {title}\n    {text}\n    key: {key}",
+                        fmt_date(date)
+                    );
+                }
+            }
+        },
+        LinkCommand::Clipboard { clear, copy } => {
+            if clear {
+                daemon.clipboard_forget(-1).await?;
+                println!("Historial borrado.");
+            } else if let Some(i) = copy {
+                let history = daemon.clipboard_history().await?;
+                let (text, _, _) = history
+                    .get(i)
+                    .ok_or_else(|| anyhow::anyhow!("no hay entrada {i}"))?;
+                daemon.clipboard_copy(text).await?;
+                println!("Copiado.");
+            } else {
+                let history = daemon.clipboard_history().await?;
+                if history.is_empty() {
+                    println!(
+                        "Historial vacío (actívalo con `kushare setting clipboard-history on`)."
+                    );
+                }
+                for (i, (text, date, source)) in history.iter().enumerate() {
+                    let from = if source.is_empty() { "PC" } else { source };
+                    let short: String = text.chars().take(70).collect();
+                    println!(
+                        "{i:>3}  [{}] {from}: {}",
+                        fmt_date(*date),
+                        short.replace('\n', " ")
+                    );
+                }
+            }
+        }
+        LinkCommand::Setting { name, state } => match (name, state) {
+            (Some(name), Some(state)) => {
+                daemon
+                    .set_setting(&name, matches!(state, Toggle::On))
+                    .await?;
+                println!("Hecho.");
+            }
+            _ => {
+                for (name, on) in daemon.settings().await? {
+                    println!("  {name:<18} {}", if on { "sí" } else { "no" });
+                }
+            }
+        },
+        LinkCommand::PcAudio { output, input } => {
+            let (outputs, inputs) = daemon.local_audio().await?;
+            let pick = |list: &[(String, String, bool)], q: &str| {
+                let q = q.to_lowercase();
+                list.iter()
+                    .find(|(id, name, _)| *id == q || name.to_lowercase().contains(&q))
+                    .map(|(id, _, _)| id.clone())
+                    .ok_or_else(|| anyhow::anyhow!("no hay ninguna que coincida con {q:?}"))
+            };
+            if let Some(q) = output {
+                daemon
+                    .set_local_audio("output", &pick(&outputs, &q)?)
+                    .await?;
+                println!("Hecho.");
+            } else if let Some(q) = input {
+                daemon.set_local_audio("input", &pick(&inputs, &q)?).await?;
+                println!("Hecho.");
+            } else {
+                for (title, list) in [("Salidas", &outputs), ("Entradas", &inputs)] {
+                    println!("{title}:");
+                    for (_id, name, active) in list {
+                        println!("  {} {name}", if *active { "●" } else { " " });
+                    }
+                }
+            }
+        }
+        LinkCommand::Update { download } => {
+            let (current, latest, page, asset, _url) = daemon.check_update(true).await?;
+            if !crate::update::is_newer(&latest, &current) {
+                println!("Tienes la última versión ({current}).");
+            } else if download {
+                println!("Descargando kushare {latest}…");
+                let path = daemon.download_update().await?;
+                println!("Descargado y verificado: {path}");
+                if let Some(kind) = crate::update::package_kind()
+                    && let Some(cmd) =
+                        crate::update::install_command(kind, std::path::Path::new(&path))
+                {
+                    println!("Instálalo con: sudo {}", cmd[1..].join(" "));
+                }
+            } else {
+                println!("Hay una versión nueva: {latest} (tienes {current}).\n{page}");
+                if !asset.is_empty() {
+                    println!("Descárgala con: kushare update --download");
+                }
+            }
+        }
     }
     Ok(())
+}
+
+/// Fecha local legible ("2026-11-07 14:03") de unos milisegundos UNIX.
+fn fmt_date(ms: i64) -> String {
+    let secs = ms / 1000;
+    // Sin dependencias de zona horaria: `date` hace la conversión local.
+    std::process::Command::new("date")
+        .args(["-d", &format!("@{secs}"), "+%Y-%m-%d %H:%M"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| secs.to_string())
 }
 
 async fn set_blocked(

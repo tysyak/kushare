@@ -6,6 +6,80 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.4.0] - 2026-11-07
+
+"Enlace Móvil" para Linux: el teléfono entero desde el PC.
+
+### Añadido
+- **Mensajes (SMS)**: conversaciones del teléfono en la GUI (con búsqueda),
+  el hilo en burbujas, responder y empezar conversaciones nuevas; se
+  refresca solo al llegar un SMS. CLI: `kushare sms`.
+- **Llamadas**: marcador con teclado de teléfono que admite letras
+  (1-800-FLORES) y busca contactos por nombre, número o teclas (T9);
+  registro de llamadas recientes con volver a llamar o mandar SMS. La
+  llamada la hace el teléfono. CLI: `kushare dial`, `calls`, `contacts`.
+- **Notificaciones del teléfono** (página *Avisos*): todas las que hay
+  ahora en el teléfono, con sus acciones, respuesta rápida y descartar (una
+  o todas). CLI: `kushare phone-notifs`.
+- **Portapapeles compartido** en ambos sentidos (Wayland con
+  *data-control*; X11 como respaldo), con **historial opcional**
+  (desactivado por defecto, guardado solo para el usuario). Lo que un gestor
+  de contraseñas marca como secreto no se comparte. CLI: `kushare clipboard`.
+- **Visor de fotos propio**: la miniatura se agranda al instante y la
+  sustituye la original al llegar; abrir con el visor del sistema, copiar
+  (como imagen y como archivo), guardar como… y eliminar del teléfono (con
+  confirmación). ←/→ y Esc.
+- **Fotos por Bluetooth sin esperas**: las miniaturas se guardan en caché y
+  el teléfono no las vuelve a mandar; la galería se enseña al instante
+  (también sin conexión); las 6 fotos más recientes se **precargan** en
+  segundo plano a baja prioridad (trozos pequeños que no frenan las
+  notificaciones). Se puede desactivar en *Ajustes*.
+- **Fondo de pantalla** del teléfono en la tarjeta de *Teléfono* (o un
+  degradado con sus colores si Android no deja leer la imagen).
+- **Audio de este PC**: elegir salida y entrada (micrófono, p. ej. para las
+  llamadas) desde la GUI. CLI: `kushare pc-audio`.
+- **Actualizaciones**: el daemon mira una vez al día si hay versión nueva
+  en GitHub y avisa; en *Ajustes → Actualizaciones* se descarga el paquete
+  de tu sistema (Arch, Debian o Fedora), se comprueba su SHA-256 contra el
+  `SHA256SUMS` del release y se instala con `pkexec`. CLI: `kushare update`.
+- **Inglés**: `locales/en.json` (GUI, bandeja y avisos). Selector de idioma
+  en *Ajustes* (Sistema, Español, English).
+- Ajustes del daemon (`~/.config/kushare/daemon.toml`):
+  `clipboard-sync`, `clipboard-history`, `photo-prefetch`, `update-check`.
+  CLI: `kushare setting`.
+- `scripts/bump-version.sh X.Y.Z`: sube la versión en todos los sitios de
+  los dos proyectos.
+- Protocolo: mensajes de portapapeles, SMS, registro de llamadas, contactos,
+  marcar, notificaciones activas, fondo de pantalla, borrar fotos y
+  `CommandResult` (retrocompatible); `have_thumbnails` y descargas de fondo
+  en las fotos.
+
+### Cambiado
+- La foto original se descarga a la caché de kushare (`~/.cache/kushare/
+  photos`, máx. 400 MB); *Guardar como…* o `kushare photos --download`
+  la copian donde quieras.
+- Miniaturas, fotos, fondos e historial se guardan con permisos 0600/0700.
+- Menú lateral más compacto para las páginas nuevas.
+
+### Corregido
+- La versión de la 0.3.1 se quedó en 0.3.0 en la GUI y en los nombres del
+  `.deb`/`.rpm` (el `Cargo.toml` no se había actualizado).
+
+## [0.3.1] - 2026-11-07
+
+### Añadido
+- Fotos en vivo: el teléfono avisa al instante de las nuevas
+  (`PhotosChanged`) y aparecen al principio del mosaico con una animación,
+  sin recargarlo.
+- Traducciones en JSON (`crates/kushare-i18n`, `locales/es.json`).
+- FAQ de audio (dirección del audio y códecs Bluetooth).
+
+### Corregido
+- Elegir la salida de audio del PC desde el teléfono no hacía nada con
+  salidas no disponibles (HDMI sin nada): se ocultan y se comprueba el cambio.
+- Procesos `pactl subscribe` huérfanos al cerrar el daemon.
+- Menú lateral desalineado en *Dispositivos*; más iconos en la GUI.
+
 ## [0.3.0] - 2026-11-06
 
 ### Añadido

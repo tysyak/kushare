@@ -199,3 +199,42 @@ Bluetooth del PC (los auriculares que solo usen aptX pasarán a SBC o AAC).
 
 Son permisos opcionales del teléfono: en kushare, *Ajustes → Funciones del
 teléfono*, concede **Llamadas**, **Fotos** y **No molestar**.
+
+## El portapapeles del teléfono no llega al PC
+
+Android solo deja leer el portapapeles a la app que está en primer plano.
+Lo que copias en el PC llega al teléfono al instante, pero lo que copias en
+el teléfono se manda al PC cuando:
+
+- abres kushare en el teléfono,
+- pulsas **Enviar portapapeles** en la notificación de kushare o en *Ajustes*,
+- usas el botón de ajustes rápidos **Portapapeles al PC**, o
+- compartes un texto con **Copiar en el PC**.
+
+En el PC hace falta un compositor con *data-control* (Hyprland, KDE Plasma,
+Sway…). En GNOME se usa X11 (XWayland) como respaldo. Lo que un gestor de
+contraseñas marca como secreto no se comparte nunca.
+
+## El PC pregunta antes de recibir un archivo por Wi-Fi
+
+Desde la 0.4.0, a propósito: al receptor de Quick Share por Wi-Fi puede
+conectarse cualquiera de la red, así que el PC muestra *Aceptar/Rechazar*
+(y rechaza si no contestas en 60 s). Por Bluetooth solo aceptan archivos los
+dispositivos vinculados, sin preguntar. En casa puedes desactivarlo:
+*Ajustes → Funciones → Preguntar antes de recibir por Wi-Fi*, o
+`kushare setting receive-confirm off`. Ver [SECURITY.md](./SECURITY.md).
+
+## No veo SMS, llamadas, contactos o el fondo de pantalla
+
+Son permisos opcionales del teléfono: en kushare, *Ajustes → Funciones del
+teléfono*, concede **SMS**, **Registro de llamadas y contactos** y, para el
+fondo de pantalla, **acceso a todos los archivos** (sin él, el PC pinta un
+degradado con sus colores). Solo se leen MMS de texto como SMS normales: las
+imágenes de un MMS no se muestran.
+
+## ¿Cómo actualizo?
+
+El daemon mira una vez al día si hay versión nueva y te avisa. En la GUI,
+*Ajustes → Actualizaciones*: descarga el paquete de tu sistema, comprueba su
+SHA-256 y lo instala (pide tu contraseña). En la terminal:
+`kushare update --download`. En el teléfono, *Ajustes → Actualizaciones*.

@@ -4,9 +4,14 @@
 //! ajustes de tema (Sistema, Claro, Oscuro, OLED). No hace red por su
 //! cuenta: controla al daemon `kushare` por D-Bus.
 
+mod calls;
+mod clip;
 mod daemon;
 mod icons;
+mod notifs;
+mod sms;
 mod style;
+mod viewer;
 
 use daemon::{Event, Peer, Snapshot};
 use iced::font::Weight;
@@ -16,9 +21,10 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
 use icons::{Blob, Icon, shape_icon};
-use kushare_dbus::{AppsReply, DaemonProxy};
+use kushare_dbus::{AppsReply, DaemonProxy, OutputRow, UpdateRow};
 use kushare_i18n::{t, tf};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use style::{Appearance, ButtonKind, Colors, Shape, ThemeMode};
@@ -104,7 +110,11 @@ enum Screen {
     Home,
     Devices,
     Phone,
+    Messages,
+    Calls,
     Photos,
+    Notifications,
+    Clipboard,
     Send,
     Settings,
 }
@@ -174,6 +184,30 @@ struct App {
     /// Informe de `kushare doctor` (None: no se ha pedido; Some(""): en curso).
     doctor: Option<String>,
     gallery: Gallery,
+    sms: sms::SmsState,
+    calls: calls::CallsState,
+    notifs: notifs::NotifState,
+    clip: clip::ClipState,
+    viewer: Option<viewer::Viewer>,
+    /// Ajustes del daemon: (nombre, activado).
+    daemon_settings: Vec<(String, bool)>,
+    update: UpdateStatus,
+    /// Salidas y entradas de audio de este PC.
+    local_audio: (Vec<OutputRow>, Vec<OutputRow>),
+    /// Fondo de pantalla de cada teléfono: (ruta o "", colores ARGB).
+    wallpapers: HashMap<String, (String, Vec<u32>)>,
+}
+
+/// Estado de la búsqueda de actualizaciones (Ajustes).
+#[derive(Debug, Clone, Default)]
+struct UpdateStatus {
+    row: Option<UpdateRow>,
+    checking: bool,
+    downloading: bool,
+    /// Paquete ya descargado y verificado.
+    downloaded: Option<String>,
+    installing: bool,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,7 +303,38 @@ enum Message {
         limit: u32,
         result: Result<(u32, Vec<kushare_dbus::PhotoRow>), String>,
     },
-    PhotoFetched(Result<String, String>),
+    CachedPhotos {
+        peer: String,
+        photos: (u32, Vec<kushare_dbus::PhotoRow>),
+    },
+    Sms(sms::Msg),
+    Calls(calls::Msg),
+    Notifs(notifs::Msg),
+    Clip(clip::Msg),
+    Viewer(viewer::Msg),
+    /// Abrir *Mensajes* con un SMS nuevo (o la conversación) para este número.
+    OpenSmsTo(String),
+    // ajustes del daemon y actualizaciones
+    SettingsLoaded(Vec<(String, bool)>),
+    SetSetting(String, bool),
+    CheckUpdate(bool),
+    UpdateChecked(Result<UpdateRow, String>),
+    DownloadUpdate,
+    UpdateDownloaded(Result<String, String>),
+    InstallUpdate,
+    UpdateInstalled(Result<(), String>),
+    SetLanguage(&'static str),
+    // audio del PC y fondo de pantalla
+    LoadLocalAudio,
+    LocalAudioLoaded((Vec<OutputRow>, Vec<OutputRow>)),
+    SetLocalAudio {
+        input: bool,
+        id: String,
+    },
+    LoadWallpaper(String, bool),
+    WallpaperLoaded(String, Result<(String, Vec<u32>), String>),
+    Key(iced::keyboard::Key),
+    OpenUrl(String),
 }
 
 impl App {
@@ -277,7 +342,19 @@ impl App {
         let app = Self {
             config: GuiConfig::load(),
             system_dark: true,
-            screen: Screen::Home,
+            // KUSHARE_GUI_SCREEN=messages|calls|photos|… abre esa página
+            // (útil para capturas y pruebas).
+            screen: match std::env::var("KUSHARE_GUI_SCREEN").as_deref() {
+                Ok("phone") => Screen::Phone,
+                Ok("messages") => Screen::Messages,
+                Ok("calls") => Screen::Calls,
+                Ok("photos") => Screen::Photos,
+                Ok("notifications") => Screen::Notifications,
+                Ok("clipboard") => Screen::Clipboard,
+                Ok("devices") => Screen::Devices,
+                Ok("settings") => Screen::Settings,
+                _ => Screen::Home,
+            },
             daemon: None,
             state: DaemonState::Connecting,
             snapshot: Snapshot::default(),
@@ -289,6 +366,15 @@ impl App {
             angle: 0.0,
             doctor: None,
             gallery: Gallery::default(),
+            sms: Default::default(),
+            calls: Default::default(),
+            notifs: Default::default(),
+            clip: Default::default(),
+            viewer: None,
+            daemon_settings: Vec::new(),
+            update: UpdateStatus::default(),
+            local_audio: Default::default(),
+            wallpapers: HashMap::new(),
         };
         let tasks = Task::batch([
             iced::system::theme().map(Message::SystemTheme),
@@ -341,6 +427,18 @@ impl App {
         }
         if self.animating() {
             subs.push(iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick));
+        }
+        if self.viewer.is_some() {
+            subs.push(iced::keyboard::listen().filter_map(|event| match event {
+                iced::keyboard::Event::KeyPressed { key, .. } => Some(Message::Key(key)),
+                _ => None,
+            }));
+        }
+        if self.screen == Screen::Notifications && self.state == DaemonState::Running {
+            subs.push(
+                iced::time::every(Duration::from_secs(30))
+                    .map(|_| Message::Notifs(notifs::Msg::Load)),
+            );
         }
         Subscription::batch(subs)
     }
@@ -407,7 +505,13 @@ impl App {
             Message::Daemon(Event::Connected(proxy)) => {
                 self.daemon = Some(proxy);
                 self.state = DaemonState::Running;
-                self.refresh()
+                let screen = self.screen;
+                Task::batch([
+                    self.refresh(),
+                    self.load_settings(),
+                    Task::done(Message::CheckUpdate(false)),
+                ])
+                .chain(Task::done(Message::Navigate(screen)))
             }
             Message::Daemon(Event::Disconnected) => {
                 self.daemon = None;
@@ -419,6 +523,19 @@ impl App {
                 Task::none()
             }
             Message::Daemon(Event::PeersChanged) | Message::Refresh => self.refresh(),
+            Message::Daemon(Event::SmsChanged(peer, thread)) => {
+                Task::done(Message::Sms(sms::Msg::Changed(peer, thread)))
+            }
+            Message::Daemon(Event::NotificationsChanged(peer)) => {
+                Task::done(Message::Notifs(notifs::Msg::Changed(peer)))
+            }
+            Message::Daemon(Event::ClipboardChanged) => {
+                if self.screen == Screen::Clipboard {
+                    Task::done(Message::Clip(clip::Msg::Load))
+                } else {
+                    Task::none()
+                }
+            }
             Message::Daemon(Event::PhotosChanged(peer)) => {
                 if self.gallery.peer == peer && self.gallery.total > 0 {
                     Task::done(Message::PollPhotos)
@@ -462,13 +579,48 @@ impl App {
             }
             Message::Navigate(screen) => {
                 self.screen = screen;
+                let phone = self.phone_peers().first().map(|p| p.id.clone());
                 if screen == Screen::Photos
                     && self.gallery.photos.is_empty()
                     && !self.gallery.loading
-                    && let Some(peer) = self.phone_peers().first()
+                    && let Some(peer) = phone.clone()
                 {
-                    let peer = peer.id.clone();
-                    return Task::done(Message::LoadPhotos { peer, more: false });
+                    // Primero la galería de la caché (al instante), luego la real.
+                    let Some(d) = self.daemon.clone() else {
+                        return Task::none();
+                    };
+                    let p2 = peer.clone();
+                    return Task::batch([Task::perform(
+                        async move { d.cached_photos(&p2).await.unwrap_or_default() },
+                        move |photos| Message::CachedPhotos {
+                            peer: peer.clone(),
+                            photos,
+                        },
+                    )]);
+                }
+                match screen {
+                    Screen::Messages => return Task::done(Message::Sms(sms::Msg::Load)),
+                    Screen::Calls => return Task::done(Message::Calls(calls::Msg::Load)),
+                    Screen::Notifications => {
+                        return Task::done(Message::Notifs(notifs::Msg::Load));
+                    }
+                    Screen::Clipboard => return Task::done(Message::Clip(clip::Msg::Load)),
+                    Screen::Phone => {
+                        let mut tasks = vec![Task::done(Message::LoadLocalAudio)];
+                        for p in self.phone_peers() {
+                            if !self.wallpapers.contains_key(&p.id) {
+                                tasks.push(Task::done(Message::LoadWallpaper(p.id.clone(), false)));
+                            }
+                        }
+                        return Task::batch(tasks);
+                    }
+                    Screen::Settings => {
+                        return Task::batch([
+                            self.load_settings(),
+                            Task::done(Message::CheckUpdate(false)),
+                        ]);
+                    }
+                    _ => {}
                 }
                 if screen == Screen::Devices {
                     return Task::batch([
@@ -807,22 +959,201 @@ impl App {
                 Task::none()
             }
             Message::FetchPhoto { peer, id } => {
+                if self.gallery.peer != peer {
+                    return Task::none();
+                }
+                match self.gallery.photos.iter().position(|p| p.0 == id) {
+                    Some(index) => Task::done(Message::Viewer(viewer::Msg::Open(index))),
+                    None => Task::none(),
+                }
+            }
+            Message::CachedPhotos { peer, photos } => {
+                if self.gallery.peer != peer {
+                    self.gallery = Gallery {
+                        peer: peer.clone(),
+                        ..Default::default()
+                    };
+                }
+                if self.gallery.photos.is_empty() {
+                    self.gallery.total = photos.0;
+                    self.gallery.photos = photos.1;
+                }
+                Task::done(Message::LoadPhotos { peer, more: false })
+            }
+            Message::Sms(m) => self.sms_update(m),
+            Message::Calls(m) => self.calls_update(m),
+            Message::Notifs(m) => self.notifs_update(m),
+            Message::Clip(m) => self.clip_update(m),
+            Message::Viewer(m) => self.viewer_update(m),
+            Message::Key(key) => {
+                use iced::keyboard::{Key, key::Named};
+                let msg = match key {
+                    Key::Named(Named::ArrowLeft) => viewer::Msg::Prev,
+                    Key::Named(Named::ArrowRight) => viewer::Msg::Next,
+                    Key::Named(Named::Escape) => viewer::Msg::Close,
+                    _ => return Task::none(),
+                };
+                self.viewer_update(msg)
+            }
+            Message::OpenSmsTo(number) => {
+                self.screen = Screen::Messages;
+                let wanted = calls_digits(&number);
+                let thread = self
+                    .sms
+                    .threads
+                    .iter()
+                    .find(|t| !wanted.is_empty() && calls_digits(&t.1).ends_with(&wanted))
+                    .map(|t| t.0.clone());
+                let open = match thread {
+                    Some(thread) => Task::done(Message::Sms(sms::Msg::Open(thread))),
+                    None => Task::batch([
+                        Task::done(Message::Sms(sms::Msg::New)),
+                        Task::done(Message::Sms(sms::Msg::NewTo(number))),
+                    ]),
+                };
+                if self.sms.threads.is_empty() {
+                    Task::batch([Task::done(Message::Sms(sms::Msg::Load)), open])
+                } else {
+                    open
+                }
+            }
+            Message::OpenUrl(url) => {
+                if url.starts_with("https://") {
+                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                }
+                Task::none()
+            }
+            Message::SettingsLoaded(list) => {
+                self.daemon_settings = list;
+                Task::none()
+            }
+            Message::SetSetting(name, on) => {
+                if let Some(slot) = self.daemon_settings.iter_mut().find(|(n, _)| *n == name) {
+                    slot.1 = on;
+                }
+                if name == "clipboard-history" && !on {
+                    self.clip.history.clear();
+                }
+                self.call("", move |d| async move { d.set_setting(&name, on).await })
+            }
+            Message::CheckUpdate(force) => {
                 let Some(d) = self.daemon.clone() else {
                     return Task::none();
                 };
-                self.toast = Some(t("gui.photos.downloading").into());
+                if self.update.checking {
+                    return Task::none();
+                }
+                self.update.checking = true;
                 Task::perform(
-                    async move { d.fetch_photo(&peer, &id).await.map_err(|e| e.to_string()) },
-                    Message::PhotoFetched,
+                    async move { d.check_update(force).await.map_err(err_text) },
+                    Message::UpdateChecked,
                 )
             }
-            Message::PhotoFetched(Ok(path)) => {
-                let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
-                self.toast = Some(tf("gui.photos.saved", &[("path", &path)]));
+            Message::UpdateChecked(result) => {
+                self.update.checking = false;
+                match result {
+                    Ok(row) => {
+                        self.update.row = Some(row);
+                        self.update.error = None;
+                    }
+                    Err(e) => self.update.error = Some(e),
+                }
                 Task::none()
             }
-            Message::PhotoFetched(Err(err)) => {
-                self.toast = Some(err);
+            Message::DownloadUpdate => {
+                let Some(d) = self.daemon.clone() else {
+                    return Task::none();
+                };
+                self.update.downloading = true;
+                self.update.error = None;
+                Task::perform(
+                    async move { d.download_update().await.map_err(err_text) },
+                    Message::UpdateDownloaded,
+                )
+            }
+            Message::UpdateDownloaded(result) => {
+                self.update.downloading = false;
+                match result {
+                    Ok(path) => self.update.downloaded = Some(path),
+                    Err(e) => self.update.error = Some(e),
+                }
+                Task::none()
+            }
+            Message::InstallUpdate => {
+                let Some(path) = self.update.downloaded.clone() else {
+                    return Task::none();
+                };
+                self.update.installing = true;
+                Task::perform(install_package(path), Message::UpdateInstalled)
+            }
+            Message::UpdateInstalled(result) => {
+                self.update.installing = false;
+                match result {
+                    Ok(()) => {
+                        self.update.downloaded = None;
+                        self.toast = Some(t("gui.update.installed").into());
+                    }
+                    Err(e) => self.update.error = Some(e),
+                }
+                Task::none()
+            }
+            Message::SetLanguage(lang) => {
+                kushare_i18n::set_saved_language(lang);
+                self.toast = Some(t("gui.settings.language_restart").into());
+                Task::none()
+            }
+            Message::LoadLocalAudio => match self.daemon.clone() {
+                Some(d) => Task::perform(
+                    async move { d.local_audio().await.unwrap_or_default() },
+                    Message::LocalAudioLoaded,
+                ),
+                None => Task::none(),
+            },
+            Message::LocalAudioLoaded(audio) => {
+                self.local_audio = audio;
+                Task::none()
+            }
+            Message::SetLocalAudio { input, id } => {
+                let list = if input {
+                    &mut self.local_audio.1
+                } else {
+                    &mut self.local_audio.0
+                };
+                for o in list.iter_mut() {
+                    o.2 = o.0 == id;
+                }
+                let kind = if input { "input" } else { "output" };
+                let Some(d) = self.daemon.clone() else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        let r = d.set_local_audio(kind, &id).await.map_err(err_text);
+                        (r, d.local_audio().await.unwrap_or_default())
+                    },
+                    |(r, audio)| match r {
+                        Ok(()) => Message::LocalAudioLoaded(audio),
+                        Err(e) => Message::Done(Err(e)),
+                    },
+                )
+            }
+            Message::LoadWallpaper(peer, refresh) => match self.daemon.clone() {
+                Some(d) => Task::perform(
+                    async move {
+                        let r = d.wallpaper(&peer, refresh).await.map_err(err_text);
+                        (peer, r)
+                    },
+                    |(peer, r)| Message::WallpaperLoaded(peer, r),
+                ),
+                None => Task::none(),
+            },
+            Message::WallpaperLoaded(peer, result) => {
+                match result {
+                    Ok(w) => {
+                        self.wallpapers.insert(peer, w);
+                    }
+                    Err(e) => tracing::debug!(%e, "sin fondo de pantalla"),
+                }
                 Task::none()
             }
         }
@@ -836,7 +1167,11 @@ impl App {
             Screen::Home => self.home(c),
             Screen::Devices => self.devices(c),
             Screen::Phone => self.phone(c),
+            Screen::Messages => self.sms_view(c),
+            Screen::Calls => self.calls_view(c),
             Screen::Photos => self.photos(c),
+            Screen::Notifications => self.notifs_view(c),
+            Screen::Clipboard => self.clip_view(c),
             Screen::Send => self.send(c),
             Screen::Settings => self.settings(c),
         };
@@ -858,9 +1193,6 @@ impl App {
                 .width(Length::Fill)
                 .height(Length::Fill)
         ];
-        if let Some(t) = &self.toast {
-            layers = layers.push(self.toast_view(c, t));
-        }
         if let Some(p) = &self.pairing {
             layers = layers.push(self.pairing_dialog(c, p));
         }
@@ -869,6 +1201,12 @@ impl App {
         }
         if let Some(report) = &self.doctor {
             layers = layers.push(self.doctor_dialog(c, report));
+        }
+        if let Some(v) = &self.viewer {
+            layers = layers.push(self.viewer_view(c, v));
+        }
+        if let Some(t) = &self.toast {
+            layers = layers.push(self.toast_view(c, t));
         }
         layers.into()
     }
@@ -899,8 +1237,8 @@ impl App {
             )
             // Ancho para la etiqueta más larga ("Dispositivos") sin que
             // descentre el icono.
-            .padding(Padding::from([10, 4]))
-            .width(Length::Fixed(96.0))
+            .padding(Padding::from([7, 4]))
+            .width(Length::Fixed(104.0))
             .style(style::button(c, ButtonKind::Nav(selected)))
             .on_press(Message::Navigate(screen))
         };
@@ -908,15 +1246,23 @@ impl App {
             scrollable(
                 column![
                     text("ku").size(26).font(EXTRA_BOLD).color(c.primary),
-                    space().height(16),
+                    space().height(8),
                     item(Icon::Home, t("gui.nav.home"), Screen::Home),
-                    item(Icon::Devices, t("gui.nav.devices"), Screen::Devices),
                     item(Icon::Phone, t("gui.nav.phone"), Screen::Phone),
+                    item(Icon::Message, t("gui.nav.messages"), Screen::Messages),
+                    item(Icon::Dialpad, t("gui.nav.calls"), Screen::Calls),
                     item(Icon::Photo, t("gui.nav.photos"), Screen::Photos),
+                    item(
+                        Icon::Notifications,
+                        t("gui.nav.notifications"),
+                        Screen::Notifications
+                    ),
+                    item(Icon::Clipboard, t("gui.nav.clipboard"), Screen::Clipboard),
                     item(Icon::Send, t("gui.nav.send"), Screen::Send),
+                    item(Icon::Devices, t("gui.nav.devices"), Screen::Devices),
                     item(Icon::Settings, t("gui.nav.settings"), Screen::Settings),
                 ]
-                .spacing(10)
+                .spacing(4)
                 .align_x(Alignment::Center),
             )
             // Desplazable para ventanas bajas, sin barra visible.
@@ -1483,12 +1829,171 @@ impl App {
         if phones.is_empty() {
             return col
                 .push(self.empty_phone(c, t("gui.phone.none_detail")))
+                .push(self.local_audio_card(c))
                 .into();
         }
         for p in phones {
             col = col.push(self.phone_card(c, p));
         }
-        col.into()
+        col.push(self.local_audio_card(c)).into()
+    }
+
+    /// Cabecera de la tarjeta del teléfono sobre su fondo de pantalla (o un
+    /// degradado con sus colores, si Android no deja leer la imagen).
+    fn wallpaper_banner<'a>(
+        &self,
+        c: Colors,
+        peer: &str,
+        content: Element<'a, Message>,
+    ) -> Element<'a, Message> {
+        let Some((path, colors)) = self.wallpapers.get(peer) else {
+            return content;
+        };
+        let argb = |v: u32| Color::from_rgb8((v >> 16) as u8, (v >> 8) as u8, v as u8);
+        let fg = Color::WHITE;
+        let content = container(content)
+            .padding(20)
+            .width(Length::Fill)
+            .height(Length::Fixed(180.0))
+            .align_y(Alignment::End)
+            .style(move |_: &Theme| container::Style {
+                text_color: Some(fg),
+                background: Some(
+                    iced::gradient::Linear::new(0.0)
+                        .add_stop(
+                            0.0,
+                            Color {
+                                a: 0.75,
+                                ..Color::BLACK
+                            },
+                        )
+                        .add_stop(
+                            0.6,
+                            Color {
+                                a: 0.0,
+                                ..Color::BLACK
+                            },
+                        )
+                        .into(),
+                ),
+                border: iced::Border {
+                    radius: 22.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let backdrop: Element<'a, Message> = if !path.is_empty() {
+            iced::widget::image(iced::widget::image::Handle::from_path(path))
+                .width(Length::Fill)
+                .height(Length::Fixed(180.0))
+                .content_fit(iced::ContentFit::Cover)
+                .border_radius(22.0)
+                .into()
+        } else if !colors.is_empty() {
+            let a = argb(colors[0]);
+            let b = colors.get(1).map_or(c.primary, |v| argb(*v));
+            container(space())
+                .width(Length::Fill)
+                .height(Length::Fixed(180.0))
+                .style(move |_: &Theme| container::Style {
+                    background: Some(
+                        iced::gradient::Linear::new(0.8)
+                            .add_stop(0.0, a)
+                            .add_stop(1.0, b)
+                            .into(),
+                    ),
+                    border: iced::Border {
+                        radius: 22.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            return content.into();
+        };
+        stack![backdrop, content].into()
+    }
+
+    /// Salidas y entradas (micrófono, p. ej. para las llamadas) de este PC.
+    fn local_audio_card(&self, c: Colors) -> Element<'_, Message> {
+        let (outputs, inputs) = &self.local_audio;
+        let list = |rows: &[OutputRow], input: bool, icon: Icon| {
+            let mut col = column![].spacing(2);
+            for (id, name, active) in rows {
+                col = col.push(
+                    button(
+                        row![
+                            icon.view(
+                                18.0,
+                                if *active {
+                                    c.primary
+                                } else {
+                                    c.on_surface_variant
+                                }
+                            ),
+                            text(name.clone()).size(15).font(if *active {
+                                BOLD
+                            } else {
+                                Font::DEFAULT
+                            }),
+                            space().width(Length::Fill),
+                            if *active {
+                                Icon::Check.view(18.0, c.primary)
+                            } else {
+                                space().into()
+                            },
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding(Padding::from([8, 14]))
+                    .width(Length::Fill)
+                    .style(style::button(c, ButtonKind::Text))
+                    .on_press_maybe((!active).then(|| {
+                        Message::SetLocalAudio {
+                            input,
+                            id: id.clone(),
+                        }
+                    })),
+                );
+            }
+            if rows.is_empty() {
+                col = col.push(
+                    text(t("gui.audio.none"))
+                        .size(13)
+                        .color(c.on_surface_variant),
+                );
+            }
+            col
+        };
+        container(
+            column![
+                row![
+                    text(t("gui.audio.title"))
+                        .size(22)
+                        .font(BOLD)
+                        .width(Length::Fill),
+                    button(Icon::Refresh.view(18.0, c.on_surface_variant))
+                        .padding(8)
+                        .style(style::button(c, ButtonKind::Text))
+                        .on_press(Message::LoadLocalAudio),
+                ]
+                .align_y(Alignment::Center),
+                text(t("gui.audio.detail"))
+                    .size(13)
+                    .color(c.on_surface_variant),
+                self.section(c, t("gui.audio.outputs")),
+                list(outputs, false, Icon::Volume),
+                self.section(c, t("gui.audio.inputs")),
+                list(inputs, true, Icon::Mic),
+            ]
+            .spacing(8),
+        )
+        .padding(26)
+        .width(Length::Fill)
+        .style(style::card(c.container_high, c.on_surface, Shape::Wide))
+        .into()
     }
 
     fn phone_card<'a>(&'a self, c: Colors, p: &'a Peer) -> Element<'a, Message> {
@@ -1513,7 +2018,7 @@ impl App {
             t("gui.phone.battery_unknown").into()
         };
         let low = battery.0 && battery.1 <= 15 && !battery.2;
-        let header = row![
+        let header_row = row![
             shape_icon(
                 Icon::Battery,
                 Blob::Cookie9,
@@ -1527,9 +2032,14 @@ impl App {
                 text(battery_text).size(15),
             ]
             .width(Length::Fill),
+            button(Icon::Refresh.view(18.0, c.on_surface))
+                .padding(8)
+                .style(style::button(c, ButtonKind::Text))
+                .on_press(Message::LoadWallpaper(p.id.clone(), true)),
         ]
         .spacing(18)
         .align_y(Alignment::Center);
+        let header = self.wallpaper_banner(c, &p.id, header_row.into());
 
         let mut body = column![header].spacing(14);
 
@@ -1851,7 +2361,7 @@ impl App {
         const COLUMNS: usize = 5;
         for chunk in g.photos.chunks(COLUMNS) {
             let mut r = row![].spacing(10);
-            for (id, _name, _date, _w, _h, _size, thumb) in chunk {
+            for (id, _name, _date, _w, _h, _size, thumb, _original) in chunk {
                 // Entrada animada de las fotos nuevas: aparecen (opacidad) y
                 // llevan un borde del color primario que se desvanece.
                 let age = g.fresh.get(id).map(|at| at.elapsed());
@@ -2093,6 +2603,7 @@ impl App {
                     text(mode.label()).size(13).font(SEMIBOLD)
                 ]
                 .align_x(Alignment::Center)
+                .width(Length::Fill)
                 .spacing(4),
             )
             .padding(Padding::from([12, 0]))
@@ -2183,6 +2694,78 @@ impl App {
             ]
             .padding(Padding::from([3, 0]))
         };
+        // Idioma (se aplica al volver a abrir).
+        let saved = kushare_i18n::saved_language();
+        let langs: [(&'static str, &str); 3] = [
+            ("", t("gui.settings.language_system")),
+            ("es", "Español"),
+            ("en", "English"),
+        ];
+        let lang_seg = row(langs.iter().enumerate().map(|(i, (code, label))| {
+            let selected = saved == *code;
+            button(
+                text(*label)
+                    .size(14)
+                    .font(SEMIBOLD)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center),
+            )
+            .padding(Padding::from([10, 0]))
+            .width(Length::Fill)
+            .style(style::button(
+                c,
+                ButtonKind::Segment {
+                    selected,
+                    first: i == 0,
+                    last: i == langs.len() - 1,
+                },
+            ))
+            .on_press(Message::SetLanguage(code))
+            .into()
+        }))
+        .spacing(3);
+        theme_card = theme_card.push(space().height(8)).push(
+            row![
+                Icon::Language.view(20.0, c.on_surface_variant),
+                text(t("gui.settings.language")).size(17).font(SEMIBOLD)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+        theme_card = theme_card.push(lang_seg);
+
+        let features_card = column![
+            self.switch_row(
+                c,
+                t("gui.settings.prefetch"),
+                Some(t("gui.settings.prefetch_detail")),
+                self.setting("photo-prefetch"),
+                |on| Message::SetSetting("photo-prefetch".into(), on),
+            ),
+            self.switch_row(
+                c,
+                t("gui.clip.sync"),
+                Some(t("gui.clip.sync_detail")),
+                self.setting("clipboard-sync"),
+                |on| Message::SetSetting("clipboard-sync".into(), on),
+            ),
+            self.switch_row(
+                c,
+                t("gui.settings.receive_confirm"),
+                Some(t("gui.settings.receive_confirm_detail")),
+                self.setting("receive-confirm"),
+                |on| Message::SetSetting("receive-confirm".into(), on),
+            ),
+            self.switch_row(
+                c,
+                t("gui.settings.update_check"),
+                Some(t("gui.settings.update_check_detail")),
+                self.setting("update-check"),
+                |on| Message::SetSetting("update-check".into(), on),
+            ),
+        ]
+        .spacing(6);
+
         column![
             self.title(c, t("gui.nav.settings"), t("gui.settings.subtitle").into()),
             self.section(c, t("gui.settings.appearance")),
@@ -2192,6 +2775,16 @@ impl App {
                 .style(style::card(c.container_high, c.on_surface, Shape::Wide)),
             self.section(c, t("gui.settings.connection")),
             container(daemon_card)
+                .padding(20)
+                .width(Length::Fill)
+                .style(style::card(c.container_high, c.on_surface, Shape::List)),
+            self.section(c, t("gui.settings.features")),
+            container(features_card)
+                .padding(22)
+                .width(Length::Fill)
+                .style(style::card(c.container_high, c.on_surface, Shape::List)),
+            self.section(c, t("gui.update.title")),
+            container(self.update_card(c))
                 .padding(20)
                 .width(Length::Fill)
                 .style(style::card(c.container_high, c.on_surface, Shape::List)),
@@ -2249,6 +2842,119 @@ impl App {
             .style(style::card(c.container_high, c.on_surface, Shape::List)),
         ]
         .spacing(14)
+        .into()
+    }
+
+    fn update_card(&self, c: Colors) -> Element<'_, Message> {
+        let u = &self.update;
+        let (title, detail, action): (String, String, Element<'_, Message>) = match &u.row {
+            _ if u.checking => (
+                t("gui.update.checking").into(),
+                String::new(),
+                space().into(),
+            ),
+            Some((current, latest, page, asset, _url)) if crate::is_newer(latest, current) => {
+                let title = tf("gui.update.available", &[("version", latest)]);
+                let page = page.clone();
+                let action: Element<'_, Message> = if let Some(path) = &u.downloaded {
+                    row![
+                        text(path.clone()).size(12).color(c.on_surface_variant),
+                        button(labeled(Icon::Update, t("gui.update.install"), c.on_primary))
+                            .padding(Padding::from([10, 22]))
+                            .style(style::button(c, ButtonKind::Filled))
+                            .on_press_maybe((!u.installing).then_some(Message::InstallUpdate)),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .into()
+                } else if asset.is_empty() {
+                    button(labeled(
+                        Icon::OpenInNew,
+                        t("gui.update.open_page"),
+                        c.on_primary,
+                    ))
+                    .padding(Padding::from([10, 22]))
+                    .style(style::button(c, ButtonKind::Filled))
+                    .on_press(Message::OpenUrl(page))
+                    .into()
+                } else {
+                    row![
+                        button(labeled(Icon::OpenInNew, t("gui.update.notes"), c.primary))
+                            .style(style::button(c, ButtonKind::Text))
+                            .on_press(Message::OpenUrl(page)),
+                        button(labeled(
+                            Icon::Download,
+                            t("gui.update.download"),
+                            c.on_primary
+                        ))
+                        .padding(Padding::from([10, 22]))
+                        .style(style::button(c, ButtonKind::Filled))
+                        .on_press_maybe((!u.downloading).then_some(Message::DownloadUpdate)),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into()
+                };
+                let detail = if u.downloading {
+                    t("gui.update.downloading").to_string()
+                } else if u.installing {
+                    t("gui.update.installing").to_string()
+                } else {
+                    tf("gui.update.current", &[("version", current)])
+                };
+                (title, detail, action)
+            }
+            Some((current, ..)) => (
+                t("gui.update.up_to_date").into(),
+                tf("gui.update.current", &[("version", current)]),
+                button(labeled(
+                    Icon::Refresh,
+                    t("gui.update.check"),
+                    c.on_secondary_container,
+                ))
+                .padding(Padding::from([10, 22]))
+                .style(style::button(c, ButtonKind::Tonal))
+                .on_press(Message::CheckUpdate(true))
+                .into(),
+            ),
+            None => (
+                t("gui.update.unknown").into(),
+                tf(
+                    "gui.update.current",
+                    &[("version", &env!("CARGO_PKG_VERSION"))],
+                ),
+                button(labeled(
+                    Icon::Refresh,
+                    t("gui.update.check"),
+                    c.on_secondary_container,
+                ))
+                .padding(Padding::from([10, 22]))
+                .style(style::button(c, ButtonKind::Tonal))
+                .on_press(Message::CheckUpdate(true))
+                .into(),
+            ),
+        };
+        let mut texts = column![text(title).size(17).font(SEMIBOLD)];
+        if !detail.is_empty() {
+            texts = texts.push(text(detail).size(13).color(c.on_surface_variant));
+        }
+        if let Some(err) = &u.error {
+            texts = texts.push(text(err.clone()).size(13).color(c.error));
+        }
+        row![
+            shape_icon(
+                Icon::Update,
+                Blob::Flower,
+                c.secondary,
+                c.on_secondary,
+                48.0,
+                0.0
+            ),
+            texts.width(Length::Fill),
+            action,
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center)
         .into()
     }
 
@@ -2416,4 +3122,184 @@ impl App {
         .padding(24)
         .into()
     }
+}
+
+// --- Utilidades compartidas por las páginas --------------------------------
+
+impl App {
+    fn load_settings(&self) -> Task<Message> {
+        match self.daemon.clone() {
+            Some(d) => Task::perform(
+                async move { d.settings().await.unwrap_or_default() },
+                Message::SettingsLoaded,
+            ),
+            None => Task::none(),
+        }
+    }
+
+    /// Valor de un ajuste del daemon (los predeterminados si aún no se leyó).
+    fn setting(&self, name: &str) -> bool {
+        self.daemon_settings
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, on)| *on)
+            .unwrap_or(name != "clipboard-history")
+    }
+}
+
+/// Mensaje de error del daemon sin el prefijo de D-Bus.
+fn err_text(err: zbus::Error) -> String {
+    match err {
+        zbus::Error::MethodError(_, Some(detail), _) => detail,
+        zbus::Error::FDO(e) => match *e {
+            zbus::fdo::Error::Failed(detail) | zbus::fdo::Error::InvalidArgs(detail) => detail,
+            other => other.to_string(),
+        },
+        other => other.to_string(),
+    }
+}
+
+/// Fecha local corta: "14:03" si es de hoy, "7 nov 14:03" si es de este
+/// año, "07/11/2025" si no.
+fn fmt_time(ms: i64) -> String {
+    fn local(secs: i64) -> libc::tm {
+        let t: libc::time_t = secs as libc::time_t;
+        // SAFETY: localtime_r solo escribe en `tm`, que es nuestro.
+        unsafe {
+            let mut tm: libc::tm = std::mem::zeroed();
+            libc::localtime_r(&t, &mut tm);
+            tm
+        }
+    }
+    if ms <= 0 {
+        return String::new();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    let (d, n) = (local(ms / 1000), local(now));
+    if d.tm_year == n.tm_year && d.tm_yday == n.tm_yday {
+        format!("{:02}:{:02}", d.tm_hour, d.tm_min)
+    } else if d.tm_year == n.tm_year {
+        let month = month_name(d.tm_mon);
+        format!("{} {month} {:02}:{:02}", d.tm_mday, d.tm_hour, d.tm_min)
+    } else {
+        format!("{:02}/{:02}/{}", d.tm_mday, d.tm_mon + 1, d.tm_year + 1900)
+    }
+}
+
+fn month_name(month: i32) -> &'static str {
+    match month {
+        0 => t("gui.month.1"),
+        1 => t("gui.month.2"),
+        2 => t("gui.month.3"),
+        3 => t("gui.month.4"),
+        4 => t("gui.month.5"),
+        5 => t("gui.month.6"),
+        6 => t("gui.month.7"),
+        7 => t("gui.month.8"),
+        8 => t("gui.month.9"),
+        9 => t("gui.month.10"),
+        10 => t("gui.month.11"),
+        _ => t("gui.month.12"),
+    }
+}
+
+/// Minúsculas y sin acentos, para buscar ("López" → "lopez").
+fn fold(s: &str) -> String {
+    s.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            'ç' => 'c',
+            other => other,
+        })
+        .collect()
+}
+
+/// Lo escrito en el marcador tal como se marcará (letras → teclas).
+fn dialable_preview(input: &str) -> String {
+    input
+        .trim()
+        .chars()
+        .filter_map(
+            |c| match fold(&c.to_string()).chars().next()?.to_ascii_uppercase() {
+                d @ ('0'..='9' | '+' | '*' | '#') => Some(d),
+                'A'..='C' => Some('2'),
+                'D'..='F' => Some('3'),
+                'G'..='I' => Some('4'),
+                'J'..='L' => Some('5'),
+                'M'..='O' => Some('6'),
+                'P'..='S' => Some('7'),
+                'T'..='V' => Some('8'),
+                'W'..='Z' => Some('9'),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// Últimos dígitos de un número, para emparejar "+52 55 1234 5678" con "5512345678".
+fn calls_digits(number: &str) -> String {
+    let d: String = number.chars().filter(char::is_ascii_digit).collect();
+    d[d.len().saturating_sub(10)..].to_string()
+}
+
+/// Instala el paquete descargado con `pkexec` (pide la contraseña con el
+/// agente de polkit del escritorio).
+async fn install_package(path: String) -> Result<(), String> {
+    let kind = if path.ends_with(".pkg.tar.zst") {
+        "arch"
+    } else if path.ends_with(".deb") {
+        "deb"
+    } else {
+        "rpm"
+    };
+    let mut cmd: Vec<String> = match kind {
+        "arch" => vec!["pkexec", "pacman", "-U", "--noconfirm"],
+        "deb" => vec!["pkexec", "apt-get", "install", "-y"],
+        _ if std::path::Path::new("/usr/bin/dnf").exists() => {
+            vec!["pkexec", "dnf", "install", "-y"]
+        }
+        _ if std::path::Path::new("/usr/bin/zypper").exists() => {
+            vec!["pkexec", "zypper", "--non-interactive", "install"]
+        }
+        _ => vec!["pkexec", "rpm", "-U"],
+    }
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    cmd.push(path);
+    let out = tokio::process::Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .output()
+        .await
+        .map_err(|e| tf("gui.update.no_pkexec", &[("error", &e)]))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        Err(tf(
+            "gui.update.install_failed",
+            &[("error", &err.lines().last().unwrap_or_default().to_string())],
+        ))
+    }
+}
+
+/// ¿`latest` es posterior a `current`? (x.y.z numérico).
+fn is_newer(latest: &str, current: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> {
+        v.trim_start_matches('v')
+            .split(['.', '-', '+'])
+            .take(3)
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    };
+    parse(latest) > parse(current)
 }

@@ -10,8 +10,9 @@
 //! que se consultan con la clave aplanada: `t("gui.nav.home")`. Los valores
 //! pueden llevar marcadores `{nombre}`, que rellena [`tf`].
 //!
-//! **Idioma**: `KUSHARE_LANG`, o si no `LC_ALL` / `LC_MESSAGES` / `LANG`
-//! (`es_MX.UTF-8` → `es`). Lo que falte en ese idioma sale en español
+//! **Idioma**: `KUSHARE_LANG`; si no, el elegido en la GUI
+//! (`~/.config/kushare/language`, ver [`set_saved_language`]); si no,
+//! `LC_ALL` / `LC_MESSAGES` / `LANG` (`es_MX.UTF-8` → `es`). Lo que falte en ese idioma sale en español
 //! ([`FALLBACK`]), y una clave que no existe en ningún sitio se muestra tal
 //! cual (así se nota enseguida).
 //!
@@ -29,7 +30,10 @@ use std::sync::OnceLock;
 pub const FALLBACK: &str = "es";
 
 /// Idiomas incluidos en el binario.
-pub const BUILTIN: &[(&str, &str)] = &[("es", include_str!("../locales/es.json"))];
+pub const BUILTIN: &[(&str, &str)] = &[
+    ("es", include_str!("../locales/es.json")),
+    ("en", include_str!("../locales/en.json")),
+];
 
 type Table = HashMap<String, &'static str>;
 
@@ -80,11 +84,44 @@ fn load_table(json: &str) -> Table {
     table
 }
 
+fn saved_language_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|d| d.join("kushare/language"))
+}
+
+/// Idioma elegido en la GUI ("" = el del sistema).
+pub fn saved_language() -> String {
+    saved_language_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Guarda el idioma elegido ("" = el del sistema). Se aplica al volver a
+/// abrir cada programa (GUI, daemon, bandeja).
+pub fn set_saved_language(lang: &str) {
+    if let Some(path) = saved_language_path() {
+        if lang.is_empty() {
+            let _ = std::fs::remove_file(path);
+        } else {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, lang);
+        }
+    }
+}
+
 /// Idioma pedido por el entorno ("es", "en"…), sin región ni codificación.
 fn requested_language() -> String {
-    ["KUSHARE_LANG", "LC_ALL", "LC_MESSAGES", "LANG"]
-        .iter()
-        .filter_map(|var| std::env::var(var).ok())
+    let env = |var: &&str| std::env::var(var).ok();
+    let saved = saved_language();
+    std::iter::once("KUSHARE_LANG")
+        .filter_map(|v| env(&v))
+        .chain((!saved.is_empty()).then_some(saved))
+        .chain(["LC_ALL", "LC_MESSAGES", "LANG"].iter().filter_map(env))
         .find(|v| !v.is_empty())
         .map(|v| {
             v.split(['_', '.', '@', '-'])
@@ -167,6 +204,30 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::path::Path;
+
+    /// El inglés tiene exactamente las mismas claves y marcadores que el español.
+    #[test]
+    fn english_matches_spanish() {
+        let es = parse(BUILTIN[0].1).unwrap();
+        let en = parse(BUILTIN[1].1).expect("en.json válido");
+        let mut missing: Vec<_> = es.keys().filter(|k| !en.contains_key(*k)).collect();
+        missing.sort();
+        assert!(missing.is_empty(), "faltan en en.json: {missing:?}");
+        let extra: Vec<_> = en.keys().filter(|k| !es.contains_key(*k)).collect();
+        assert!(extra.is_empty(), "sobran en en.json: {extra:?}");
+        let marks = |v: &str| {
+            let mut m: Vec<String> = v
+                .split('{')
+                .skip(1)
+                .filter_map(|p| p.split_once('}').map(|(n, _)| n.to_string()))
+                .collect();
+            m.sort();
+            m
+        };
+        for (k, v) in &es {
+            assert_eq!(marks(v), marks(&en[k]), "marcadores distintos en {k}");
+        }
+    }
 
     #[test]
     fn spanish_catalog_is_valid_and_fills_placeholders() {

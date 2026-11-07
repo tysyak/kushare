@@ -5,8 +5,10 @@
 //! en [`dbus`], CLI en [`cli`], menú del tray).
 
 pub mod cli;
+pub mod clipboard;
 pub mod dbus;
 pub mod features;
+pub mod settings;
 
 use kushare_discovery::mdns::{
     LINK_SERVICE_TYPE, LinkPeerSighting, MdnsAdvertiser, MdnsScanner, link_peer_from_event,
@@ -25,7 +27,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
 /// Puerto TCP fijo por defecto del enlace: fijo para que la regla del
 /// firewall no cambie entre arranques (`firewall-cmd --add-port=47816/tcp`).
@@ -40,6 +42,17 @@ const REPLY_DIALOG_PREFIX: &str = "kushare-reply:";
 const PAIR_ACCEPT: &str = "kushare-pair-accept";
 const PAIR_REJECT: &str = "kushare-pair-reject";
 const CALL_ACTION_PREFIX: &str = "kushare-call:";
+const RECEIVE_ACCEPT: &str = "kushare-receive-accept";
+const RECEIVE_REJECT: &str = "kushare-receive-reject";
+/// Sin respuesta en este tiempo, el envío por Wi-Fi se rechaza.
+const RECEIVE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Alguien en la red quiere enviar archivos: preguntar al usuario.
+struct ReceiveRequest {
+    device_name: String,
+    files: Vec<(String, u64)>,
+    answer: tokio::sync::oneshot::Sender<bool>,
+}
 
 /// Lo que el resto del binario (tray, D-Bus) necesita del enlace.
 #[derive(Clone)]
@@ -66,6 +79,8 @@ pub struct LinkHandle {
     advertiser: Arc<Mutex<Option<MdnsAdvertiser>>>,
     /// Batería, multimedia, audio, timbre, llamadas y fotos.
     pub features: Arc<features::Features>,
+    pub updates: Arc<crate::update::Updates>,
+    receive_requests: mpsc::UnboundedSender<ReceiveRequest>,
 }
 
 impl LinkHandle {
@@ -419,6 +434,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
     tracing::info!(device_id = manager.device_id(), "enlace persistente listo");
 
     let (events, _) = broadcast::channel(64);
+    let (receive_requests, mut receive_rx) = mpsc::unbounded_channel();
     let handle = LinkHandle {
         manager: manager.clone(),
         discovered: Arc::default(),
@@ -430,7 +446,14 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         scanning: Arc::default(),
         link_port: Arc::default(),
         advertiser: Arc::default(),
-        features: features::Features::start(manager.clone(), dirs.cache_dir()),
+        features: features::Features::start(
+            manager.clone(),
+            dirs.cache_dir(),
+            dirs.data_dir(),
+            Arc::new(settings::SettingsStore::open(dirs.config_dir())),
+        ),
+        updates: Arc::new(crate::update::Updates::open(dirs.cache_dir())),
+        receive_requests,
     };
 
     // TCP
@@ -515,6 +538,31 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         .any(|c| c == "inline-reply");
     tracing::info!(inline_reply, "servidor de notificaciones listo");
 
+    // Avisar (una vez por versión) de que hay una versión nueva.
+    {
+        let updates = handle.updates.clone();
+        let settings = handle.features.settings.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(90)).await;
+            loop {
+                if settings.get().update_check
+                    && let Ok(release) = updates.check(false).await
+                    && crate::update::is_newer(&release.version, crate::update::CURRENT)
+                    && updates.should_notify(&release.version)
+                    && let Ok(notifier) = Notifier::connect().await
+                {
+                    let _ = notifier
+                        .notify(
+                            &tf("daemon.update_title", &[("version", &release.version)]),
+                            t("daemon.update_body"),
+                        )
+                        .await;
+                }
+                tokio::time::sleep(Duration::from_secs(6 * 3600)).await;
+            }
+        });
+    }
+
     let loop_handle = handle.clone();
     tokio::spawn(async move {
         let mut ui = DesktopUi {
@@ -525,12 +573,14 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
             by_id: HashMap::new(),
             pin_prompts: HashMap::new(),
             calls: HashMap::new(),
+            receive_prompts: HashMap::new(),
         };
         loop {
             tokio::select! {
                 Some(event) = link_events.recv() => ui.on_link_event(event).await,
                 Some(c) = captured.recv() => ui.on_captured(c),
                 Some(e) = notifier_events.recv() => ui.on_notifier_event(e).await,
+                Some(r) = receive_rx.recv() => ui.ask_receive(r).await,
                 else => break,
             }
         }
@@ -538,6 +588,48 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
     });
 
     Ok(handle)
+}
+
+impl LinkHandle {
+    /// Confirmación para el receptor TCP de archivos (Quick Share): con
+    /// `receive-confirm` activado, pregunta con una notificación; sin
+    /// respuesta en 60 s, rechaza.
+    pub fn receive_consent(&self) -> kushare_transfer::Consent {
+        let requests = self.receive_requests.clone();
+        let settings = self.features.settings.clone();
+        Arc::new(move |device_name, files| {
+            let requests = requests.clone();
+            let ask = settings.get().receive_confirm;
+            Box::pin(async move {
+                if !ask {
+                    return true;
+                }
+                let (answer, rx) = tokio::sync::oneshot::channel();
+                if requests
+                    .send(ReceiveRequest {
+                        device_name,
+                        files,
+                        answer,
+                    })
+                    .is_err()
+                {
+                    return false;
+                }
+                matches!(
+                    tokio::time::timeout(RECEIVE_TIMEOUT, rx).await,
+                    Ok(Ok(true))
+                )
+            })
+        })
+    }
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{} KB", bytes.div_ceil(1024))
+    }
 }
 
 /// Registra los dos perfiles RFCOMM del daemon en una misma sesión BlueZ:
@@ -593,9 +685,57 @@ struct DesktopUi {
     pin_prompts: HashMap<u32, String>,
     /// device_id → id de la notificación de su llamada en curso.
     calls: HashMap<String, u32>,
+    /// id de la notificación "¿aceptar archivos?" → respuesta.
+    receive_prompts: HashMap<u32, tokio::sync::oneshot::Sender<bool>>,
 }
 
 impl DesktopUi {
+    async fn ask_receive(&mut self, r: ReceiveRequest) {
+        self.receive_prompts.retain(|_, tx| !tx.is_closed());
+        let total: u64 = r.files.iter().map(|f| f.1).sum();
+        let names = r
+            .files
+            .iter()
+            .map(|f| f.0.as_str())
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if r.files.len() > 3 {
+            format!(" (+{})", r.files.len() - 3)
+        } else {
+            String::new()
+        };
+        let shown = self
+            .notifier
+            .notify_full(&MirrorNotification {
+                app_name: "kushare".into(),
+                summary: tf("daemon.receive_title", &[("name", &r.device_name)]),
+                body: tf(
+                    "daemon.receive_body",
+                    &[
+                        ("files", &format!("{names}{more}")),
+                        ("size", &format_size(total)),
+                    ],
+                ),
+                actions: vec![
+                    (RECEIVE_ACCEPT.into(), t("daemon.accept").into()),
+                    (RECEIVE_REJECT.into(), t("daemon.reject").into()),
+                ],
+                persistent: true,
+                ..Default::default()
+            })
+            .await;
+        match shown {
+            Ok(id) => {
+                self.receive_prompts.insert(id, r.answer);
+            }
+            Err(err) => {
+                tracing::warn!(?err, "no se pudo preguntar si aceptar el envío: se rechaza");
+                let _ = r.answer.send(false);
+            }
+        }
+    }
+
     fn peer_name(&self, peer_id: &str) -> String {
         self.handle
             .manager
@@ -877,6 +1017,12 @@ impl DesktopUi {
     async fn on_notifier_event(&mut self, event: NotifierEvent) {
         match event {
             NotifierEvent::ActionInvoked { id, action } => {
+                if action == RECEIVE_ACCEPT || action == RECEIVE_REJECT {
+                    if let Some(answer) = self.receive_prompts.remove(&id) {
+                        let _ = answer.send(action == RECEIVE_ACCEPT);
+                    }
+                    return;
+                }
                 if let Some(device_id) = self.pin_prompts.remove(&id) {
                     let accept = action == PAIR_ACCEPT;
                     if action == PAIR_ACCEPT || action == PAIR_REJECT {

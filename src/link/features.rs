@@ -5,26 +5,58 @@
 //! - **Multimedia**: los reproductores MPRIS del PC se publican y se
 //!   controlan desde el teléfono; los del teléfono se controlan desde aquí.
 //! - **Salida de audio**: las salidas de PipeWire/PulseAudio (vía `pactl`)
-//!   se publican y el teléfono puede elegir la predeterminada.
-//! - **Timbre**, **llamadas** y **fotos**: solo del teléfono hacia el PC.
+//!   se publican y el teléfono puede elegir la predeterminada; la GUI elige
+//!   también la entrada (micrófono) del PC.
+//! - **Timbre**, **llamadas**, **fotos**, **SMS**, **registro de llamadas**,
+//!   **contactos**, **notificaciones activas** y **fondo de pantalla**: solo
+//!   del teléfono hacia el PC (peticiones con `request_id`).
+//! - **Portapapeles**: en ambos sentidos (ver [`super::clipboard`]).
 //!
 //! El enlace solo transporta los mensajes (`pb::Feature`); aquí se guarda
 //! el último estado de cada peer y se responden las peticiones.
+//!
+//! **Fotos por Bluetooth**: las miniaturas se guardan en caché y el
+//! teléfono no las vuelve a mandar (`have_thumbnails`); además las fotos
+//! más recientes se precargan en segundo plano, a baja prioridad, para que
+//! abrirlas sea instantáneo.
 
 use kushare_link::LinkManager;
 use kushare_link::pb::{self, feature::Kind as F};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
+
+use super::clipboard::Clipboard;
+use super::settings::SettingsStore;
 
 const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
 const MPRIS_PLAYER: &str = "org.mpris.MediaPlayer2.Player";
 const BATTERY_POLL: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// Las listas largas (contactos, SMS) por Bluetooth tardan más.
+const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Una foto grande por Bluetooth puede tardar: 5 min de margen (10 de fondo).
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const BACKGROUND_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// Máximo de fotos por petición que acepta el teléfono.
+const PHOTO_PAGE_MAX: u32 = 60;
+/// Cuántas de las fotos más recientes se precargan en segundo plano.
+const PREFETCH_COUNT: u32 = 6;
+/// Fotos más grandes no se precargan (por Bluetooth tardarían minutos).
+const PREFETCH_MAX_BYTES: u64 = 12 * 1024 * 1024;
+/// Trozos pequeños en la precarga, para intercalarse con lo demás.
+const PREFETCH_CHUNK: u32 = 64 * 1024;
+/// Tamaño máximo de la caché de fotos originales.
+const PHOTO_CACHE_MAX_BYTES: u64 = 400 * 1024 * 1024;
+/// Espera tras conectar antes de precargar (que se asiente el enlace).
+const PREFETCH_DELAY_ON_CONNECT: Duration = Duration::from_secs(20);
+/// Los contactos cambian poco: se reutilizan unos minutos.
+const CONTACTS_TTL: Duration = Duration::from_secs(600);
 /// Umbral para avisar de batería baja del teléfono.
 pub const LOW_BATTERY: u32 = 15;
 
@@ -61,16 +93,59 @@ pub enum RemoteChange {
     LowBattery(u32),
 }
 
+/// Una foto de la galería del teléfono, con sus archivos locales.
+#[derive(Debug, Clone)]
+pub struct PhotoEntry {
+    /// Sin `thumbnail` (está en `thumb`).
+    pub info: pb::PhotoInfo,
+    pub thumb: PathBuf,
+    /// La original, si ya está descargada (o precargada).
+    pub original: Option<PathBuf>,
+}
+
+/// Última lista de fotos vista, para enseñar la galería al instante
+/// (incluso sin conexión).
+#[derive(Serialize, Deserialize, Default)]
+struct PhotoIndex {
+    total: u32,
+    photos: Vec<IndexedPhoto>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct IndexedPhoto {
+    id: String,
+    name: String,
+    date_ms: i64,
+    width: u32,
+    height: u32,
+    size: u64,
+}
+
+/// Fondo de pantalla de un peer: imagen (si se pudo leer) y colores ARGB.
+#[derive(Debug, Clone, Default)]
+pub struct WallpaperInfo {
+    pub path: Option<PathBuf>,
+    pub colors: Vec<u32>,
+}
+
 pub struct Features {
     manager: LinkManager,
     peers: Mutex<HashMap<String, PeerState>>,
     local: Mutex<LocalState>,
     next_request: AtomicU64,
-    lists: Mutex<HashMap<u64, oneshot::Sender<pb::PhotoList>>>,
+    /// Peticiones de una sola respuesta, por `request_id`.
+    pending: Mutex<HashMap<u64, oneshot::Sender<F>>>,
     downloads: Mutex<HashMap<u64, Download>>,
-    thumb_dir: PathBuf,
+    /// Fotos descargándose ahora (peer, id), para no pedirlas dos veces.
+    inflight: Mutex<HashSet<(String, String)>>,
+    contacts: Mutex<HashMap<String, (Instant, Vec<pb::Contact>)>>,
+    wallpapers: Mutex<HashMap<String, WallpaperInfo>>,
+    cache_dir: PathBuf,
     /// Órdenes hacia las tareas locales (MPRIS, pactl).
     commands: mpsc::UnboundedSender<LocalCommand>,
+    prefetch: mpsc::UnboundedSender<String>,
+    pub settings: Arc<SettingsStore>,
+    pub clipboard: Arc<Clipboard>,
 }
 
 enum LocalCommand {
@@ -79,22 +154,36 @@ enum LocalCommand {
 }
 
 impl Features {
-    /// Crea el estado y arranca las tareas que vigilan batería, MPRIS y
-    /// salidas de audio.
-    pub fn start(manager: LinkManager, cache_dir: &Path) -> Arc<Self> {
+    /// Crea el estado y arranca las tareas que vigilan batería, MPRIS,
+    /// salidas de audio, portapapeles y la precarga de fotos.
+    pub fn start(
+        manager: LinkManager,
+        cache_dir: &Path,
+        data_dir: &Path,
+        settings: Arc<SettingsStore>,
+    ) -> Arc<Self> {
         let (commands, command_rx) = mpsc::unbounded_channel();
+        let (prefetch, prefetch_rx) = mpsc::unbounded_channel();
+        let clipboard = Clipboard::start(manager.clone(), settings.clone(), data_dir);
         let features = Arc::new(Self {
             manager,
             peers: Mutex::default(),
             local: Mutex::default(),
             next_request: AtomicU64::new(1),
-            lists: Mutex::default(),
+            pending: Mutex::default(),
             downloads: Mutex::default(),
-            thumb_dir: cache_dir.join("thumbs"),
+            inflight: Mutex::default(),
+            contacts: Mutex::default(),
+            wallpapers: Mutex::default(),
+            cache_dir: cache_dir.to_path_buf(),
             commands,
+            prefetch,
+            settings,
+            clipboard,
         });
         tokio::spawn(battery_task(features.clone()));
         tokio::spawn(local_task(features.clone(), command_rx));
+        tokio::spawn(prefetch_task(features.clone(), prefetch_rx));
         features
     }
 
@@ -109,16 +198,25 @@ impl Features {
 
     /// Un peer acaba de conectar: mandarle el estado local completo.
     pub fn on_connected(&self, peer_id: &str) {
-        let local = self.local.lock().expect("mutex envenenado");
-        let msgs = [
-            local.battery.map(F::Battery),
-            local.players.clone().map(F::MediaPlayers),
-            local.outputs.clone().map(F::AudioOutputs),
-        ];
-        for kind in msgs.into_iter().flatten() {
-            self.manager
-                .send_feature(peer_id, pb::Feature { kind: Some(kind) });
+        {
+            let local = self.local.lock().expect("mutex envenenado");
+            let msgs = [
+                local.battery.map(F::Battery),
+                local.players.clone().map(F::MediaPlayers),
+                local.outputs.clone().map(F::AudioOutputs),
+            ];
+            for kind in msgs.into_iter().flatten() {
+                self.manager
+                    .send_feature(peer_id, pb::Feature { kind: Some(kind) });
+            }
         }
+        // Precargar las fotos recientes cuando el enlace se asiente.
+        let prefetch = self.prefetch.clone();
+        let peer = peer_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(PREFETCH_DELAY_ON_CONNECT).await;
+            let _ = prefetch.send(peer);
+        });
     }
 
     pub fn on_disconnected(&self, peer_id: &str) {
@@ -138,6 +236,23 @@ impl Features {
 
     pub fn forget(&self, peer_id: &str) {
         self.peers.lock().expect("mutex envenenado").remove(peer_id);
+        self.contacts
+            .lock()
+            .expect("mutex envenenado")
+            .remove(peer_id);
+        self.wallpapers
+            .lock()
+            .expect("mutex envenenado")
+            .remove(peer_id);
+        // Sus miniaturas, fotos y fondo de pantalla ya no hacen falta.
+        let peer = sanitize(peer_id);
+        for dir in [
+            self.cache_dir.join("thumbs").join(&peer),
+            self.cache_dir.join("photos").join(&peer),
+        ] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        let _ = std::fs::remove_file(self.wallpaper_path(peer_id));
     }
 
     fn publish_local(&self, kind: F) {
@@ -160,6 +275,24 @@ impl Features {
     /// Procesa un mensaje del peer. Devuelve qué cambió, si algo.
     pub fn on_remote(&self, peer_id: &str, feature: pb::Feature) -> Option<RemoteChange> {
         let kind = feature.kind?;
+        // Respuestas a peticiones (una sola respuesta por `request_id`).
+        let response_id = match &kind {
+            F::PhotoList(r) => Some(r.request_id),
+            F::SmsThreads(r) => Some(r.request_id),
+            F::SmsMessages(r) => Some(r.request_id),
+            F::CallLog(r) => Some(r.request_id),
+            F::Contacts(r) => Some(r.request_id),
+            F::ActiveNotifications(r) => Some(r.request_id),
+            F::Wallpaper(r) => Some(r.request_id),
+            F::CommandResult(r) => Some(r.request_id),
+            _ => None,
+        };
+        if let Some(id) = response_id {
+            if let Some(tx) = self.pending.lock().expect("mutex envenenado").remove(&id) {
+                let _ = tx.send(kind);
+            }
+            return None;
+        }
         let mut peers = self.peers.lock().expect("mutex envenenado");
         let state = peers.entry(peer_id.to_string()).or_default();
         let change = match kind {
@@ -203,30 +336,47 @@ impl Features {
                 let _ = self.commands.send(LocalCommand::SetOutput(set.id));
                 return None;
             }
-            F::PhotoList(list) => {
-                drop(peers);
-                if let Some(tx) = self
-                    .lists
-                    .lock()
-                    .expect("mutex envenenado")
-                    .remove(&list.request_id)
-                {
-                    let _ = tx.send(list);
-                }
-                return None;
-            }
             F::PhotoData(data) => {
                 drop(peers);
                 self.on_photo_data(data);
                 return None;
             }
-            // Lo anuncia la señal D-Bus `PhotosChanged` (ver dbus.rs).
-            F::PhotosChanged(_) => return None,
-            // Solo tienen sentido hacia un teléfono.
+            F::Clipboard(c) => {
+                drop(peers);
+                self.clipboard.on_remote(peer_id, c.text);
+                return None;
+            }
+            // La GUI se entera por la señal D-Bus `PhotosChanged` (ver
+            // dbus.rs); aquí solo se precargan las nuevas.
+            F::PhotosChanged(_) => {
+                drop(peers);
+                let _ = self.prefetch.send(peer_id.to_string());
+                return None;
+            }
+            // Señal D-Bus `SmsChanged` (ver dbus.rs).
+            F::SmsChanged(_) => return None,
+            // Solo tienen sentido hacia un teléfono (o ya se trataron arriba).
             F::SetRingerMode(_)
             | F::CallCommand(_)
             | F::PhotoListRequest(_)
-            | F::PhotoRequest(_) => return None,
+            | F::PhotoRequest(_)
+            | F::PhotoList(_)
+            | F::SmsThreadsRequest(_)
+            | F::SmsThreads(_)
+            | F::SmsMessagesRequest(_)
+            | F::SmsMessages(_)
+            | F::SendSms(_)
+            | F::CallLogRequest(_)
+            | F::CallLog(_)
+            | F::ContactsRequest(_)
+            | F::Contacts(_)
+            | F::Dial(_)
+            | F::ActiveNotificationsRequest(_)
+            | F::ActiveNotifications(_)
+            | F::WallpaperRequest(_)
+            | F::Wallpaper(_)
+            | F::PhotoDelete(_)
+            | F::CommandResult(_) => return None,
         };
         drop(peers);
         Some(change)
@@ -243,6 +393,55 @@ impl Features {
         self.manager
             .send_feature(peer_id, pb::Feature { kind: Some(kind) });
         Ok(())
+    }
+
+    fn new_request_id(&self) -> u64 {
+        self.next_request.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Manda la petición `make(request_id)` y espera su única respuesta.
+    async fn request(
+        &self,
+        peer_id: &str,
+        make: impl FnOnce(u64) -> F,
+        timeout: Duration,
+    ) -> anyhow::Result<F> {
+        let request_id = self.new_request_id();
+        let (tx, rx) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("mutex envenenado")
+            .insert(request_id, tx);
+        let forget = || {
+            self.pending
+                .lock()
+                .expect("mutex envenenado")
+                .remove(&request_id);
+        };
+        if let Err(err) = self.send(peer_id, make(request_id)) {
+            forget();
+            return Err(err);
+        }
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(kind)) => Ok(kind),
+            _ => {
+                forget();
+                anyhow::bail!("el teléfono no respondió a tiempo")
+            }
+        }
+    }
+
+    /// Orden con `CommandResult`: devuelve su `status` ("done", "confirm").
+    async fn command(&self, peer_id: &str, make: impl FnOnce(u64) -> F) -> anyhow::Result<String> {
+        match self.request(peer_id, make, REQUEST_TIMEOUT).await? {
+            F::CommandResult(r) if r.ok => Ok(if r.status.is_empty() {
+                "done".into()
+            } else {
+                r.status
+            }),
+            F::CommandResult(r) => anyhow::bail!("{}", phone_error(&r.error)),
+            _ => anyhow::bail!("respuesta inesperada del teléfono"),
+        }
     }
 
     pub fn media_command(
@@ -283,67 +482,455 @@ impl Features {
         )
     }
 
-    /// Pide una página de la galería del peer; guarda las miniaturas en la
-    /// caché y devuelve (total, fotos con la ruta de su miniatura).
+    // -----------------------------------------------------------------
+    // SMS, llamadas, contactos, notificaciones y fondo de pantalla
+    // -----------------------------------------------------------------
+
+    pub async fn sms_threads(
+        &self,
+        peer_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> anyhow::Result<pb::SmsThreads> {
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| {
+                    F::SmsThreadsRequest(pb::SmsThreadsRequest {
+                        request_id,
+                        offset,
+                        limit: limit.clamp(1, 100),
+                    })
+                },
+                SLOW_REQUEST_TIMEOUT,
+            )
+            .await?;
+        match reply {
+            F::SmsThreads(t) if t.error.is_empty() => Ok(t),
+            F::SmsThreads(t) => anyhow::bail!("{}", phone_error(&t.error)),
+            _ => anyhow::bail!("respuesta inesperada del teléfono"),
+        }
+    }
+
+    pub async fn sms_messages(
+        &self,
+        peer_id: &str,
+        thread_id: &str,
+        limit: u32,
+        before_ms: i64,
+    ) -> anyhow::Result<Vec<pb::SmsMessage>> {
+        let thread_id = thread_id.to_string();
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| {
+                    F::SmsMessagesRequest(pb::SmsMessagesRequest {
+                        request_id,
+                        thread_id,
+                        limit: limit.clamp(1, 200),
+                        before_ms,
+                    })
+                },
+                SLOW_REQUEST_TIMEOUT,
+            )
+            .await?;
+        match reply {
+            F::SmsMessages(m) if m.error.is_empty() => Ok(m.messages),
+            F::SmsMessages(m) => anyhow::bail!("{}", phone_error(&m.error)),
+            _ => anyhow::bail!("respuesta inesperada del teléfono"),
+        }
+    }
+
+    pub async fn send_sms(&self, peer_id: &str, address: &str, body: &str) -> anyhow::Result<()> {
+        if address.trim().is_empty() || body.trim().is_empty() {
+            anyhow::bail!("falta el número o el texto");
+        }
+        let (address, body) = (address.trim().to_string(), body.to_string());
+        self.command(peer_id, |request_id| {
+            F::SendSms(pb::SendSms {
+                request_id,
+                address,
+                body,
+            })
+        })
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn call_log(
+        &self,
+        peer_id: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<pb::CallLogEntry>> {
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| {
+                    F::CallLogRequest(pb::CallLogRequest {
+                        request_id,
+                        limit: limit.clamp(1, 500),
+                    })
+                },
+                SLOW_REQUEST_TIMEOUT,
+            )
+            .await?;
+        match reply {
+            F::CallLog(l) if l.error.is_empty() => Ok(l.entries),
+            F::CallLog(l) => anyhow::bail!("{}", phone_error(&l.error)),
+            _ => anyhow::bail!("respuesta inesperada del teléfono"),
+        }
+    }
+
+    /// Contactos del teléfono (con número). Se reutilizan unos minutos.
+    pub async fn contacts(&self, peer_id: &str, refresh: bool) -> anyhow::Result<Vec<pb::Contact>> {
+        if !refresh
+            && let Some((at, list)) = self.contacts.lock().expect("mutex envenenado").get(peer_id)
+            && at.elapsed() < CONTACTS_TTL
+        {
+            return Ok(list.clone());
+        }
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| F::ContactsRequest(pb::ContactsRequest { request_id }),
+                SLOW_REQUEST_TIMEOUT,
+            )
+            .await?;
+        let list = match reply {
+            F::Contacts(c) if c.error.is_empty() => c.contacts,
+            F::Contacts(c) => anyhow::bail!("{}", phone_error(&c.error)),
+            _ => anyhow::bail!("respuesta inesperada del teléfono"),
+        };
+        self.contacts
+            .lock()
+            .expect("mutex envenenado")
+            .insert(peer_id.to_string(), (Instant::now(), list.clone()));
+        Ok(list)
+    }
+
+    /// Llama a `number` desde el teléfono.
+    pub async fn dial(&self, peer_id: &str, number: &str) -> anyhow::Result<()> {
+        let number = dialable(number);
+        if number.is_empty() {
+            anyhow::bail!("número vacío");
+        }
+        self.command(peer_id, |request_id| {
+            F::Dial(pb::Dial { request_id, number })
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// Notificaciones que hay ahora en el teléfono, con la ruta de su icono.
+    pub async fn phone_notifications(
+        &self,
+        peer_id: &str,
+    ) -> anyhow::Result<Vec<(pb::Notification, Option<PathBuf>)>> {
+        let have_icons = self.manager.cached_icon_hashes();
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| {
+                    F::ActiveNotificationsRequest(pb::ActiveNotificationsRequest {
+                        request_id,
+                        have_icons,
+                    })
+                },
+                SLOW_REQUEST_TIMEOUT,
+            )
+            .await?;
+        let list = match reply {
+            F::ActiveNotifications(a) if a.error.is_empty() => a.notifications,
+            F::ActiveNotifications(a) => anyhow::bail!("{}", phone_error(&a.error)),
+            _ => anyhow::bail!("respuesta inesperada del teléfono"),
+        };
+        Ok(list
+            .into_iter()
+            .map(|mut n| {
+                let icon = (!n.icon_hash.is_empty())
+                    .then(|| self.manager.cached_icon(&n.icon_hash, &n.icon_png))
+                    .flatten();
+                n.icon_png.clear();
+                (n, icon)
+            })
+            .collect())
+    }
+
+    fn wallpaper_path(&self, peer_id: &str) -> PathBuf {
+        self.cache_dir
+            .join("wallpapers")
+            .join(format!("{}.jpg", sanitize(peer_id)))
+    }
+
+    /// Fondo de pantalla del teléfono. Sin `refresh`, el de la caché (el
+    /// del disco sirve incluso sin conexión).
+    pub async fn wallpaper(&self, peer_id: &str, refresh: bool) -> anyhow::Result<WallpaperInfo> {
+        if !refresh {
+            if let Some(w) = self
+                .wallpapers
+                .lock()
+                .expect("mutex envenenado")
+                .get(peer_id)
+            {
+                return Ok(w.clone());
+            }
+            let path = self.wallpaper_path(peer_id);
+            if path.exists() && !self.manager.is_connected(peer_id) {
+                return Ok(WallpaperInfo {
+                    path: Some(path),
+                    colors: Vec::new(),
+                });
+            }
+        }
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| {
+                    F::WallpaperRequest(pb::WallpaperRequest {
+                        request_id,
+                        max_size: 1280,
+                    })
+                },
+                SLOW_REQUEST_TIMEOUT,
+            )
+            .await?;
+        let F::Wallpaper(w) = reply else {
+            anyhow::bail!("respuesta inesperada del teléfono");
+        };
+        let path = self.wallpaper_path(peer_id);
+        let path = if w.jpeg.is_empty() {
+            let _ = std::fs::remove_file(&path);
+            None
+        } else {
+            write_private(&path, &w.jpeg)?;
+            Some(path)
+        };
+        let info = WallpaperInfo {
+            path,
+            colors: w.colors,
+        };
+        self.wallpapers
+            .lock()
+            .expect("mutex envenenado")
+            .insert(peer_id.to_string(), info.clone());
+        Ok(info)
+    }
+
+    // -----------------------------------------------------------------
+    // Fotos
+    // -----------------------------------------------------------------
+
+    fn thumb_dir(&self, peer_id: &str) -> PathBuf {
+        self.cache_dir.join("thumbs").join(sanitize(peer_id))
+    }
+
+    fn photo_dir(&self, peer_id: &str) -> PathBuf {
+        self.cache_dir.join("photos").join(sanitize(peer_id))
+    }
+
+    /// La original de `id` en la caché (`<id>__<nombre>`), si está.
+    pub fn original_path(&self, peer_id: &str, id: &str) -> Option<PathBuf> {
+        let prefix = format!("{}__", sanitize(id));
+        std::fs::read_dir(self.photo_dir(peer_id))
+            .ok()?
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|e| e.path())
+    }
+
+    fn entry(&self, peer_id: &str, info: pb::PhotoInfo) -> PhotoEntry {
+        PhotoEntry {
+            thumb: self
+                .thumb_dir(peer_id)
+                .join(format!("{}.jpg", sanitize(&info.id))),
+            original: self.original_path(peer_id, &info.id),
+            info,
+        }
+    }
+
+    /// Página de la galería del peer (más reciente primero); guarda las
+    /// miniaturas en la caché. Con `offset == 0` además recuerda la lista
+    /// (para [`Self::cached_photos`]) y precarga las más recientes.
     pub async fn photos(
         &self,
         peer_id: &str,
         offset: u32,
         limit: u32,
-    ) -> anyhow::Result<(u32, Vec<(pb::PhotoInfo, PathBuf)>)> {
-        let request_id = self.next_request.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.lists
-            .lock()
-            .expect("mutex envenenado")
-            .insert(request_id, tx);
-        let sent = self.send(
-            peer_id,
-            F::PhotoListRequest(pb::PhotoListRequest {
-                request_id,
-                offset,
-                limit: limit.clamp(1, 60),
-            }),
-        );
-        if let Err(err) = sent {
-            self.lists
-                .lock()
-                .expect("mutex envenenado")
-                .remove(&request_id);
-            return Err(err);
+    ) -> anyhow::Result<(u32, Vec<PhotoEntry>)> {
+        let (total, photos) = self.list_photos(peer_id, offset, limit).await?;
+        if offset == 0 {
+            self.save_index(peer_id, total, &photos);
+            let _ = self.prefetch.send(peer_id.to_string());
         }
-        let list = match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
-            Ok(Ok(list)) => list,
-            _ => {
-                self.lists
-                    .lock()
-                    .expect("mutex envenenado")
-                    .remove(&request_id);
-                anyhow::bail!("el teléfono no respondió (¿falta el permiso de fotos?)");
-            }
-        };
-        let dir = self.thumb_dir.join(sanitize(peer_id));
-        std::fs::create_dir_all(&dir)?;
-        let mut out = Vec::with_capacity(list.photos.len());
-        for mut photo in list.photos {
-            let path = dir.join(format!("{}.jpg", sanitize(&photo.id)));
-            if !photo.thumbnail.is_empty() {
-                std::fs::write(&path, &photo.thumbnail)?;
-            }
-            photo.thumbnail.clear();
-            out.push((photo, path));
-        }
-        Ok((list.total, out))
+        Ok((total, photos))
     }
 
-    /// Descarga la foto original `id` a la carpeta de descargas.
+    async fn list_photos(
+        &self,
+        peer_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> anyhow::Result<(u32, Vec<PhotoEntry>)> {
+        let dir = self.thumb_dir(peer_id);
+        create_private_dir(&dir)?;
+        let have = cached_thumbnails(&dir);
+        let mut out = Vec::new();
+        let mut total = 0;
+        let limit = limit.max(1);
+        while (out.len() as u32) < limit {
+            let page_offset = offset + out.len() as u32;
+            let page = (limit - out.len() as u32).min(PHOTO_PAGE_MAX);
+            let have_thumbnails = have.clone();
+            let reply = self
+                .request(
+                    peer_id,
+                    |request_id| {
+                        F::PhotoListRequest(pb::PhotoListRequest {
+                            request_id,
+                            offset: page_offset,
+                            limit: page,
+                            have_thumbnails,
+                        })
+                    },
+                    SLOW_REQUEST_TIMEOUT,
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("el teléfono no respondió (¿falta el permiso de fotos?)")
+                })?;
+            let F::PhotoList(list) = reply else {
+                anyhow::bail!("respuesta inesperada del teléfono");
+            };
+            total = list.total;
+            let got = list.photos.len();
+            for mut photo in list.photos {
+                if !photo.thumbnail.is_empty() {
+                    let path = dir.join(format!("{}.jpg", sanitize(&photo.id)));
+                    write_private(&path, &photo.thumbnail)?;
+                }
+                photo.thumbnail.clear();
+                out.push(self.entry(peer_id, photo));
+            }
+            if got < page as usize {
+                break;
+            }
+        }
+        Ok((total, out))
+    }
+
+    fn index_path(&self, peer_id: &str) -> PathBuf {
+        self.thumb_dir(peer_id).join("index.json")
+    }
+
+    fn save_index(&self, peer_id: &str, total: u32, photos: &[PhotoEntry]) {
+        let index = PhotoIndex {
+            total,
+            photos: photos
+                .iter()
+                .map(|p| IndexedPhoto {
+                    id: p.info.id.clone(),
+                    name: p.info.name.clone(),
+                    date_ms: p.info.date_ms,
+                    width: p.info.width,
+                    height: p.info.height,
+                    size: p.info.size,
+                })
+                .collect(),
+        };
+        if let Ok(json) = serde_json::to_vec(&index)
+            && let Err(err) = write_private(&self.index_path(peer_id), &json)
+        {
+            tracing::debug!(?err, "no se pudo guardar el índice de fotos");
+        }
+    }
+
+    /// La última lista de fotos vista (sin preguntar al teléfono): la
+    /// galería se enseña al instante y también sin conexión.
+    pub fn cached_photos(&self, peer_id: &str) -> (u32, Vec<PhotoEntry>) {
+        let index: PhotoIndex = std::fs::read(self.index_path(peer_id))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let photos = index
+            .photos
+            .into_iter()
+            .map(|p| {
+                self.entry(
+                    peer_id,
+                    pb::PhotoInfo {
+                        id: p.id,
+                        name: p.name,
+                        date_ms: p.date_ms,
+                        width: p.width,
+                        height: p.height,
+                        size: p.size,
+                        thumbnail: Vec::new(),
+                    },
+                )
+            })
+            .filter(|e| e.thumb.exists())
+            .collect();
+        (index.total, photos)
+    }
+
+    /// La foto original `id` en la caché (la descarga si no está).
     pub async fn fetch_photo(&self, peer_id: &str, id: &str) -> anyhow::Result<PathBuf> {
-        let request_id = self.next_request.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
+        self.download(peer_id, id, false).await
+    }
+
+    /// Descarga la original a la carpeta de descargas (`kushare photos --download`).
+    pub async fn save_photo_to_downloads(
+        &self,
+        peer_id: &str,
+        id: &str,
+    ) -> anyhow::Result<PathBuf> {
+        let cached = self.fetch_photo(peer_id, id).await?;
         let dir = directories::UserDirs::new()
             .and_then(|d| d.download_dir().map(Path::to_path_buf))
             .unwrap_or_else(std::env::temp_dir);
         std::fs::create_dir_all(&dir)?;
+        let target = unique_path(&dir, &original_name(&cached));
+        std::fs::copy(&cached, &target)?;
+        Ok(target)
+    }
+
+    async fn download(&self, peer_id: &str, id: &str, background: bool) -> anyhow::Result<PathBuf> {
+        let key = (peer_id.to_string(), id.to_string());
+        // Si ya se está descargando (p. ej. la precarga), esperar a esa.
+        let started = Instant::now();
+        while self
+            .inflight
+            .lock()
+            .expect("mutex envenenado")
+            .contains(&key)
+        {
+            if started.elapsed() > BACKGROUND_DOWNLOAD_TIMEOUT {
+                anyhow::bail!("la descarga de la foto no terminó a tiempo");
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        if let Some(path) = self.original_path(peer_id, id) {
+            return Ok(path);
+        }
+        self.inflight
+            .lock()
+            .expect("mutex envenenado")
+            .insert(key.clone());
+        let result = self.download_now(peer_id, id, background).await;
+        self.inflight.lock().expect("mutex envenenado").remove(&key);
+        result
+    }
+
+    async fn download_now(
+        &self,
+        peer_id: &str,
+        id: &str,
+        background: bool,
+    ) -> anyhow::Result<PathBuf> {
+        let request_id = self.new_request_id();
+        let (tx, rx) = oneshot::channel();
+        let dir = self.photo_dir(peer_id);
+        create_private_dir(&dir)?;
         let part = dir.join(format!(".kushare-{request_id}.part"));
         let file = std::fs::File::create(&part)?;
         self.downloads.lock().expect("mutex envenenado").insert(
@@ -351,7 +938,8 @@ impl Features {
             Download {
                 file,
                 part: part.clone(),
-                target: dir,
+                // El nombre definitivo se completa con el que mande el teléfono.
+                target: dir.join(format!("{}__", sanitize(id))),
                 done: tx,
             },
         );
@@ -360,13 +948,19 @@ impl Features {
             F::PhotoRequest(pb::PhotoRequest {
                 request_id,
                 id: id.to_string(),
+                chunk_size: if background { PREFETCH_CHUNK } else { 0 },
+                background,
             }),
         ) {
             self.abort_download(request_id);
             return Err(err);
         }
-        // Una foto grande por Bluetooth puede tardar: 5 min de margen.
-        match tokio::time::timeout(Duration::from_secs(300), rx).await {
+        let timeout = if background {
+            BACKGROUND_DOWNLOAD_TIMEOUT
+        } else {
+            DOWNLOAD_TIMEOUT
+        };
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
             _ => {
                 self.abort_download(request_id);
@@ -415,7 +1009,9 @@ impl Features {
                 Err(err)
             }
             None => {
-                let target = unique_path(&d.target, &sanitize_file_name(&data.name, &data.id));
+                let mut target = d.target.into_os_string();
+                target.push(sanitize_file_name(&data.name, &data.id));
+                let target = PathBuf::from(target);
                 std::fs::rename(&d.part, &target)
                     .map(|_| target)
                     .map_err(Into::into)
@@ -423,6 +1019,186 @@ impl Features {
         };
         let _ = d.done.send(result);
     }
+
+    /// Borra la foto del teléfono. "done", o "confirm" si el teléfono pide
+    /// confirmarlo allí (Android protege las fotos de otras apps).
+    pub async fn delete_photo(&self, peer_id: &str, id: &str) -> anyhow::Result<String> {
+        let photo = id.to_string();
+        let status = self
+            .command(peer_id, |request_id| {
+                F::PhotoDelete(pb::PhotoDelete {
+                    request_id,
+                    id: photo,
+                })
+            })
+            .await?;
+        if status == "done" {
+            if let Some(path) = self.original_path(peer_id, id) {
+                let _ = std::fs::remove_file(path);
+            }
+            let _ = std::fs::remove_file(
+                self.thumb_dir(peer_id)
+                    .join(format!("{}.jpg", sanitize(id))),
+            );
+        }
+        Ok(status)
+    }
+
+    /// Deja la caché de originales por debajo de [`PHOTO_CACHE_MAX_BYTES`]
+    /// (borra primero las que hace más que no se usan).
+    fn prune_photo_cache(&self) {
+        let root = self.cache_dir.join("photos");
+        let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+        for peer in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+            for f in std::fs::read_dir(peer.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if let Ok(meta) = f.metadata()
+                    && meta.is_file()
+                {
+                    let used = meta.accessed().or_else(|_| meta.modified());
+                    files.push((used.unwrap_or(std::time::UNIX_EPOCH), meta.len(), f.path()));
+                }
+            }
+        }
+        let mut total: u64 = files.iter().map(|f| f.1).sum();
+        files.sort();
+        for (_, len, path) in files {
+            if total <= PHOTO_CACHE_MAX_BYTES {
+                break;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                total = total.saturating_sub(len);
+            }
+        }
+    }
+}
+
+/// Precarga en segundo plano las fotos más recientes de cada peer que lo
+/// pida (al conectar, al haber fotos nuevas, al abrir la galería).
+async fn prefetch_task(features: Arc<Features>, mut rx: mpsc::UnboundedReceiver<String>) {
+    while let Some(first) = rx.recv().await {
+        // Agrupar avisos seguidos (una ráfaga de capturas, etc.).
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let mut peers = HashSet::from([first]);
+        while let Ok(p) = rx.try_recv() {
+            peers.insert(p);
+        }
+        for peer in peers {
+            if !features.settings.get().photo_prefetch || !features.manager.is_connected(&peer) {
+                continue;
+            }
+            let list = match features.list_photos(&peer, 0, PREFETCH_COUNT).await {
+                Ok((_, list)) => list,
+                Err(err) => {
+                    tracing::debug!(?err, "precarga de fotos: no se pudo listar");
+                    continue;
+                }
+            };
+            for photo in list {
+                if photo.original.is_some() || photo.info.size > PREFETCH_MAX_BYTES {
+                    continue;
+                }
+                if !features.manager.is_connected(&peer) {
+                    break;
+                }
+                match features.download(&peer, &photo.info.id, true).await {
+                    Ok(path) => tracing::debug!(?path, "foto precargada"),
+                    Err(err) => tracing::debug!(?err, "precarga de foto fallida"),
+                }
+            }
+            features.prune_photo_cache();
+        }
+    }
+}
+
+/// Ids de las miniaturas en caché (las más recientes primero, hasta 1000).
+fn cached_thumbnails(dir: &Path) -> Vec<String> {
+    let mut thumbs: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let id = name.strip_suffix(".jpg")?.to_string();
+            let modified = e.metadata().and_then(|m| m.modified()).ok()?;
+            Some((modified, id))
+        })
+        .collect();
+    thumbs.sort_by_key(|t| std::cmp::Reverse(t.0));
+    thumbs.into_iter().take(1000).map(|(_, id)| id).collect()
+}
+
+/// Nombre original de una foto en caché (`<id>__<nombre>` → `<nombre>`).
+pub fn original_name(cached: &Path) -> String {
+    let name = cached
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    name.split_once("__")
+        .map(|(_, n)| n.to_string())
+        .unwrap_or(name)
+}
+
+/// Mensaje legible para los errores que manda el teléfono.
+fn phone_error(code: &str) -> String {
+    match code {
+        "permission" => {
+            "falta el permiso en el teléfono (kushare → Ajustes → Funciones del teléfono)".into()
+        }
+        "unsupported" => "el teléfono no lo admite".into(),
+        other => format!("el teléfono respondió: {other}"),
+    }
+}
+
+/// Número marcable: las letras pasan a su tecla (1-800-FLORES → 1-800-356737).
+pub fn dialable(number: &str) -> String {
+    number
+        .trim()
+        .chars()
+        .filter_map(|c| match c.to_ascii_uppercase() {
+            d @ ('0'..='9' | '+' | '*' | '#') => Some(d),
+            'A'..='C' => Some('2'),
+            'D'..='F' => Some('3'),
+            'G'..='I' => Some('4'),
+            'J'..='L' => Some('5'),
+            'M'..='O' => Some('6'),
+            'P'..='S' => Some('7'),
+            'T'..='V' => Some('8'),
+            'W'..='Z' => Some('9'),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Crea `dir` (y sus padres) solo legible por el usuario.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
+/// Escribe `data` en `path` de forma atómica y solo legible por el usuario.
+pub fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(dir) = path.parent() {
+        create_private_dir(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(data)?;
+    drop(f);
+    std::fs::rename(&tmp, path)
 }
 
 fn replace_if_changed<T: PartialEq + Clone>(slot: &mut Option<T>, value: &T) -> bool {
@@ -828,6 +1604,13 @@ async fn pactl_outputs() -> Option<pb::AudioOutputs> {
 /// Omite las salidas cuyo puerto activo no está disponible (p. ej. un HDMI
 /// sin nada enchufado): WirePlumber no deja ponerlas por defecto.
 fn parse_sinks(listing: &str, default: &str) -> Vec<pb::AudioOutput> {
+    parse_devices(listing, default, false)
+}
+
+/// Como [`parse_sinks`] para `pactl list sinks` (`input = false`) o
+/// `pactl list sources` (`input = true`, sin los "monitor" de las salidas).
+fn parse_devices(listing: &str, default: &str, input: bool) -> Vec<pb::AudioOutput> {
+    let port_tag = if input { "[In] " } else { "[Out] " };
     let mut outputs: Vec<pb::AudioOutput> = Vec::new();
     let mut unavailable_ports: Vec<String> = Vec::new();
     let mut usable = true;
@@ -840,7 +1623,7 @@ fn parse_sinks(listing: &str, default: &str) -> Vec<pb::AudioOutput> {
         let line = line.trim();
         if let Some(name) = line.strip_prefix("Name: ") {
             flush(&mut outputs, usable);
-            usable = true;
+            usable = !(input && name.ends_with(".monitor"));
             unavailable_ports.clear();
             outputs.push(pb::AudioOutput {
                 id: name.to_string(),
@@ -851,14 +1634,18 @@ fn parse_sinks(listing: &str, default: &str) -> Vec<pb::AudioOutput> {
             && let Some(last) = outputs.last_mut()
         {
             last.name = desc.to_string();
-        } else if let Some(port) = line.strip_prefix("[Out] ")
+        } else if let Some(sink) = line.strip_prefix("Monitor of Sink: ") {
+            if input && sink != "n/a" {
+                usable = false;
+            }
+        } else if let Some(port) = line.strip_prefix(port_tag)
             && line.contains("not available")
         {
             if let Some((port, _)) = port.split_once(':') {
                 unavailable_ports.push(port.to_string());
             }
         } else if let Some(active) = line.strip_prefix("Active Port: ") {
-            let active = active.trim_start_matches("[Out] ");
+            let active = active.trim_start_matches(port_tag);
             if unavailable_ports.iter().any(|p| p == active) {
                 usable = false;
             }
@@ -866,6 +1653,55 @@ fn parse_sinks(listing: &str, default: &str) -> Vec<pb::AudioOutput> {
     }
     flush(&mut outputs, usable);
     outputs
+}
+
+/// Salidas y entradas (micrófonos) de audio del PC, para la GUI.
+pub async fn local_audio() -> (Vec<pb::AudioOutput>, Vec<pb::AudioOutput>) {
+    let outputs = pactl_outputs().await.unwrap_or_default().outputs;
+    let inputs = pactl_inputs().await;
+    (outputs, inputs)
+}
+
+async fn pactl_inputs() -> Vec<pb::AudioOutput> {
+    let Some(default) = pactl_output(&["get-default-source"]).await else {
+        return Vec::new();
+    };
+    let Some(listing) = pactl_output(&["list", "sources"]).await else {
+        return Vec::new();
+    };
+    parse_devices(&listing, default.trim(), true)
+}
+
+/// Elige la entrada de audio (micrófono) predeterminada del PC y mueve a
+/// ella lo que ya esté grabando (p. ej. una llamada en curso).
+pub async fn set_local_input(id: &str) -> anyhow::Result<()> {
+    if !pactl_inputs().await.iter().any(|o| o.id == id) {
+        anyhow::bail!("entrada desconocida");
+    }
+    let status = pactl().args(["set-default-source", id]).status().await?;
+    if !status.success() {
+        anyhow::bail!("pactl set-default-source falló");
+    }
+    let now = pactl_output(&["get-default-source"])
+        .await
+        .unwrap_or_default();
+    if now.trim() != id {
+        anyhow::bail!("el servidor de audio no aceptó la entrada (¿no está disponible?)");
+    }
+    if let Some(outputs) = pactl_output(&["list", "short", "source-outputs"]).await {
+        for index in outputs.lines().filter_map(|l| l.split_whitespace().next()) {
+            let _ = pactl()
+                .args(["move-source-output", index, id])
+                .status()
+                .await;
+        }
+    }
+    Ok(())
+}
+
+/// Elige la salida de audio predeterminada del PC (desde la GUI).
+pub async fn set_local_output(id: &str) -> anyhow::Result<()> {
+    pactl_set_output(id).await
 }
 
 async fn pactl_set_output(id: &str) -> anyhow::Result<()> {
@@ -957,6 +1793,21 @@ mod tests {
         let outs = parse_sinks(hdmi, "spk");
         assert_eq!(outs.len(), 1);
         assert_eq!(outs[0].id, "spk");
+    }
+
+    #[test]
+    fn sources_skip_monitors() {
+        let listing = "Source #1\n\tName: alsa_output.analog.monitor\n\tDescription: Monitor of Audio\n\tMonitor of Sink: alsa_output.analog\nSource #2\n\tName: alsa_input.analog\n\tDescription: Micrófono\n\tMonitor of Sink: n/a\n";
+        let ins = parse_devices(listing, "alsa_input.analog", true);
+        assert_eq!(ins.len(), 1);
+        assert_eq!(ins[0].name, "Micrófono");
+        assert!(ins[0].active);
+    }
+
+    #[test]
+    fn letters_become_dial_keys() {
+        assert_eq!(dialable("1-800-FLORES"), "1800356737");
+        assert_eq!(dialable(" +52 (55) 1234 "), "+52551234");
     }
 
     #[test]

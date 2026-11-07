@@ -18,7 +18,11 @@
     "reject": "Rechazar",
     "reply_in": "Responder en {app}",
     "unknown_number": "número desconocido",
-    "unmute": "Activar micrófono"
+    "unmute": "Activar micrófono",
+    "update_title": "Hay una versión nueva de kushare: {version}",
+    "update_body": "Ábrela desde kushare → Ajustes → Actualizaciones.",
+    "receive_title": "{name} quiere enviarte archivos",
+    "receive_body": "{files} · {size}\nAcepta solo si lo esperabas: por Wi-Fi puede enviarte cualquiera de la red."
   },
   "gui": {
     "apps": {
@@ -30,7 +34,8 @@
       "close": "Cerrar",
       "done": "Listo",
       "loading": "Cargando…",
-      "open_downloads": "Abrir Descargas"
+      "open_downloads": "Abrir Descargas",
+      "cancel": "Cancelar"
     },
     "devices": {
       "apps_in": "Apps que recibo",
@@ -82,7 +87,11 @@
       "phone": "Teléfono",
       "photos": "Fotos",
       "send": "Enviar",
-      "settings": "Ajustes"
+      "settings": "Ajustes",
+      "messages": "Mensajes",
+      "calls": "Llamadas",
+      "notifications": "Avisos",
+      "clipboard": "Portapapeles"
     },
     "pairing": {
       "hint": "Comprueba que el otro dispositivo muestra el mismo código",
@@ -118,8 +127,7 @@
       "unmute": "Activar micrófono"
     },
     "photos": {
-      "count": "{shown} de {total} fotos · pulsa una para descargarla",
-      "downloading": "Descargando la foto…",
+      "count": "{shown} de {total} fotos · pulsa una para verla",
       "load_more": "Cargar más",
       "new_many": "{n} fotos nuevas",
       "new_one": "Foto nueva",
@@ -162,7 +170,17 @@
       "subtitle": "Apariencia y conexión",
       "theme": "Tema",
       "theme_detail": "OLED usa negro puro: en pantallas OLED los píxeles negros se apagan.",
-      "version": "Versión"
+      "version": "Versión",
+      "features": "Funciones",
+      "language": "Idioma",
+      "language_system": "Sistema",
+      "language_restart": "Idioma guardado: se aplica al volver a abrir kushare.",
+      "prefetch": "Precargar las fotos recientes",
+      "prefetch_detail": "Descarga en segundo plano las últimas fotos del teléfono para que se abran al instante (también por Bluetooth).",
+      "update_check": "Buscar actualizaciones",
+      "update_check_detail": "Mira una vez al día si hay una versión nueva en GitHub.",
+      "receive_confirm": "Preguntar antes de recibir por Wi-Fi",
+      "receive_confirm_detail": "Por Wi-Fi puede enviarte archivos cualquiera de la red; por Bluetooth solo los dispositivos vinculados."
     },
     "theme": {
       "dark": "Oscuro",
@@ -180,6 +198,107 @@
       "sending": "Enviando \"{file}\" a {name}… (avisará al terminar)",
       "unpaired": "Desemparejado",
       "waiting_pin": "Esperando confirmación del PIN…"
+    },
+    "audio": {
+      "title": "Audio de este PC",
+      "detail": "Por dónde suena el PC y qué micrófono usa (también en las llamadas del teléfono).",
+      "outputs": "Salida",
+      "inputs": "Entrada (micrófono)",
+      "none": "No se encontró ninguna (¿está pactl instalado?)."
+    },
+    "calls": {
+      "subtitle": "Marca con el teclado (también con letras) o vuelve a llamar",
+      "none_detail": "Conecta tu teléfono para llamar desde el PC y ver las llamadas recientes.",
+      "type": "Número o nombre",
+      "call": "Llamar",
+      "call_number": "Llamar al {number}",
+      "calling": "Llamando al {number} desde el teléfono…",
+      "recent": "Recientes",
+      "empty": "No hay llamadas (o falta el permiso del registro de llamadas en el teléfono)."
+    },
+    "clip": {
+      "subtitle": "Copia en un lado y pega en el otro",
+      "sync": "Compartir el portapapeles",
+      "sync_detail": "Lo que copias en el PC llega al teléfono y al revés. Lo que un gestor de contraseñas marca como secreto no se comparte.",
+      "history": "Guardar historial",
+      "history_detail": "Recuerda lo copiado (en este PC, solo legible por ti). Desactivado por defecto: puede contener contraseñas.",
+      "recent": "Historial",
+      "clear": "Borrar todo",
+      "cleared": "Historial borrado",
+      "copied": "Copiado (también en el teléfono si se comparte)",
+      "empty": "Aún no has copiado nada.",
+      "history_off": "El historial está desactivado.",
+      "from_pc": "Este PC"
+    },
+    "month": {
+      "1": "ene",
+      "2": "feb",
+      "3": "mar",
+      "4": "abr",
+      "5": "may",
+      "6": "jun",
+      "7": "jul",
+      "8": "ago",
+      "9": "sep",
+      "10": "oct",
+      "11": "nov",
+      "12": "dic"
+    },
+    "notifs": {
+      "subtitle": "Las notificaciones que hay ahora en tu teléfono",
+      "count": "{n} en el teléfono",
+      "none_detail": "Conecta tu teléfono para ver sus notificaciones.",
+      "dismiss_all": "Descartar todas",
+      "dismissed_all": "Notificaciones descartadas",
+      "done": "Hecho en el teléfono",
+      "empty": "No hay notificaciones en el teléfono.",
+      "replied": "Respuesta enviada",
+      "reply_hint": "Escribe la respuesta"
+    },
+    "sms": {
+      "subtitle": "Los SMS de tu teléfono",
+      "count": "{n} conversaciones",
+      "none_detail": "Conecta tu teléfono para leer y mandar SMS desde el PC.",
+      "search": "Buscar en los mensajes",
+      "new": "Nuevo",
+      "empty": "No hay mensajes (o falta el permiso de SMS en el teléfono).",
+      "you": "Tú: {text}",
+      "to": "Para:",
+      "number": "Número",
+      "pick": "Elige una conversación o empieza una nueva",
+      "older": "Mensajes anteriores",
+      "failed": "no se envió",
+      "write": "Escribe un mensaje",
+      "sent": "SMS enviado"
+    },
+    "update": {
+      "title": "Actualizaciones",
+      "checking": "Buscando actualizaciones…",
+      "available": "Hay una versión nueva: {version}",
+      "current": "Tienes la {version}",
+      "up_to_date": "Tienes la última versión",
+      "unknown": "No se sabe si hay versiones nuevas",
+      "check": "Buscar",
+      "notes": "Novedades",
+      "download": "Descargar",
+      "downloading": "Descargando y comprobando el paquete…",
+      "install": "Instalar",
+      "installing": "Instalando (te pedirá la contraseña)…",
+      "installed": "Actualizado. Cierra y vuelve a abrir kushare (y reinicia el daemon) para usar la versión nueva.",
+      "install_failed": "No se pudo instalar: {error}",
+      "no_pkexec": "No se pudo pedir permisos (¿falta pkexec?): {error}",
+      "open_page": "Ver en GitHub"
+    },
+    "viewer": {
+      "loading": "Descargando la original…",
+      "open": "Abrir con el visor",
+      "copy": "Copiar",
+      "copied": "Imagen copiada",
+      "save_as": "Guardar como…",
+      "delete": "Eliminar",
+      "delete_question": "¿Borrar esta foto del teléfono?",
+      "deleted": "Foto borrada del teléfono",
+      "confirm_on_phone": "Confírmalo en el teléfono: te llegó un aviso para borrarla."
     }
   },
   "tray": {

@@ -3,15 +3,10 @@
 //! disco de forma asíncrona (streaming, sin cargar el archivo completo en
 //! memoria).
 //!
-//! v1 (ver CLAUDE.md: "dispositivo visible para todos", sin cuentas de
-//! Google) **acepta automáticamente** tanto la conexión como la
-//! introducción, sin pedir confirmación al usuario.
-//!
-//! TODO: antes de exponer esto en una red real, cablear
-//! `TransferEvent::IncomingRequest` a una confirmación real del usuario
-//! (vía `kushare-tray`) en lugar de auto-aceptar; el auto-accept actual
-//! solo es razonable para el smoke test de loopback y para iterar rápido
-//! en desarrollo.
+//! Sin [`Consent`] se aceptan los archivos sin preguntar (pruebas, y el
+//! receptor Bluetooth, que solo atiende a dispositivos vinculados). El
+//! daemon pone un [`Consent`] al receptor TCP: cualquiera en la red puede
+//! conectarse a él, así que pregunta al usuario antes de guardar nada.
 
 use kushare_core::TransferEvent;
 use kushare_proto::offline_wire_formats::{
@@ -38,10 +33,22 @@ use crate::session::TransferSession;
 
 const CONTROL_PAYLOAD_ID: i64 = 1;
 
+/// Pregunta si aceptar los archivos `(nombre, tamaño)` que quiere enviar
+/// `device_name`; `false` los rechaza sin escribir nada.
+pub type Consent = std::sync::Arc<
+    dyn Fn(
+            String,
+            Vec<(String, u64)>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub struct Receiver {
     listener: TcpListener,
     download_dir: PathBuf,
     events: mpsc::Sender<TransferEvent>,
+    consent: Option<Consent>,
 }
 
 impl Receiver {
@@ -56,7 +63,14 @@ impl Receiver {
             listener,
             download_dir,
             events,
+            consent: None,
         })
+    }
+
+    /// Preguntar antes de aceptar cada envío (ver [`Consent`]).
+    pub fn with_consent(mut self, consent: Consent) -> Self {
+        self.consent = Some(consent);
+        self
     }
 
     pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
@@ -71,8 +85,12 @@ impl Receiver {
             tracing::info!(%addr, "conexión TCP entrante");
             let download_dir = self.download_dir.clone();
             let events = self.events.clone();
+            let consent = self.consent.clone();
             tokio::spawn(async move {
-                if let Err(err) = handle_connection(stream, download_dir, events.clone()).await {
+                if let Err(err) =
+                    handle_connection_with_consent(stream, download_dir, events.clone(), consent)
+                        .await
+                {
                     tracing::warn!(%addr, ?err, "conexión de recepción terminó con error");
                 }
             });
@@ -145,6 +163,17 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
     download_dir: PathBuf,
     events: mpsc::Sender<TransferEvent>,
 ) -> anyhow::Result<()> {
+    handle_connection_with_consent(stream, download_dir, events, None).await
+}
+
+/// Como [`handle_connection`], preguntando a `consent` (si hay) antes de
+/// aceptar los archivos.
+pub async fn handle_connection_with_consent<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    download_dir: PathBuf,
+    events: mpsc::Sender<TransferEvent>,
+    consent: Option<Consent>,
+) -> anyhow::Result<()> {
     let mut session = TransferSession::handshake_as_responder(stream).await?;
 
     // 1. Solicitud de conexión: v1 la acepta siempre (modo "visible para
@@ -190,6 +219,27 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
             .await;
     }
 
+    let accepted = match &consent {
+        Some(ask) => {
+            let files = file_metadata
+                .iter()
+                .map(|m| {
+                    (
+                        sanitize_file_name(m.name.as_deref().unwrap_or("archivo_recibido")),
+                        m.size.unwrap_or(0) as u64,
+                    )
+                })
+                .collect();
+            ask(device_name.clone(), files).await
+        }
+        None => true,
+    };
+    let status = if accepted {
+        WireResponseStatus::Accept
+    } else {
+        WireResponseStatus::Reject
+    };
+
     session
         .send_frame(&control_offline_frame(
             &WireFrame {
@@ -197,7 +247,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
                 v1: Some(WireV1Frame {
                     r#type: Some(WireFrameType::Response as i32),
                     connection_response: Some(WireConnectionResponseFrame {
-                        status: Some(WireResponseStatus::Accept as i32),
+                        status: Some(status as i32),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -206,6 +256,11 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
             CONTROL_PAYLOAD_ID,
         ))
         .await?;
+
+    if !accepted {
+        tracing::info!(%device_name, "envío rechazado por el usuario");
+        return Ok(());
+    }
 
     // 3. Recibir cada payload de archivo esperado, identificado por su
     // payload_id (anunciado en cada FileMetadata).

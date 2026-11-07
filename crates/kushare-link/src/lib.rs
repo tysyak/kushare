@@ -24,6 +24,6 @@ pub use kushare_proto::link as pb;
 pub use manager::{
     ConnectIntent, DialFuture, Dialer, LinkConfig, LinkEvent, LinkManager, LinkStream, LocalDevice,
     NotificationAction, NotificationData, PROTOCOL_VERSION, PeerInfo, RemoteNotification,
-    Transport,
+    Transport, icon_hash, notification_to_pb,
 };
 pub use store::{Direction, PeerRecord};

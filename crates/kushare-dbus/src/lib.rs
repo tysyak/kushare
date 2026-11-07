@@ -60,8 +60,44 @@ pub type PeerStateReply = (
 );
 
 /// Foto de la galería: (id, nombre, fecha en ms, ancho, alto, tamaño en
-/// bytes, ruta local de la miniatura).
-pub type PhotoRow = (String, String, i64, u32, u32, u64, String);
+/// bytes, ruta local de la miniatura, ruta local de la original — vacía si
+/// aún no está descargada).
+pub type PhotoRow = (String, String, i64, u32, u32, u64, String, String);
+
+/// Conversación de SMS: (id, número(s), nombre, último texto, fecha en ms,
+/// sin leer, nº de mensajes, el último lo mandé yo).
+pub type SmsThreadRow = (String, String, String, String, i64, bool, u32, bool);
+
+/// SMS: (id, número, texto, fecha en ms, saliente, leído, falló al enviarse).
+pub type SmsRow = (String, String, String, i64, bool, bool, bool);
+
+/// Llamada del registro: (número, nombre, fecha en ms, duración en s, tipo
+/// "incoming"|"outgoing"|"missed"|"rejected"|"blocked"|"voicemail").
+pub type CallLogRow = (String, String, i64, u32, String);
+
+/// Contacto: (nombre, números, favorito).
+pub type ContactRow = (String, Vec<String>, bool);
+
+/// Notificación activa del teléfono: (key, app_id, app, título, texto,
+/// fecha en ms, ruta del icono o "", acciones (id, etiqueta, es_respuesta)).
+pub type PhoneNotificationRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    Vec<(String, String, bool)>,
+);
+
+/// Entrada del historial del portapapeles: (texto, fecha en ms, origen —
+/// "" = este PC, si no el nombre del dispositivo).
+pub type ClipRow = (String, i64, String);
+
+/// Actualización: (versión actual, última publicada — "" si no se sabe,
+/// página del release, nombre del paquete para este sistema, URL del paquete).
+pub type UpdateRow = (String, String, String, String, String);
 
 /// Proxy cliente de `org.kushare.Daemon`.
 #[zbus::proxy(
@@ -112,8 +148,67 @@ pub trait Daemon {
     /// Oír en el PC la música y las llamadas del teléfono (Bluetooth A2DP +
     /// HFP). Devuelve los perfiles afectados ("multimedia", "llamadas").
     fn phone_audio(&self, peer: &str, enable: bool) -> zbus::Result<Vec<String>>;
-    /// Descarga la foto original a la carpeta de descargas; devuelve la ruta.
+    /// Descarga la foto original (a la caché de kushare); devuelve la ruta.
     fn fetch_photo(&self, peer: &str, id: &str) -> zbus::Result<String>;
+    /// La última galería vista, sin preguntar al teléfono (también sin conexión).
+    fn cached_photos(&self, peer: &str) -> zbus::Result<(u32, Vec<PhotoRow>)>;
+    /// Guarda la original en `dest` (archivo o carpeta; "" = Descargas).
+    fn save_photo(&self, peer: &str, id: &str, dest: &str) -> zbus::Result<String>;
+    /// Borra la foto del teléfono: "done", o "confirm" si hay que confirmarlo allí.
+    fn delete_photo(&self, peer: &str, id: &str) -> zbus::Result<String>;
+    /// Conversaciones de SMS (más reciente primero): (total, conversaciones).
+    fn sms_threads(
+        &self,
+        peer: &str,
+        offset: u32,
+        limit: u32,
+    ) -> zbus::Result<(u32, Vec<SmsThreadRow>)>;
+    /// Mensajes de una conversación, más reciente primero; `before_ms` > 0 pagina.
+    fn sms_messages(
+        &self,
+        peer: &str,
+        thread_id: &str,
+        limit: u32,
+        before_ms: i64,
+    ) -> zbus::Result<Vec<SmsRow>>;
+    fn send_sms(&self, peer: &str, address: &str, body: &str) -> zbus::Result<()>;
+    fn call_log(&self, peer: &str, limit: u32) -> zbus::Result<Vec<CallLogRow>>;
+    fn contacts(&self, peer: &str, refresh: bool) -> zbus::Result<Vec<ContactRow>>;
+    /// Llama desde el teléfono (las letras se convierten a su tecla).
+    fn dial(&self, peer: &str, number: &str) -> zbus::Result<()>;
+    /// Notificaciones que hay ahora en el teléfono.
+    fn phone_notifications(&self, peer: &str) -> zbus::Result<Vec<PhoneNotificationRow>>;
+    fn dismiss_phone_notification(&self, peer: &str, key: &str) -> zbus::Result<()>;
+    fn phone_notification_action(&self, peer: &str, key: &str, action_id: &str)
+    -> zbus::Result<()>;
+    fn phone_notification_reply(
+        &self,
+        peer: &str,
+        key: &str,
+        action_id: &str,
+        text: &str,
+    ) -> zbus::Result<()>;
+    /// Fondo de pantalla del teléfono: (ruta de la imagen o "", colores ARGB).
+    fn wallpaper(&self, peer: &str, refresh: bool) -> zbus::Result<(String, Vec<u32>)>;
+    /// Salidas y entradas (micrófonos) de audio del PC.
+    fn local_audio(&self) -> zbus::Result<(Vec<OutputRow>, Vec<OutputRow>)>;
+    /// `kind`: "output" | "input".
+    fn set_local_audio(&self, kind: &str, id: &str) -> zbus::Result<()>;
+    fn clipboard_history(&self) -> zbus::Result<Vec<ClipRow>>;
+    /// Copia `text` en el PC (y lo comparte con los teléfonos si está activado).
+    fn clipboard_copy(&self, text: &str) -> zbus::Result<()>;
+    /// Copia un archivo (imagen) al portapapeles del PC.
+    fn clipboard_copy_file(&self, path: &str) -> zbus::Result<()>;
+    /// Borra una entrada del historial (`index` ≥ 0) o todo (`-1`).
+    fn clipboard_forget(&self, index: i32) -> zbus::Result<()>;
+    /// Ajustes del daemon: (nombre, activado).
+    fn settings(&self) -> zbus::Result<Vec<(String, bool)>>;
+    fn set_setting(&self, name: &str, enabled: bool) -> zbus::Result<()>;
+    /// Busca una versión nueva (con `force`, aunque se haya mirado hace poco).
+    fn check_update(&self, force: bool) -> zbus::Result<UpdateRow>;
+    /// Descarga el paquete de la versión nueva a Descargas (comprobando su
+    /// SHA-256); devuelve la ruta.
+    fn download_update(&self) -> zbus::Result<String>;
     #[zbus(signal)]
     fn pairing_requested(&self, peer_id: String, name: String, pin: String) -> zbus::Result<()>;
     #[zbus(signal)]
@@ -126,6 +221,15 @@ pub trait Daemon {
     /// La galería del peer tiene fotos nuevas (pedir las más recientes).
     #[zbus(signal)]
     fn photos_changed(&self, peer_id: String) -> zbus::Result<()>;
+    /// Llegó o se mandó un SMS (`thread_id` puede ir vacío).
+    #[zbus(signal)]
+    fn sms_changed(&self, peer_id: String, thread_id: String) -> zbus::Result<()>;
+    /// Llegó o se quitó una notificación del teléfono.
+    #[zbus(signal)]
+    fn phone_notifications_changed(&self, peer_id: String) -> zbus::Result<()>;
+    /// Cambió el historial del portapapeles.
+    #[zbus(signal)]
+    fn clipboard_changed(&self) -> zbus::Result<()>;
 }
 
 /// Conecta con el daemon en el bus de sesión. Falla si no está corriendo.

@@ -271,10 +271,24 @@ impl BtService {
         events: mpsc::Sender<TransferEvent>,
     ) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(&download_dir).await?;
+        let session = self.session.clone();
         self.run_acceptor(move |stream, device| {
             let download_dir = download_dir.clone();
             let events = events.clone();
+            let session = session.clone();
             async move {
+                // Solo de dispositivos vinculados con este PC (el agente de
+                // kushare acepta cualquier conexión RFCOMM).
+                let paired = async {
+                    let adapter = session.default_adapter().await.ok()?;
+                    adapter.device(device).ok()?.is_paired().await.ok()
+                }
+                .await
+                .unwrap_or(false);
+                if !paired {
+                    tracing::warn!(%device, "envío por Bluetooth de un dispositivo no vinculado: rechazado");
+                    return;
+                }
                 if let Err(err) = handle_connection(stream, download_dir, events).await {
                     tracing::warn!(%device, ?err, "conexión de recepción RFCOMM terminó con error");
                 }

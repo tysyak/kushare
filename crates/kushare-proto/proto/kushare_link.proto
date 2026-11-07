@@ -178,6 +178,24 @@ message Feature {
     CallState call_state = 12;
     CallCommand call_command = 13;
     PhotosChanged photos_changed = 14;
+    ClipboardContent clipboard = 15;
+    SmsThreadsRequest sms_threads_request = 16;
+    SmsThreads sms_threads = 17;
+    SmsMessagesRequest sms_messages_request = 18;
+    SmsMessages sms_messages = 19;
+    SendSms send_sms = 20;
+    SmsChanged sms_changed = 21;
+    CallLogRequest call_log_request = 22;
+    CallLog call_log = 23;
+    ContactsRequest contacts_request = 24;
+    Contacts contacts = 25;
+    Dial dial = 26;
+    ActiveNotificationsRequest active_notifications_request = 27;
+    ActiveNotifications active_notifications = 28;
+    WallpaperRequest wallpaper_request = 29;
+    Wallpaper wallpaper = 30;
+    PhotoDelete photo_delete = 31;
+    CommandResult command_result = 32;
   }
 }
 
@@ -269,6 +287,9 @@ message PhotoListRequest {
   uint64 request_id = 1;
   uint32 offset = 2;
   uint32 limit = 3;
+  // Ids cuya miniatura ya tiene el que pide (en caché): se mandan sin
+  // `thumbnail`, para que recargar por Bluetooth cueste casi nada.
+  repeated string have_thumbnails = 4;
 }
 
 message PhotoInfo {
@@ -292,6 +313,12 @@ message PhotoList {
 message PhotoRequest {
   uint64 request_id = 1;
   string id = 2;
+  // Tamaño máximo de cada `PhotoData` (0 = el del emisor). Las descargas de
+  // fondo piden trozos pequeños para no frenar el resto del enlace.
+  uint32 chunk_size = 3;
+  // Descarga de fondo (precarga): el emisor manda cada trozo solo cuando
+  // su cola de salida está vacía, para que lo demás no espere.
+  bool background = 4;
 }
 
 // Trozo de la foto original (`offset` en bytes). `last` cierra la
@@ -335,4 +362,182 @@ enum CallAction {
 
 message CallCommand {
   CallAction action = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Portapapeles, SMS, llamadas, contactos, notificaciones activas, fondo de
+// pantalla y borrado de fotos (0.4.0).
+//
+// Las peticiones llevan `request_id` y la respuesta lo repite; `error` no
+// vacío = no se pudo (casi siempre falta un permiso en el teléfono).
+// ---------------------------------------------------------------------------
+
+// Texto copiado en el emisor. El receptor lo pone en su portapapeles.
+message ClipboardContent {
+  string text = 1;
+  int64 timestamp_ms = 2;
+}
+
+// Conversaciones de SMS, la más reciente primero.
+message SmsThreadsRequest {
+  uint64 request_id = 1;
+  uint32 offset = 2;
+  uint32 limit = 3;
+}
+
+message SmsThread {
+  string thread_id = 1;
+  // Número (o números separados por coma en un grupo).
+  string address = 2;
+  // Nombre del contacto si se conoce.
+  string name = 3;
+  // Texto del último mensaje.
+  string snippet = 4;
+  int64 date_ms = 5;
+  bool unread = 6;
+  uint32 count = 7;
+  // El último mensaje lo mandó el dueño del teléfono.
+  bool outgoing = 8;
+}
+
+message SmsThreads {
+  uint64 request_id = 1;
+  repeated SmsThread threads = 2;
+  string error = 3;
+  uint32 total = 4;
+}
+
+// Mensajes de una conversación, del más reciente hacia atrás.
+// `before_ms` > 0: solo los anteriores a esa fecha (paginar).
+message SmsMessagesRequest {
+  uint64 request_id = 1;
+  string thread_id = 2;
+  uint32 limit = 3;
+  int64 before_ms = 4;
+}
+
+message SmsMessage {
+  string id = 1;
+  string address = 2;
+  string body = 3;
+  int64 date_ms = 4;
+  bool outgoing = 5;
+  bool read = 6;
+  // Saliente que falló al enviarse.
+  bool failed = 7;
+}
+
+message SmsMessages {
+  uint64 request_id = 1;
+  string thread_id = 2;
+  // Más reciente primero.
+  repeated SmsMessage messages = 3;
+  string error = 4;
+}
+
+// Mandar un SMS desde el teléfono. Se responde con `CommandResult`.
+message SendSms {
+  uint64 request_id = 1;
+  string address = 2;
+  string body = 3;
+}
+
+// Llegó o se mandó un SMS: el receptor que muestre los mensajes refresca.
+message SmsChanged {
+  string thread_id = 1;
+}
+
+enum CallType {
+  CALL_TYPE_INCOMING = 0;
+  CALL_TYPE_OUTGOING = 1;
+  CALL_TYPE_MISSED = 2;
+  CALL_TYPE_REJECTED = 3;
+  CALL_TYPE_BLOCKED = 4;
+  CALL_TYPE_VOICEMAIL = 5;
+}
+
+message CallLogRequest {
+  uint64 request_id = 1;
+  uint32 limit = 2;
+}
+
+message CallLogEntry {
+  string number = 1;
+  string name = 2;
+  int64 date_ms = 3;
+  uint32 duration_s = 4;
+  CallType type = 5;
+}
+
+message CallLog {
+  uint64 request_id = 1;
+  // Más reciente primero.
+  repeated CallLogEntry entries = 2;
+  string error = 3;
+}
+
+message ContactsRequest {
+  uint64 request_id = 1;
+}
+
+message Contact {
+  string name = 1;
+  repeated string numbers = 2;
+  bool starred = 3;
+}
+
+message Contacts {
+  uint64 request_id = 1;
+  repeated Contact contacts = 2;
+  string error = 3;
+}
+
+// Llamar a `number` desde el teléfono. Se responde con `CommandResult`.
+message Dial {
+  uint64 request_id = 1;
+  string number = 2;
+}
+
+// Notificaciones que hay ahora mismo en el teléfono (todas, no solo las
+// que se reenvían). `have_icons`: hashes que el que pide ya tiene.
+message ActiveNotificationsRequest {
+  uint64 request_id = 1;
+  repeated string have_icons = 2;
+}
+
+message ActiveNotifications {
+  uint64 request_id = 1;
+  repeated Notification notifications = 2;
+  string error = 3;
+}
+
+message WallpaperRequest {
+  uint64 request_id = 1;
+  // Lado mayor máximo de la imagen en píxeles.
+  uint32 max_size = 2;
+}
+
+// Fondo de pantalla del teléfono. Sin permiso para leerlo, `jpeg` va vacío
+// y `colors` trae sus colores principales (ARGB) para pintar un degradado.
+message Wallpaper {
+  uint64 request_id = 1;
+  bytes jpeg = 2;
+  repeated uint32 colors = 3;
+  string error = 4;
+}
+
+// Borrar una foto de la galería. El teléfono puede pedir confirmación al
+// usuario (`CommandResult.status = "confirm"`).
+message PhotoDelete {
+  uint64 request_id = 1;
+  string id = 2;
+}
+
+// Resultado de una orden (`SendSms`, `Dial`, `PhotoDelete`).
+message CommandResult {
+  uint64 request_id = 1;
+  bool ok = 2;
+  string error = 3;
+  // "done" | "confirm" (hay que confirmarlo en el teléfono).
+  string status = 4;
 }

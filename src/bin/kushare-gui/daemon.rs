@@ -108,6 +108,12 @@ pub enum Event {
     PeersChanged,
     /// La galería de este peer tiene fotos nuevas.
     PhotosChanged(String),
+    /// Llegó o se mandó un SMS: (peer, conversación — puede ir vacía).
+    SmsChanged(String, String),
+    /// Cambiaron las notificaciones del teléfono (llegó o se quitó una).
+    NotificationsChanged(String),
+    /// Cambió el historial del portapapeles.
+    ClipboardChanged,
     PairingRequested {
         id: String,
         name: String,
@@ -136,6 +142,9 @@ pub fn events() -> Subscription<Event> {
                     Ok(mut changed),
                     Ok(mut state_changed),
                     Ok(mut photos_changed),
+                    Ok(mut sms_changed),
+                    Ok(mut notifs_changed),
+                    Ok(mut clipboard_changed),
                     Ok(mut owner),
                 ) = (
                     daemon.receive_pairing_requested().await,
@@ -143,6 +152,9 @@ pub fn events() -> Subscription<Event> {
                     daemon.receive_peers_changed().await,
                     daemon.receive_peer_state_changed().await,
                     daemon.receive_photos_changed().await,
+                    daemon.receive_sms_changed().await,
+                    daemon.receive_phone_notifications_changed().await,
+                    daemon.receive_clipboard_changed().await,
                     daemon.inner().receive_owner_changed().await,
                 )
                 else {
@@ -166,6 +178,15 @@ pub fn events() -> Subscription<Event> {
                             Ok(a) => Event::PhotosChanged(a.peer_id),
                             Err(_) => continue,
                         },
+                        Some(sig) = sms_changed.next() => match sig.args() {
+                            Ok(a) => Event::SmsChanged(a.peer_id, a.thread_id),
+                            Err(_) => continue,
+                        },
+                        Some(sig) = notifs_changed.next() => match sig.args() {
+                            Ok(a) => Event::NotificationsChanged(a.peer_id),
+                            Err(_) => continue,
+                        },
+                        Some(_) = clipboard_changed.next() => Event::ClipboardChanged,
                         Some(new_owner) = owner.next() => {
                             if new_owner.is_none() {
                                 break; // el daemon se cerró

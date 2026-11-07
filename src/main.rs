@@ -1,5 +1,6 @@
 mod doctor;
 mod link;
+mod update;
 
 use clap::{Parser, Subcommand};
 use kushare_core::{Settings, TransferEvent, random_endpoint_id};
@@ -265,7 +266,6 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
     .await?;
     let local_addr = receiver.local_addr()?;
     tracing::info!(%local_addr, "escuchando transferencias entrantes");
-    tokio::spawn(receiver.run());
 
     let mut advertiser = MdnsAdvertiser::new()?;
     advertiser.start_advertising(&settings.device_name, &endpoint_id, local_addr.port())?;
@@ -350,6 +350,8 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
     })
     .await?;
     let _dbus = link::dbus::serve(link.clone()).await?;
+    // Cualquiera en la red puede conectar con el receptor TCP: preguntar.
+    tokio::spawn(receiver.with_consent(link.receive_consent()).run());
 
     // Recepción de archivos por Bluetooth RFCOMM (además de TCP), con el
     // perfil de transferencias que registró el enlace en la misma sesión BlueZ.

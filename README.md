@@ -16,7 +16,17 @@ Después de instalar, abre los puertos del enlace en el firewall si tienes uno (
 
 ## Interfaz gráfica
 
-`kushare-gui` tiene lo mismo que la app Android: estado del enlace, dispositivos (emparejar por red o Bluetooth con PIN, activar cada dirección de notificaciones, filtro por app, enviar archivos), ajustes de tema (Sistema, Claro, Oscuro, OLED) y diagnóstico. No hace red por su cuenta: controla al daemon por D-Bus.
+`kushare-gui` es un "Enlace Móvil" para Linux. No hace red por su cuenta: controla al daemon por D-Bus. Páginas:
+
+- **Teléfono**: fondo de pantalla, batería, timbre, llamada en curso, multimedia, audio del teléfono en el PC, y la salida/entrada de audio de este PC.
+- **Mensajes**: los SMS del teléfono (buscar, leer, responder, nuevos).
+- **Llamadas**: marcador con letras (busca contactos por nombre, número o teclas T9) y llamadas recientes.
+- **Fotos**: galería al instante (con caché), visor propio (abrir, copiar, guardar como, eliminar).
+- **Avisos**: las notificaciones que hay en el teléfono, con acciones, respuesta y descartar.
+- **Portapapeles**: compartido con el teléfono, con historial opcional.
+- **Enviar**, **Dispositivos** (emparejar, notificaciones por dirección, filtro por app) y **Ajustes** (tema, idioma, funciones, actualizaciones, diagnóstico).
+
+`KUSHARE_GUI_SCREEN=messages kushare-gui` abre directamente una página (`phone`, `messages`, `calls`, `photos`, `notifications`, `clipboard`, `devices`, `settings`).
 
 ## Estado
 
@@ -117,13 +127,24 @@ kushare audio <dispositivo> [salida]   # listar / elegir su salida de audio
 kushare ringer <dispositivo> normal|vibrate|silent
 kushare call <dispositivo> answer|reject|hangup|mute|unmute
 kushare phone-audio <dispositivo> on|off   # oír en el PC su música y sus llamadas (Bluetooth)
-kushare photos <dispositivo> [--offset N --limit N] [--download <id>]
+kushare photos <dispositivo> [--offset N --limit N] [--download <id>] [--delete <id>]
+kushare sms <dispositivo> [--thread <id>] | --to <número> "texto"
+kushare calls <dispositivo>            # registro de llamadas
+kushare contacts <dispositivo> [búsqueda]
+kushare dial <dispositivo> <número>    # llama desde el teléfono (admite letras: 1-800-FLORES)
+kushare phone-notifs <dispositivo> [--dismiss <key>]
+kushare clipboard [--copy N | --clear] # historial del portapapeles
+kushare pc-audio [--output X | --input X]   # salida y micrófono de este PC
+kushare setting [nombre on|off]        # clipboard-sync, clipboard-history, photo-prefetch, update-check, receive-confirm
+kushare update [--download]            # ¿hay versión nueva? (descarga verificada con SHA-256)
 ```
 
 Lo mismo está en la GUI (páginas *Teléfono* y *Fotos*) y en la bandeja. En sentido contrario, el teléfono ve la batería del portátil y controla sus reproductores (MPRIS) y su salida de audio (`pactl`). Una llamada entrante aparece como notificación con *Contestar*/*Rechazar*.
 
 - **Audio del teléfono en el PC**: el PC hace de manos libres (HFP) y de altavoz (A2DP) del teléfono por Bluetooth. Necesita que PipeWire/WirePlumber tenga los roles `hfp_hf` y `a2dp_sink` (vienen activados por defecto) y, en el teléfono, *Llamadas* y *Audio multimedia* activados para este PC en los ajustes de Bluetooth.
-- **Fotos**: solo del teléfono al PC; las miniaturas se guardan en `~/.cache/kushare/thumbs/` y los originales en *Descargas*. Por Bluetooth una foto de 1 MB tarda unos 25 s.
+- **Fotos**: solo del teléfono al PC. Las miniaturas se guardan en `~/.cache/kushare/thumbs/` y el teléfono no las vuelve a mandar; las originales van a `~/.cache/kushare/photos/` (máx. 400 MB). Las 6 más recientes se precargan en segundo plano, a baja prioridad, para que abrirlas sea instantáneo aunque el enlace vaya por Bluetooth (una foto de 1 MB tarda unos 25 s).
+- **Portapapeles**: del PC al teléfono al instante; del teléfono al PC cuando abres kushare en el teléfono o pulsas *Enviar portapapeles* (Android no deja leer el portapapeles en segundo plano). Necesita un compositor con *data-control* (Hyprland, KDE, Sway…); en GNOME usa X11.
+- **SMS, llamadas y contactos**: se piden al teléfono cada vez, no se guardan en el PC. Ver [SECURITY.md](./SECURITY.md).
 - Android no deja a una app cambiar la salida de audio de las demás: desde el PC solo se ve; en el teléfono, *Ajustes → Elegir salida de audio*.
 
 `<dispositivo>` acepta el id, un prefijo del id o el nombre. Todo esto también está en el menú del icono de bandeja (*Dispositivos*). Los subcomandos hablan con el daemon por D-Bus (`org.kushare.Daemon` en el bus de sesión), igual que cualquier otra interfaz que se quiera construir.
@@ -147,12 +168,15 @@ Los textos de la GUI, la bandeja y los avisos del daemon están en
 { "gui": { "nav": { "home": "Inicio" } } }
 ```
 
-Para otro idioma, copia `es.json` a `<idioma>.json` (p. ej. `en.json`) y traduce
-los valores sin tocar las claves ni los marcadores `{nombre}`. Sin recompilar:
+Incluidos: español (`es.json`) e inglés (`en.json`); el idioma se elige en
+*Ajustes → Idioma* (o `KUSHARE_LANG`). Para otro idioma, copia `es.json` a
+`<idioma>.json` y traduce los valores sin tocar las claves ni los marcadores
+`{nombre}`. Sin recompilar:
 ponlo en `~/.local/share/kushare/locales/` y arranca con `KUSHARE_LANG=en` (si
 no, se usa el idioma de `LANG`). Para incluirlo en el binario, añádelo a
-`BUILTIN` en `crates/kushare-i18n/src/lib.rs`. Lo que falte sale en español. Un
-test comprueba que toda clave usada en el código existe en `es.json`.
+`BUILTIN` en `crates/kushare-i18n/src/lib.rs`. Lo que falte sale en español. Unos
+tests comprueban que toda clave usada en el código existe en `es.json` y que
+`en.json` tiene las mismas claves y marcadores.
 
 ## Firewall
 

@@ -10,7 +10,10 @@ use zbus::{fdo, interface};
 use super::LinkHandle;
 
 pub use kushare_dbus::{AppsReply, BUS_NAME, DaemonProxy, OBJECT_PATH, PeerRow};
-use kushare_dbus::{PeerStateReply, PhotoRow};
+use kushare_dbus::{
+    CallLogRow, ClipRow, ContactRow, OutputRow, PeerStateReply, PhoneNotificationRow, PhotoRow,
+    SmsRow, SmsThreadRow, UpdateRow,
+};
 use kushare_link::pb;
 
 pub fn parse_direction(direction: &str) -> fdo::Result<Direction> {
@@ -111,6 +114,19 @@ fn failed(err: anyhow::Error) -> fdo::Error {
 
 struct DaemonApi {
     link: LinkHandle,
+}
+
+impl DaemonApi {
+    /// Resuelve `peer` y comprueba que esté conectado.
+    fn connected(&self, peer: &str) -> fdo::Result<String> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        if !self.link.manager.is_connected(&id) {
+            return Err(fdo::Error::Failed(
+                "el dispositivo no está conectado".into(),
+            ));
+        }
+        Ok(id)
+    }
 }
 
 #[interface(name = "org.kushare.Daemon")]
@@ -324,23 +340,13 @@ impl DaemonApi {
             .photos(&id, offset, limit)
             .await
             .map_err(failed)?;
-        Ok((
-            total,
-            photos
-                .into_iter()
-                .map(|(p, thumb)| {
-                    (
-                        p.id,
-                        p.name,
-                        p.date_ms,
-                        p.width,
-                        p.height,
-                        p.size,
-                        thumb.to_string_lossy().to_string(),
-                    )
-                })
-                .collect(),
-        ))
+        Ok((total, photos.into_iter().map(photo_row).collect()))
+    }
+
+    fn cached_photos(&self, peer: &str) -> fdo::Result<(u32, Vec<PhotoRow>)> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let (total, photos) = self.link.features.cached_photos(&id);
+        Ok((total, photos.into_iter().map(photo_row).collect()))
     }
 
     async fn fetch_photo(&self, peer: &str, id: &str) -> fdo::Result<String> {
@@ -351,6 +357,323 @@ impl DaemonApi {
             .fetch_photo(&peer_id, id)
             .await
             .map_err(failed)?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    async fn save_photo(&self, peer: &str, id: &str, dest: &str) -> fdo::Result<String> {
+        let peer_id = self.link.resolve(peer).map_err(failed)?;
+        let features = &self.link.features;
+        let path = if dest.is_empty() {
+            features.save_photo_to_downloads(&peer_id, id).await
+        } else {
+            let cached = features.fetch_photo(&peer_id, id).await.map_err(failed)?;
+            let mut target = std::path::PathBuf::from(dest);
+            if target.is_dir() {
+                target.push(super::features::original_name(&cached));
+            }
+            std::fs::copy(&cached, &target)
+                .map(|_| target)
+                .map_err(Into::into)
+        }
+        .map_err(failed)?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    async fn delete_photo(&self, peer: &str, id: &str) -> fdo::Result<String> {
+        let peer_id = self.link.resolve(peer).map_err(failed)?;
+        self.link
+            .features
+            .delete_photo(&peer_id, id)
+            .await
+            .map_err(failed)
+    }
+
+    async fn sms_threads(
+        &self,
+        peer: &str,
+        offset: u32,
+        limit: u32,
+    ) -> fdo::Result<(u32, Vec<SmsThreadRow>)> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let t = self
+            .link
+            .features
+            .sms_threads(&id, offset, limit)
+            .await
+            .map_err(failed)?;
+        Ok((
+            t.total,
+            t.threads
+                .into_iter()
+                .map(|t| {
+                    (
+                        t.thread_id,
+                        t.address,
+                        t.name,
+                        t.snippet,
+                        t.date_ms,
+                        t.unread,
+                        t.count,
+                        t.outgoing,
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    async fn sms_messages(
+        &self,
+        peer: &str,
+        thread_id: &str,
+        limit: u32,
+        before_ms: i64,
+    ) -> fdo::Result<Vec<SmsRow>> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let msgs = self
+            .link
+            .features
+            .sms_messages(&id, thread_id, limit, before_ms)
+            .await
+            .map_err(failed)?;
+        Ok(msgs
+            .into_iter()
+            .map(|m| {
+                (
+                    m.id, m.address, m.body, m.date_ms, m.outgoing, m.read, m.failed,
+                )
+            })
+            .collect())
+    }
+
+    async fn send_sms(&self, peer: &str, address: &str, body: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        self.link
+            .features
+            .send_sms(&id, address, body)
+            .await
+            .map_err(failed)
+    }
+
+    async fn call_log(&self, peer: &str, limit: u32) -> fdo::Result<Vec<CallLogRow>> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let entries = self
+            .link
+            .features
+            .call_log(&id, limit)
+            .await
+            .map_err(failed)?;
+        Ok(entries
+            .into_iter()
+            .map(|e| {
+                let kind = match e.r#type() {
+                    pb::CallType::Incoming => "incoming",
+                    pb::CallType::Outgoing => "outgoing",
+                    pb::CallType::Missed => "missed",
+                    pb::CallType::Rejected => "rejected",
+                    pb::CallType::Blocked => "blocked",
+                    pb::CallType::Voicemail => "voicemail",
+                };
+                (e.number, e.name, e.date_ms, e.duration_s, kind.to_string())
+            })
+            .collect())
+    }
+
+    async fn contacts(&self, peer: &str, refresh: bool) -> fdo::Result<Vec<ContactRow>> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let list = self
+            .link
+            .features
+            .contacts(&id, refresh)
+            .await
+            .map_err(failed)?;
+        Ok(list
+            .into_iter()
+            .map(|c| (c.name, c.numbers, c.starred))
+            .collect())
+    }
+
+    async fn dial(&self, peer: &str, number: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        self.link.features.dial(&id, number).await.map_err(failed)
+    }
+
+    async fn phone_notifications(&self, peer: &str) -> fdo::Result<Vec<PhoneNotificationRow>> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let list = self
+            .link
+            .features
+            .phone_notifications(&id)
+            .await
+            .map_err(failed)?;
+        Ok(list
+            .into_iter()
+            .map(|(n, icon)| {
+                (
+                    n.key,
+                    n.app_id,
+                    n.app_name,
+                    n.title,
+                    n.text,
+                    n.timestamp_ms,
+                    icon.map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    n.actions
+                        .into_iter()
+                        .map(|a| (a.id, a.label, a.is_reply))
+                        .collect(),
+                )
+            })
+            .collect())
+    }
+
+    fn dismiss_phone_notification(&self, peer: &str, key: &str) -> fdo::Result<()> {
+        let id = self.connected(peer)?;
+        self.link.manager.dismiss_remote_notification(&id, key);
+        Ok(())
+    }
+
+    fn phone_notification_action(&self, peer: &str, key: &str, action_id: &str) -> fdo::Result<()> {
+        let id = self.connected(peer)?;
+        self.link.manager.invoke_remote_action(&id, key, action_id);
+        Ok(())
+    }
+
+    fn phone_notification_reply(
+        &self,
+        peer: &str,
+        key: &str,
+        action_id: &str,
+        text: &str,
+    ) -> fdo::Result<()> {
+        let id = self.connected(peer)?;
+        self.link.manager.reply_remote(&id, key, action_id, text);
+        Ok(())
+    }
+
+    async fn wallpaper(&self, peer: &str, refresh: bool) -> fdo::Result<(String, Vec<u32>)> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let w = self
+            .link
+            .features
+            .wallpaper(&id, refresh)
+            .await
+            .map_err(failed)?;
+        Ok((
+            w.path
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            w.colors,
+        ))
+    }
+
+    async fn local_audio(&self) -> (Vec<OutputRow>, Vec<OutputRow>) {
+        let (outputs, inputs) = super::features::local_audio().await;
+        let rows = |v: Vec<pb::AudioOutput>| -> Vec<OutputRow> {
+            v.into_iter().map(|o| (o.id, o.name, o.active)).collect()
+        };
+        (rows(outputs), rows(inputs))
+    }
+
+    async fn set_local_audio(&self, kind: &str, id: &str) -> fdo::Result<()> {
+        match kind {
+            "output" => super::features::set_local_output(id).await,
+            "input" => super::features::set_local_input(id).await,
+            other => {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "tipo {other:?} inválido: output o input"
+                )));
+            }
+        }
+        .map_err(failed)
+    }
+
+    fn clipboard_history(&self) -> Vec<ClipRow> {
+        self.link
+            .features
+            .clipboard
+            .history()
+            .into_iter()
+            .map(|e| (e.text, e.timestamp_ms, e.source))
+            .collect()
+    }
+
+    fn clipboard_copy(&self, text: &str) -> fdo::Result<()> {
+        self.link.features.clipboard.copy_text(text).map_err(failed)
+    }
+
+    fn clipboard_copy_file(&self, path: &str) -> fdo::Result<()> {
+        self.link
+            .features
+            .clipboard
+            .copy_file(std::path::Path::new(path))
+            .map_err(failed)
+    }
+
+    fn clipboard_forget(&self, index: i32) {
+        self.link
+            .features
+            .clipboard
+            .forget(usize::try_from(index).ok());
+    }
+
+    fn settings(&self) -> Vec<(String, bool)> {
+        let s = self.link.features.settings.get();
+        super::settings::NAMES
+            .iter()
+            .map(|n| (n.to_string(), s.get(n).unwrap_or_default()))
+            .collect()
+    }
+
+    fn set_setting(&self, name: &str, enabled: bool) -> fdo::Result<()> {
+        self.link
+            .features
+            .settings
+            .set(name, enabled)
+            .map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        if name == "clipboard-history" && !enabled {
+            self.link.features.clipboard.history_disabled();
+        }
+        Ok(())
+    }
+
+    async fn check_update(&self, force: bool) -> fdo::Result<UpdateRow> {
+        let release = self.link.updates.check(force).await.map_err(failed)?;
+        let kind = tokio::task::spawn_blocking(crate::update::package_kind)
+            .await
+            .ok()
+            .flatten();
+        let (asset_name, asset_url) = kind
+            .and_then(|k| crate::update::pick_asset(&release, k))
+            .cloned()
+            .unwrap_or_default();
+        Ok((
+            crate::update::CURRENT.to_string(),
+            release.version,
+            release.page,
+            asset_name,
+            asset_url,
+        ))
+    }
+
+    async fn download_update(&self) -> fdo::Result<String> {
+        let release = self.link.updates.check(false).await.map_err(failed)?;
+        if !crate::update::is_newer(&release.version, crate::update::CURRENT) {
+            return Err(fdo::Error::Failed("ya tienes la última versión".into()));
+        }
+        let path = tokio::task::spawn_blocking(move || {
+            let kind = crate::update::package_kind()
+                .ok_or_else(|| anyhow::anyhow!("kushare no está instalado desde un paquete"))?;
+            let asset = crate::update::pick_asset(&release, kind)
+                .ok_or_else(|| anyhow::anyhow!("el release no trae paquete para este sistema"))?
+                .clone();
+            let dir = directories::UserDirs::new()
+                .and_then(|d| d.download_dir().map(std::path::Path::to_path_buf))
+                .unwrap_or_else(std::env::temp_dir);
+            crate::update::download(&release, &asset, &dir)
+        })
+        .await
+        .map_err(|e| fdo::Error::Failed(e.to_string()))?
+        .map_err(failed)?;
         Ok(path.to_string_lossy().to_string())
     }
 
@@ -377,6 +700,22 @@ impl DaemonApi {
             .map(|v| v.into_iter().map(str::to_string).collect())
             .map_err(failed)
     }
+
+    #[zbus(signal)]
+    async fn sms_changed(
+        emitter: &SignalEmitter<'_>,
+        peer_id: &str,
+        thread_id: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn clipboard_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn phone_notifications_changed(
+        emitter: &SignalEmitter<'_>,
+        peer_id: &str,
+    ) -> zbus::Result<()>;
 
     /// La galería del peer tiene fotos nuevas.
     #[zbus(signal)]
@@ -408,6 +747,7 @@ impl DaemonApi {
 /// Publica la API en el bus de sesión. Falla si ya hay otro daemon.
 pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
     let mut events = link.events.subscribe();
+    let clipboard_changes = link.features.clipboard.subscribe();
     let connection = zbus::connection::Builder::session()?
         .serve_at(OBJECT_PATH, DaemonApi { link })?
         .build()
@@ -421,6 +761,15 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
         .object_server()
         .interface::<_, DaemonApi>(OBJECT_PATH)
         .await?;
+    {
+        let iface = iface.clone();
+        let mut changes = clipboard_changes;
+        tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                let _ = DaemonApi::clipboard_changed(iface.signal_emitter()).await;
+            }
+        });
+    }
     tokio::spawn(async move {
         loop {
             let event = match events.recv().await {
@@ -456,6 +805,10 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
                     }
                     result
                 }
+                LinkEvent::NotificationPosted { device_id, .. }
+                | LinkEvent::NotificationRemoved { device_id, .. } => {
+                    DaemonApi::phone_notifications_changed(emitter, &device_id).await
+                }
                 LinkEvent::Feature { device_id, feature } => {
                     use pb::feature::Kind as F;
                     match feature.kind {
@@ -469,6 +822,9 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
                         Some(F::PhotosChanged(_)) => {
                             DaemonApi::photos_changed(emitter, &device_id).await
                         }
+                        Some(F::SmsChanged(c)) => {
+                            DaemonApi::sms_changed(emitter, &device_id, &c.thread_id).await
+                        }
                         _ => Ok(()),
                     }
                 }
@@ -480,4 +836,19 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
         }
     });
     Ok(connection)
+}
+
+fn photo_row(p: super::features::PhotoEntry) -> PhotoRow {
+    (
+        p.info.id,
+        p.info.name,
+        p.info.date_ms,
+        p.info.width,
+        p.info.height,
+        p.info.size,
+        p.thumb.to_string_lossy().to_string(),
+        p.original
+            .map(|o| o.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    )
 }

@@ -1397,6 +1397,31 @@ impl LinkManager {
             .map_err(|_| anyhow::anyhow!("el enlace con {peer_id} se cerró"))
     }
 
+    /// Como [`send_feature_wait`](Self::send_feature_wait), pero de baja
+    /// prioridad: solo encola cuando la cola del enlace está (casi) vacía,
+    /// así una descarga de fondo no retrasa notificaciones ni órdenes.
+    pub async fn send_feature_idle(
+        &self,
+        peer_id: &str,
+        feature: pb::Feature,
+    ) -> anyhow::Result<()> {
+        loop {
+            let free = self
+                .inner
+                .links
+                .lock()
+                .expect("mutex envenenado")
+                .get(peer_id)
+                .map(|link| link.outbound.capacity())
+                .ok_or_else(|| anyhow::anyhow!("{peer_id} no está conectado"))?;
+            if free + 1 >= OUTBOUND_QUEUE {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        self.send_feature_wait(peer_id, feature).await
+    }
+
     /// Manda un mensaje de función extra a todos los peers conectados.
     pub fn broadcast_feature(&self, feature: pb::Feature) {
         let ids: Vec<String> = self
@@ -1457,6 +1482,26 @@ impl LinkManager {
     /// se valida (64 hex, coincide con el PNG) antes de usarlo como nombre
     /// de archivo: un peer no puede escribir fuera de la caché ni
     /// envenenarla con un icono que no corresponde a su hash.
+    /// Guarda (si hace falta) y devuelve la ruta del icono `hash` de la
+    /// caché compartida de iconos. `png` puede ir vacío si ya estaba.
+    pub fn cached_icon(&self, hash: &str, png: &[u8]) -> Option<PathBuf> {
+        self.cache_icon(hash, png)
+    }
+
+    /// Hashes de los iconos que ya están en la caché (para no pedirlos otra vez).
+    pub fn cached_icon_hashes(&self) -> Vec<String> {
+        std::fs::read_dir(&self.inner.icon_dir)
+            .map(|dir| {
+                dir.flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        name.strip_suffix(".png").map(str::to_string)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn cache_icon(&self, hash: &str, png: &[u8]) -> Option<PathBuf> {
         if hash.len() != 64
             || !hash
@@ -1701,6 +1746,47 @@ fn validate_hello(hello: &pb::Hello, local_id: &str) -> anyhow::Result<()> {
         anyhow::bail!("conexión con uno mismo");
     }
     Ok(())
+}
+
+/// SHA-256 hex de un icono PNG (la `icon_hash` de [`pb::Notification`]).
+pub fn icon_hash(png: &[u8]) -> String {
+    encode_hex(&Sha256::digest(png))
+}
+
+/// Convierte una notificación local al mensaje del protocolo, sin el PNG
+/// del icono si su hash está en `have_icons` (el receptor ya lo tiene).
+pub fn notification_to_pb(n: &NotificationData, have_icons: &HashSet<String>) -> pb::Notification {
+    let (icon_hash, icon_png) = match n.icon_png.as_deref().filter(|p| !p.is_empty()) {
+        Some(png) => {
+            let hash = icon_hash(png);
+            let png = if have_icons.contains(&hash) {
+                Vec::new()
+            } else {
+                png.to_vec()
+            };
+            (hash, png)
+        }
+        None => (String::new(), Vec::new()),
+    };
+    pb::Notification {
+        key: n.key.clone(),
+        app_id: n.app_id.clone(),
+        app_name: n.app_name.clone(),
+        title: n.title.clone(),
+        text: n.text.clone(),
+        timestamp_ms: n.timestamp_ms,
+        icon_hash,
+        icon_png,
+        actions: n
+            .actions
+            .iter()
+            .map(|a| pb::NotificationAction {
+                id: a.id.clone(),
+                label: a.label.clone(),
+                is_reply: a.is_reply,
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]
