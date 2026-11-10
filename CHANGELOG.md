@@ -6,6 +6,16 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.5.1] - 2026-11-10
+
+### Cambiado
+- La conexión híbrida se ve sola: al conectar y en cada cambio de red (del
+  teléfono o del PC) el PC comprueba si alcanza al teléfono por Wi-Fi, y la
+  GUI, `kushare devices` («+ datos wifi listo») y el teléfono muestran
+  «Bluetooth + Wi-Fi» sin tener que abrir fotos. Al salir de la red vuelve a
+  «Bluetooth» en ~2 s; al entrar, «Bluetooth + Wi-Fi» en ~6 s.
+- Protocolo: `Feature.lan_status` (el PC le dice al teléfono si el Wi-Fi funciona).
+
 ## [0.5.0] - 2026-11-07
 
 ### Añadido

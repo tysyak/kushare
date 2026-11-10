@@ -202,6 +202,7 @@ message Feature {
     PhotoDelete photo_delete = 31;
     CommandResult command_result = 32;
     LanAddress lan_address = 33;
+    LanStatus lan_status = 34;
   }
 }
 
@@ -554,4 +555,11 @@ message CommandResult {
 message LanAddress {
   repeated string addrs = 1;
   uint32 port = 2;
+}
+
+// Resultado de probar el enlace de datos por Wi-Fi (modo híbrido): el PC lo
+// manda al teléfono tras cada `LanAddress` o cambio de red, para que ambos
+// muestren "Bluetooth + Wi-Fi" solo cuando de verdad se alcanzan por la red.
+message LanStatus {
+  bool ready = 1;
 }

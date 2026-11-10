@@ -1316,7 +1316,7 @@ impl App {
                     .map(|p| format!("{} · {}", p.name, p.via()))
                     .collect::<Vec<_>>()
                     .join("   "),
-                if connected.iter().any(|p| p.via() == "Bluetooth") {
+                if connected.iter().any(|p| p.via().starts_with("Bluetooth")) {
                     Icon::Bluetooth
                 } else {
                     Icon::Wifi

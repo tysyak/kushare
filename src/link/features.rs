@@ -151,6 +151,10 @@ pub struct Features {
     contacts: Mutex<HashMap<String, (Instant, Vec<pb::Contact>)>>,
     /// Dónde escucha cada teléfono en la red local (modo híbrido).
     lan: Mutex<HashMap<String, Vec<std::net::SocketAddr>>>,
+    /// ¿Se alcanza al peer por Wi-Fi? (resultado de la última prueba).
+    lan_ready: Mutex<HashMap<String, bool>>,
+    /// Peers cuyo enlace por Wi-Fi hay que (re)comprobar.
+    lan_probe: mpsc::UnboundedSender<String>,
     /// Evita abrir dos enlaces de datos a la vez con el mismo peer.
     bulk_opening: tokio::sync::Mutex<()>,
     wallpapers: Mutex<HashMap<String, WallpaperInfo>>,
@@ -184,6 +188,7 @@ impl Features {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (prefetch, prefetch_rx) = mpsc::unbounded_channel();
         let (new_photos, new_photos_rx) = mpsc::unbounded_channel();
+        let (lan_probe, lan_probe_rx) = mpsc::unbounded_channel();
         let clipboard = Clipboard::start(manager.clone(), settings.clone(), data_dir);
         let features = Arc::new(Self {
             manager,
@@ -195,6 +200,8 @@ impl Features {
             inflight: Mutex::default(),
             contacts: Mutex::default(),
             lan: Mutex::default(),
+            lan_ready: Mutex::default(),
+            lan_probe,
             bulk_opening: tokio::sync::Mutex::new(()),
             wallpapers: Mutex::default(),
             cache_dir: cache_dir.to_path_buf(),
@@ -209,6 +216,8 @@ impl Features {
         tokio::spawn(battery_task(features.clone()));
         tokio::spawn(local_task(features.clone(), command_rx));
         tokio::spawn(prefetch_task(features.clone(), prefetch_rx));
+        tokio::spawn(lan_probe_task(features.clone(), lan_probe_rx));
+        tokio::spawn(local_network_task(features.clone()));
         features
     }
 
@@ -262,6 +271,10 @@ impl Features {
             state.players.clear();
             state.outputs = None;
         }
+        self.lan_ready
+            .lock()
+            .expect("mutex envenenado")
+            .remove(peer_id);
     }
 
     pub fn forget(&self, peer_id: &str) {
@@ -391,6 +404,14 @@ impl Features {
                     .lock()
                     .expect("mutex envenenado")
                     .insert(peer_id.to_string(), addrs);
+                if lan.addrs.is_empty() {
+                    // Salió de la Wi-Fi (o está en "Solo Bluetooth").
+                    self.manager.close_bulk(peer_id);
+                    self.set_lan_ready(peer_id, false);
+                } else {
+                    // Cambió su red: comprobar si nos alcanzamos por Wi-Fi.
+                    let _ = self.lan_probe.send(peer_id.to_string());
+                }
                 return None;
             }
             // La GUI se entera por la señal D-Bus `PhotosChanged` (ver
@@ -423,7 +444,8 @@ impl Features {
             | F::WallpaperRequest(_)
             | F::Wallpaper(_)
             | F::PhotoDelete(_)
-            | F::CommandResult(_) => return None,
+            | F::CommandResult(_)
+            | F::LanStatus(_) => return None,
         };
         drop(peers);
         Some(change)
@@ -446,8 +468,14 @@ impl Features {
     /// Wi-Fi con `peer_id` antes de pedirle algo pesado. Si no hay Wi-Fi, o
     /// falla, no pasa nada: todo sigue por el enlace de control (Bluetooth).
     pub async fn ensure_bulk(&self, peer_id: &str) {
-        if !self.settings.get().hybrid || self.manager.has_bulk(peer_id) {
-            return;
+        let ok = self.try_bulk(peer_id).await;
+        self.set_lan_ready(peer_id, ok);
+    }
+
+    /// Abre el enlace de datos si se puede. `true` si queda abierto.
+    async fn try_bulk(&self, peer_id: &str) -> bool {
+        if !self.settings.get().hybrid {
+            return false;
         }
         let addrs = self
             .lan
@@ -457,11 +485,14 @@ impl Features {
             .cloned()
             .unwrap_or_default();
         if addrs.is_empty() {
-            return;
+            return false;
+        }
+        if self.manager.has_bulk(peer_id) {
+            return true;
         }
         let _guard = self.bulk_opening.lock().await;
         if self.manager.has_bulk(peer_id) {
-            return;
+            return true;
         }
         for addr in addrs {
             let stream = match tokio::time::timeout(
@@ -483,20 +514,42 @@ impl Features {
                 kushare_link::ConnectIntent::Bulk,
             );
             match tokio::time::timeout(BULK_CONNECT_TIMEOUT * 3, connect).await {
-                Ok(Ok(_)) => return,
+                Ok(Ok(_)) => return true,
                 Ok(Err(err)) => tracing::debug!(%addr, ?err, "enlace de datos rechazado"),
                 Err(_) => tracing::debug!(%addr, "enlace de datos: handshake lento"),
             }
         }
+        false
     }
 
-    /// Dirección de red local conocida de `peer_id` (para el estado).
-    pub fn lan_address(&self, peer_id: &str) -> Option<std::net::SocketAddr> {
-        self.lan
+    /// Guarda si `peer_id` se alcanza por Wi-Fi y, si cambió, se lo dice
+    /// (para que el teléfono también muestre "Bluetooth + Wi-Fi").
+    fn set_lan_ready(&self, peer_id: &str, ready: bool) {
+        let changed = self
+            .lan_ready
+            .lock()
+            .expect("mutex envenenado")
+            .insert(peer_id.to_string(), ready)
+            != Some(ready);
+        if changed {
+            tracing::info!(%peer_id, ready, "datos por Wi-Fi");
+            self.manager.send_feature(
+                peer_id,
+                pb::Feature {
+                    kind: Some(F::LanStatus(pb::LanStatus { ready })),
+                },
+            );
+        }
+    }
+
+    /// ¿Se alcanzó a `peer_id` por Wi-Fi en la última prueba?
+    pub fn lan_ready(&self, peer_id: &str) -> bool {
+        self.lan_ready
             .lock()
             .expect("mutex envenenado")
             .get(peer_id)
-            .and_then(|a| a.first().copied())
+            .copied()
+            .unwrap_or(false)
     }
 
     fn new_request_id(&self) -> u64 {
@@ -1282,6 +1335,61 @@ async fn prefetch_task(features: Arc<Features>, mut rx: mpsc::UnboundedReceiver<
                 features.prune_photo_cache();
             }
             features.announce(&peer, &new);
+        }
+    }
+}
+
+/// Prueba el enlace de datos por Wi-Fi con los peers que lo pidan (nueva
+/// `LanAddress`, cambio de red del PC, modo híbrido activado). La conexión
+/// de prueba es el propio enlace de datos: se cierra sola a los 30 s.
+async fn lan_probe_task(features: Arc<Features>, mut rx: mpsc::UnboundedReceiver<String>) {
+    while let Some(first) = rx.recv().await {
+        // La red tarda un momento en asentarse tras un cambio.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let mut peers = HashSet::from([first]);
+        while let Ok(p) = rx.try_recv() {
+            peers.insert(p);
+        }
+        for peer in peers {
+            if features.manager.is_connected(&peer) {
+                features.ensure_bulk(&peer).await;
+            }
+        }
+    }
+}
+
+/// Vigila las IP de este PC (sin tráfico de red): si cambia de red, vuelve
+/// a comprobar si llega a los teléfonos por Wi-Fi.
+async fn local_network_task(features: Arc<Features>) {
+    let snapshot = || {
+        let mut ips: Vec<std::net::IpAddr> = if_addrs::get_if_addrs()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| !i.is_loopback())
+            .map(|i| i.ip())
+            .collect();
+        ips.sort();
+        ips
+    };
+    let mut last = snapshot();
+    let mut last_hybrid = features.settings.get().hybrid;
+    loop {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let now = snapshot();
+        let hybrid = features.settings.get().hybrid;
+        if now != last || hybrid != last_hybrid {
+            last = now;
+            last_hybrid = hybrid;
+            let peers: Vec<String> = features
+                .lan
+                .lock()
+                .expect("mutex envenenado")
+                .keys()
+                .cloned()
+                .collect();
+            for peer in peers {
+                let _ = features.lan_probe.send(peer);
+            }
         }
     }
 }

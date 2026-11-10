@@ -1072,6 +1072,15 @@ impl LinkManager {
             .map(|l| l.transport.clone())
     }
 
+    /// Cierra el enlace de datos con `peer_id` (p. ej. el peer dejó la Wi-Fi).
+    pub fn close_bulk(&self, peer_id: &str) {
+        self.inner
+            .bulk
+            .lock()
+            .expect("mutex envenenado")
+            .remove(peer_id);
+    }
+
     /// ¿Hay un enlace de datos abierto con `peer_id`?
     pub fn has_bulk(&self, peer_id: &str) -> bool {
         self.inner

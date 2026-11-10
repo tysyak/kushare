@@ -160,9 +160,9 @@ impl DaemonApi {
                     transport = format!("{transport} + datos {bulk}");
                 } else if p.connected
                     && self.link.features.settings.get().hybrid
-                    && self.link.features.lan_address(&p.device_id).is_some()
+                    && self.link.features.lan_ready(&p.device_id)
                 {
-                    transport = format!("{transport} + datos wifi disponible");
+                    transport = format!("{transport} + datos wifi listo");
                 }
                 (
                     p.device_id,
