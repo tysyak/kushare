@@ -6,6 +6,19 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.5.2] - 2026-11-11
+
+### Cambiado
+- GUI con animaciones en lugar de cambios bruscos (se desactivan con
+  *Ajustes → Animaciones*):
+  - Notificaciones: al descartar una, sale deslizándose hacia la derecha y el
+    hueco se cierra; con *Descartar todas* salen en cascada. Las que se quitan
+    en el teléfono también se van así, y las nuevas entran deslizándose.
+  - Las páginas entran con un leve desplazamiento al navegar.
+  - El aviso emergente de abajo entra y sale deslizándose y se cierra solo a
+    los 5 s (antes se quedaba hasta pulsarlo).
+- La página *Avisos* pasa a llamarse *Notificaciones*.
+
 ## [0.5.1] - 2026-11-10
 
 ### Cambiado

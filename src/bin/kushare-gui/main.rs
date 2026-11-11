@@ -4,6 +4,7 @@
 //! ajustes de tema (Sistema, Claro, Oscuro, OLED). No hace red por su
 //! cuenta: controla al daemon `kushare` por D-Bus.
 
+mod anim;
 mod calls;
 mod clip;
 mod daemon;
@@ -196,7 +197,15 @@ struct App {
     local_audio: (Vec<OutputRow>, Vec<OutputRow>),
     /// Fondo de pantalla de cada teléfono: (ruta o "", colores ARGB).
     wallpapers: HashMap<String, (String, Vec<u32>)>,
+    /// Animaciones de la ventana (entrada de página, aviso emergente).
+    ui: anim::Ui,
+    /// Cuántos avisos emergentes se han mostrado: cada uno se cierra solo
+    /// a los `TOAST_TIME`, salvo que ya lo haya sustituido otro.
+    toast_seq: u64,
 }
+
+/// Cuánto se queda a la vista un aviso emergente.
+const TOAST_TIME: Duration = Duration::from_secs(5);
 
 /// Estado de la búsqueda de actualizaciones (Ajustes).
 #[derive(Debug, Clone, Default)]
@@ -218,6 +227,8 @@ enum Message {
     Snapshot(Result<Snapshot, String>),
     Bonded(Vec<(String, String)>),
     Tick,
+    /// Fotograma mientras hay animaciones cortas en curso.
+    Frame,
     Navigate(Screen),
     // dispositivos
     SetDirection {
@@ -256,6 +267,8 @@ enum Message {
     OpenDownloads,
     Done(Result<String, String>),
     DismissToast,
+    /// Se cumplió el tiempo del aviso emergente número n.
+    ToastExpired(u64),
     RunDoctor,
     DoctorDone(String),
     CloseDoctor,
@@ -373,6 +386,8 @@ impl App {
             viewer: None,
             daemon_settings: Vec::new(),
             update: UpdateStatus::default(),
+            ui: anim::Ui::default(),
+            toast_seq: 0,
             local_audio: Default::default(),
             wallpapers: HashMap::new(),
         };
@@ -427,6 +442,9 @@ impl App {
         }
         if self.animating() {
             subs.push(iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick));
+        }
+        if self.config.animations && (self.ui.active() || self.notifs.animating()) {
+            subs.push(iced::window::frames().map(|_| Message::Frame));
         }
         if self.viewer.is_some() {
             subs.push(iced::keyboard::listen().filter_map(|event| match event {
@@ -496,7 +514,41 @@ impl App {
         )
     }
 
+    /// Atiende el mensaje y anima lo que haya cambiado de golpe: la página
+    /// (al navegar) y el aviso emergente (al aparecer o irse).
     fn update(&mut self, message: Message) -> Task<Message> {
+        let (screen, toast) = (self.screen, self.toast.clone());
+        let mut task = self.handle(message);
+        if self.toast.is_some() && self.toast != toast {
+            self.toast_seq += 1;
+            let seq = self.toast_seq;
+            task = Task::batch([
+                task,
+                Task::perform(tokio::time::sleep(TOAST_TIME), move |_| {
+                    Message::ToastExpired(seq)
+                }),
+            ]);
+        }
+        if self.config.animations {
+            let now = std::time::Instant::now();
+            if self.screen != screen {
+                self.ui.page_at = Some(now);
+            }
+            if self.toast != toast {
+                match (&self.toast, toast) {
+                    (Some(_), _) => {
+                        self.ui.toast_at = Some(now);
+                        self.ui.toast_leaving = None;
+                    }
+                    (None, Some(old)) => self.ui.toast_leaving = Some((old, now)),
+                    (None, None) => {}
+                }
+            }
+        }
+        task
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SystemTheme(mode) => {
                 self.system_dark = !matches!(mode, iced::theme::Mode::Light);
@@ -575,6 +627,11 @@ impl App {
                 self.gallery
                     .fresh
                     .retain(|_, at| at.elapsed() < PHOTO_HIGHLIGHT);
+                Task::none()
+            }
+            Message::Frame => {
+                self.ui.tick(std::time::Instant::now());
+                self.notifs_frame();
                 Task::none()
             }
             Message::Navigate(screen) => {
@@ -791,6 +848,12 @@ impl App {
             }
             Message::DismissToast => {
                 self.toast = None;
+                Task::none()
+            }
+            Message::ToastExpired(seq) => {
+                if seq == self.toast_seq {
+                    self.toast = None;
+                }
                 Task::none()
             }
             Message::RunDoctor => {
@@ -1178,7 +1241,11 @@ impl App {
         let body = container(
             scrollable(
                 container(content)
-                    .padding(Padding::new(28.0).left(12.0))
+                    .padding(
+                        Padding::new(28.0)
+                            .left(12.0)
+                            .top(28.0 + self.ui.page_shift(std::time::Instant::now())),
+                    )
                     .max_width(920),
             )
             .height(Length::Fill),
@@ -1205,8 +1272,18 @@ impl App {
         if let Some(v) = &self.viewer {
             layers = layers.push(self.viewer_view(c, v));
         }
+        let now = std::time::Instant::now();
         if let Some(t) = &self.toast {
-            layers = layers.push(self.toast_view(c, t));
+            // Entra desde abajo.
+            let p = self
+                .ui
+                .toast_at
+                .map_or(1.0, |at| anim::progress(at, now, anim::TOAST));
+            layers = layers.push(self.toast_view(c, t, 1.0 - anim::ease_out(p)));
+        } else if let Some((t, at)) = &self.ui.toast_leaving {
+            // Se va hacia abajo.
+            let p = anim::progress(*at, now, anim::TOAST);
+            layers = layers.push(self.toast_view(c, t, anim::ease_in(p)));
         }
         layers.into()
     }
@@ -3122,19 +3199,23 @@ impl App {
         )
     }
 
-    fn toast_view<'a>(&self, c: Colors, message: &'a str) -> Element<'a, Message> {
+    /// Aviso emergente; `away` (0–1) lo baja fuera de la ventana.
+    fn toast_view<'a>(&self, c: Colors, message: &'a str, away: f32) -> Element<'a, Message> {
         container(
-            button(text(message).size(14).color(c.on_tertiary_container))
-                .padding(Padding::from([14, 22]))
-                .style(style::button(
-                    c,
-                    ButtonKind::Card {
-                        bg: c.tertiary_container,
-                        fg: c.on_tertiary_container,
-                        shape: Shape::List,
-                    },
-                ))
-                .on_press(Message::DismissToast),
+            iced::widget::float(
+                button(text(message).size(14).color(c.on_tertiary_container))
+                    .padding(Padding::from([14, 22]))
+                    .style(style::button(
+                        c,
+                        ButtonKind::Card {
+                            bg: c.tertiary_container,
+                            fg: c.on_tertiary_container,
+                            shape: Shape::List,
+                        },
+                    ))
+                    .on_press(Message::DismissToast),
+            )
+            .translate(move |b, _| iced::Vector::new(0.0, away * (b.height + 32.0))),
         )
         .width(Length::Fill)
         .height(Length::Fill)

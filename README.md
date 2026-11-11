@@ -22,7 +22,7 @@ Después de instalar, abre los puertos del enlace en el firewall si tienes uno (
 - **Mensajes**: los SMS del teléfono (buscar, leer, responder, nuevos).
 - **Llamadas**: marcador con letras (busca contactos por nombre, número o teclas T9) y llamadas recientes.
 - **Fotos**: galería al instante (con caché), visor propio (abrir, copiar, guardar como, eliminar). Cuando el teléfono tiene una foto nueva, el escritorio avisa con su miniatura (*Ver*, *Copiar*, *Galería*).
-- **Avisos**: las notificaciones que hay en el teléfono, con acciones, respuesta y descartar.
+- **Notificaciones**: las notificaciones que hay en el teléfono, con acciones, respuesta y descartar.
 - **Portapapeles**: compartido con el teléfono, con historial opcional.
 - **Enviar**, **Dispositivos** (emparejar, notificaciones por dirección, filtro por app) y **Ajustes** (tema, idioma, funciones, actualizaciones, diagnóstico).
 
