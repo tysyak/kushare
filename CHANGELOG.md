@@ -6,6 +6,13 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.6.1] - 2026-11-13
+
+### Corregido
+- Las fotos de los contactos no se veían en *Llamadas*: se guardaban con la
+  extensión `.img` y el visor deduce el formato por ella. Ahora se guardan
+  como `.jpg` o `.png` según su contenido (las de la 0.6.0 se vuelven a pedir).
+
 ## [0.6.0] - 2026-11-13
 
 ### Añadido

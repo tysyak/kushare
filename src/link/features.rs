@@ -796,17 +796,24 @@ impl Features {
         Ok(list)
     }
 
-    fn contact_photo_path(&self, peer_id: &str, key: &str) -> PathBuf {
+    /// Ruta de una foto de contacto. La extensión importa: el visor de
+    /// imágenes de la GUI deduce el formato por ella.
+    fn contact_photo_path(&self, peer_id: &str, key: &str, ext: &str) -> PathBuf {
         self.cache_dir
             .join("contacts")
             .join(sanitize(peer_id))
-            .join(format!("{}.img", sanitize(key)))
+            .join(format!("{}.{ext}", sanitize(key)))
     }
 
     /// Foto de contacto ya guardada en este PC (sin pedir nada al teléfono).
     pub fn cached_contact_photo(&self, peer_id: &str, key: &str) -> Option<PathBuf> {
-        let path = self.contact_photo_path(peer_id, key);
-        (!key.is_empty() && path.exists()).then_some(path)
+        if key.is_empty() {
+            return None;
+        }
+        ["jpg", "png"]
+            .into_iter()
+            .map(|ext| self.contact_photo_path(peer_id, key, ext))
+            .find(|path| path.exists())
     }
 
     /// Fotos de contacto por clave: las de la caché y, en una sola petición
@@ -866,7 +873,8 @@ impl Features {
             if !missing.contains(&photo.key) || photo.image.is_empty() {
                 continue;
             }
-            let path = self.contact_photo_path(peer_id, &photo.key);
+            let ext = image_extension(&photo.image);
+            let path = self.contact_photo_path(peer_id, &photo.key, ext);
             match write_private(&path, &photo.image) {
                 Ok(()) => {
                     found.insert(photo.key, path);
@@ -1619,6 +1627,15 @@ fn replace_if_changed<T: PartialEq + Clone>(slot: &mut Option<T>, value: &T) -> 
     true
 }
 
+/// Extensión de una imagen según sus primeros bytes (Android da JPEG o PNG).
+fn image_extension(data: &[u8]) -> &'static str {
+    if data.starts_with(b"\x89PNG") {
+        "png"
+    } else {
+        "jpg"
+    }
+}
+
 fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -2190,6 +2207,12 @@ pub async fn phone_audio(address: &str, enable: bool) -> anyhow::Result<Vec<&'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_photos_keep_their_real_format() {
+        assert_eq!(image_extension(b"\x89PNG\r\n\x1a\n...."), "png");
+        assert_eq!(image_extension(&[0xFF, 0xD8, 0xFF, 0xE0]), "jpg");
+    }
 
     #[test]
     fn sinks_are_parsed_with_description_and_default() {
