@@ -9,7 +9,9 @@ mod calls;
 mod clip;
 mod daemon;
 mod icons;
+mod layout;
 mod notifs;
+mod panel;
 mod sms;
 mod style;
 mod viewer;
@@ -21,7 +23,7 @@ use iced::widget::{
     toggler,
 };
 use iced::{Alignment, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
-use icons::{Blob, Icon, shape_icon};
+use icons::{Blob, Icon, avatar, shape_icon};
 use kushare_dbus::{AppsReply, DaemonProxy, OutputRow, UpdateRow};
 use kushare_i18n::{t, tf};
 use serde::{Deserialize, Serialize};
@@ -43,12 +45,19 @@ const SEMIBOLD: Font = Font {
     ..Font::DEFAULT
 };
 
+/// Tamaño inicial: cabe el panel del teléfono al lado de la página.
+const WINDOW_SIZE: iced::Size = iced::Size::new(1280.0, 800.0);
+
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title("kushare")
         .theme(App::theme)
         .subscription(App::subscription)
-        .window_size((1040.0, 720.0))
+        .window(iced::window::Settings {
+            size: WINDOW_SIZE,
+            min_size: Some(iced::Size::new(480.0, 480.0)),
+            ..Default::default()
+        })
         .run()
 }
 
@@ -62,6 +71,11 @@ struct GuiConfig {
     oled_when_system_dark: bool,
     /// Formas que giran mientras hay actividad.
     animations: bool,
+    /// Dónde van las pestañas del menú.
+    nav: layout::NavPosition,
+    /// Panel del teléfono (estado + notificaciones) al lado de la página,
+    /// si cabe.
+    side_panel: bool,
 }
 
 impl Default for GuiConfig {
@@ -70,6 +84,8 @@ impl Default for GuiConfig {
             theme: ThemeMode::System,
             oled_when_system_dark: true,
             animations: true,
+            nav: layout::NavPosition::Left,
+            side_panel: true,
         }
     }
 }
@@ -199,6 +215,8 @@ struct App {
     wallpapers: HashMap<String, (String, Vec<u32>)>,
     /// Animaciones de la ventana (entrada de página, aviso emergente).
     ui: anim::Ui,
+    /// Tamaño actual de la ventana (para la disposición adaptativa).
+    win: iced::Size,
     /// Cuántos avisos emergentes se han mostrado: cada uno se cierra solo
     /// a los `TOAST_TIME`, salvo que ya lo haya sustituido otro.
     toast_seq: u64,
@@ -229,6 +247,8 @@ enum Message {
     Tick,
     /// Fotograma mientras hay animaciones cortas en curso.
     Frame,
+    /// Cambió el tamaño de la ventana.
+    Resized(iced::Size),
     Navigate(Screen),
     // dispositivos
     SetDirection {
@@ -264,6 +284,8 @@ enum Message {
     SetTheme(ThemeMode),
     SetOledWhenSystemDark(bool),
     SetAnimations(bool),
+    SetNav(layout::NavPosition),
+    SetSidePanel(bool),
     OpenDownloads,
     Done(Result<String, String>),
     DismissToast,
@@ -387,6 +409,7 @@ impl App {
             daemon_settings: Vec::new(),
             update: UpdateStatus::default(),
             ui: anim::Ui::default(),
+            win: WINDOW_SIZE,
             toast_seq: 0,
             local_audio: Default::default(),
             wallpapers: HashMap::new(),
@@ -417,6 +440,39 @@ impl App {
         Some(style::iced_theme(self.appearance()))
     }
 
+    /// Qué cabe en la ventana ahora mismo.
+    fn layout(&self) -> layout::Layout {
+        layout::compute(self.win.width, self.config.nav, self.config.side_panel)
+    }
+
+    /// ¿Se ven las notificaciones? En su página, en el panel o (cuántas
+    /// hay) en la franja de estado: con un teléfono conectado, siempre.
+    fn notifs_visible(&self) -> bool {
+        self.screen == Screen::Notifications || !self.phone_peers().is_empty()
+    }
+
+    /// Página que se dibuja: con el panel a la vista, *Notificaciones* ya
+    /// está en él, así que se muestra *Inicio*.
+    fn shown_screen(&self) -> Screen {
+        if self.screen == Screen::Notifications && self.layout().panel {
+            Screen::Home
+        } else {
+            self.screen
+        }
+    }
+
+    /// Aplica un cambio que puede hacer aparecer el panel; si aparece,
+    /// carga sus notificaciones.
+    fn panel_appeared(&mut self, change: impl FnOnce(&mut Self)) -> Task<Message> {
+        let before = self.layout().panel;
+        change(self);
+        if !before && self.layout().panel {
+            Task::done(Message::Notifs(notifs::Msg::Load))
+        } else {
+            Task::none()
+        }
+    }
+
     /// ¿Hay algo que animar? (para no redibujar sin motivo)
     fn animating(&self) -> bool {
         self.config.animations
@@ -443,6 +499,7 @@ impl App {
         if self.animating() {
             subs.push(iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick));
         }
+        subs.push(iced::window::resize_events().map(|(_, size)| Message::Resized(size)));
         if self.config.animations && (self.ui.active() || self.notifs.animating()) {
             subs.push(iced::window::frames().map(|_| Message::Frame));
         }
@@ -452,7 +509,7 @@ impl App {
                 _ => None,
             }));
         }
-        if self.screen == Screen::Notifications && self.state == DaemonState::Running {
+        if self.notifs_visible() && self.state == DaemonState::Running {
             subs.push(
                 iced::time::every(Duration::from_secs(30))
                     .map(|_| Message::Notifs(notifs::Msg::Load)),
@@ -612,7 +669,21 @@ impl App {
             }
             Message::Snapshot(Ok(snapshot)) => {
                 self.snapshot = snapshot;
-                Task::none()
+                // El panel muestra las notificaciones del teléfono conectado:
+                // cargarlas en cuanto lo hay (o si cambió de teléfono).
+                let phone = self.phone_peers().first().map(|p| p.id.clone());
+                let mut tasks = Vec::new();
+                if let Some(peer) = phone {
+                    // El fondo de pantalla se ve siempre (panel o franja de estado).
+                    if !self.wallpapers.contains_key(&peer) {
+                        self.wallpapers.insert(peer.clone(), Default::default());
+                        tasks.push(Task::done(Message::LoadWallpaper(peer.clone(), false)));
+                    }
+                    if self.notifs_visible() && peer != self.notifs.peer {
+                        tasks.push(Task::done(Message::Notifs(notifs::Msg::Load)));
+                    }
+                }
+                Task::batch(tasks)
             }
             Message::Snapshot(Err(err)) => {
                 tracing::debug!(%err, "no se pudo leer el estado del daemon");
@@ -634,6 +705,7 @@ impl App {
                 self.notifs_frame();
                 Task::none()
             }
+            Message::Resized(size) => self.panel_appeared(|app| app.win = size),
             Message::Navigate(screen) => {
                 self.screen = screen;
                 let phone = self.phone_peers().first().map(|p| p.id.clone());
@@ -828,6 +900,16 @@ impl App {
                 self.config.animations = on;
                 self.config.save();
                 Task::none()
+            }
+            Message::SetNav(nav) => {
+                self.config.nav = nav;
+                self.config.save();
+                self.panel_appeared(|app| app.config.nav = nav)
+            }
+            Message::SetSidePanel(on) => {
+                self.config.side_panel = on;
+                self.config.save();
+                self.panel_appeared(|app| app.config.side_panel = on)
             }
             Message::OpenDownloads => {
                 let dir = directories::UserDirs::new()
@@ -1215,7 +1297,11 @@ impl App {
                     Ok(w) => {
                         self.wallpapers.insert(peer, w);
                     }
-                    Err(e) => tracing::debug!(%e, "sin fondo de pantalla"),
+                    Err(e) => {
+                        tracing::debug!(%e, "sin fondo de pantalla");
+                        // Vacío: no volver a pedirlo en cada refresco.
+                        self.wallpapers.entry(peer).or_default();
+                    }
                 }
                 Task::none()
             }
@@ -1226,7 +1312,9 @@ impl App {
 
     fn view(&self) -> Element<'_, Message> {
         let c = self.colors();
-        let content: Element<'_, Message> = match self.screen {
+        let lay = self.layout();
+        let screen = self.shown_screen();
+        let content: Element<'_, Message> = match screen {
             Screen::Home => self.home(c),
             Screen::Devices => self.devices(c),
             Screen::Phone => self.phone(c),
@@ -1238,22 +1326,50 @@ impl App {
             Screen::Send => self.send(c),
             Screen::Settings => self.settings(c),
         };
-        let body = container(
-            scrollable(
-                container(content)
-                    .padding(
-                        Padding::new(28.0)
-                            .left(12.0)
-                            .top(28.0 + self.ui.page_shift(std::time::Instant::now())),
-                    )
-                    .max_width(920),
-            )
-            .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill);
-        let page = row![self.rail(c), body];
+        // La página usa todo el ancho que le queda; las que llevan sus
+        // propias listas desplazables (Mensajes, Llamadas, Notificaciones)
+        // llenan el alto en lugar de ir dentro de un desplazable.
+        let pad = if lay.compact { 16.0 } else { 28.0 };
+        let shift = self.ui.page_shift(std::time::Instant::now());
+        let inner = container(content)
+            .padding(Padding::new(pad).top(pad + shift))
+            .width(Length::Fill);
+        let fills = match screen {
+            Screen::Messages | Screen::Notifications => true,
+            Screen::Calls => !lay.compact,
+            _ => false,
+        };
+        let page: Element<'_, Message> = if fills {
+            inner.height(Length::Fill).into()
+        } else {
+            scrollable(inner).height(Length::Fill).into()
+        };
+        // Sin panel, el estado del teléfono va en una franja encima.
+        let mut body = column![];
+        if !lay.panel && screen != Screen::Phone && !self.phone_peers().is_empty() {
+            body = body.push(
+                container(self.status_strip(c)).padding(Padding::new(pad).bottom(0.0).top(12.0)),
+            );
+        }
+        let body = body.push(page).width(Length::Fill).height(Length::Fill);
+
+        use layout::NavPosition as Nav;
+        let main: Element<'_, Message> = match self.config.nav {
+            Nav::Top => column![self.tabs(c), body].into(),
+            Nav::Bottom => column![body, self.tabs(c)].into(),
+            Nav::Left | Nav::Right => body.into(),
+        };
+        let mut page = row![];
+        if self.config.nav == Nav::Left {
+            page = page.push(self.rail(c));
+        }
+        if lay.panel {
+            page = page.push(self.side_panel(c));
+        }
+        page = page.push(main);
+        if self.config.nav == Nav::Right {
+            page = page.push(self.rail(c));
+        }
         let mut layers = stack![
             container(page)
                 .style(style::surface(c))
@@ -1288,10 +1404,80 @@ impl App {
         layers.into()
     }
 
-    /// Riel de navegación.
+    /// Pestañas del menú (sin *Notificaciones* si se ven en el panel).
+    fn nav_items(&self) -> Vec<(Icon, &'static str, Screen)> {
+        let mut items = vec![
+            (Icon::Home, t("gui.nav.home"), Screen::Home),
+            (Icon::Phone, t("gui.nav.phone"), Screen::Phone),
+            (Icon::Message, t("gui.nav.messages"), Screen::Messages),
+            (Icon::Dialpad, t("gui.nav.calls"), Screen::Calls),
+            (Icon::Photo, t("gui.nav.photos"), Screen::Photos),
+            (
+                Icon::Notifications,
+                t("gui.nav.notifications"),
+                Screen::Notifications,
+            ),
+            (Icon::Clipboard, t("gui.nav.clipboard"), Screen::Clipboard),
+            (Icon::Send, t("gui.nav.send"), Screen::Send),
+            (Icon::Devices, t("gui.nav.devices"), Screen::Devices),
+            (Icon::Settings, t("gui.nav.settings"), Screen::Settings),
+        ];
+        if self.layout().panel {
+            items.retain(|(_, _, s)| *s != Screen::Notifications);
+        }
+        items
+    }
+
+    /// Pestañas en fila (menú arriba o abajo), como en Enlace Móvil.
+    fn tabs(&self, c: Colors) -> Element<'_, Message> {
+        let shown = self.shown_screen();
+        let mut tabs = row![
+            text("ku").size(22).font(EXTRA_BOLD).color(c.primary),
+            space().width(8)
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        for (icon, label, screen) in self.nav_items() {
+            let selected = shown == screen;
+            let fg = if selected {
+                c.on_secondary_container
+            } else {
+                c.on_surface_variant
+            };
+            tabs = tabs.push(
+                button(
+                    row![
+                        icon.view(20.0, fg),
+                        text(label)
+                            .size(14)
+                            .font(if selected { BOLD } else { SEMIBOLD })
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .padding(Padding::from([8, 14]))
+                .style(style::button(c, ButtonKind::Nav(selected)))
+                .on_press(Message::Navigate(screen)),
+            );
+        }
+        container(
+            scrollable(tabs.padding(Padding::from([0, 4])))
+                // Desplazable en ventanas estrechas, sin barra visible.
+                .direction(iced::widget::scrollable::Direction::Horizontal(
+                    iced::widget::scrollable::Scrollbar::hidden(),
+                )),
+        )
+        .padding(Padding::from([10, 12]))
+        .width(Length::Fill)
+        .style(style::card(c.container_low, c.on_surface, Shape::List))
+        .into()
+    }
+
+    /// Riel de navegación (menú a la izquierda o a la derecha).
     fn rail(&self, c: Colors) -> Element<'_, Message> {
+        let shown = self.shown_screen();
         let item = |icon: Icon, label: &'static str, screen: Screen| {
-            let selected = self.screen == screen;
+            let selected = shown == screen;
             button(
                 column![
                     icon.view(
@@ -1324,21 +1510,12 @@ impl App {
                 column![
                     text("ku").size(26).font(EXTRA_BOLD).color(c.primary),
                     space().height(8),
-                    item(Icon::Home, t("gui.nav.home"), Screen::Home),
-                    item(Icon::Phone, t("gui.nav.phone"), Screen::Phone),
-                    item(Icon::Message, t("gui.nav.messages"), Screen::Messages),
-                    item(Icon::Dialpad, t("gui.nav.calls"), Screen::Calls),
-                    item(Icon::Photo, t("gui.nav.photos"), Screen::Photos),
-                    item(
-                        Icon::Notifications,
-                        t("gui.nav.notifications"),
-                        Screen::Notifications
-                    ),
-                    item(Icon::Clipboard, t("gui.nav.clipboard"), Screen::Clipboard),
-                    item(Icon::Send, t("gui.nav.send"), Screen::Send),
-                    item(Icon::Devices, t("gui.nav.devices"), Screen::Devices),
-                    item(Icon::Settings, t("gui.nav.settings"), Screen::Settings),
                 ]
+                .extend(
+                    self.nav_items()
+                        .into_iter()
+                        .map(|(icon, label, screen)| item(icon, label, screen).into()),
+                )
                 .spacing(4)
                 .align_x(Alignment::Center),
             )
@@ -1355,7 +1532,10 @@ impl App {
 
     fn title<'a>(&self, c: Colors, title: &'a str, subtitle: String) -> Element<'a, Message> {
         column![
-            text(title).size(44).font(EXTRA_BOLD).color(c.on_surface),
+            text(title)
+                .size(if self.layout().compact { 30 } else { 44 })
+                .font(EXTRA_BOLD)
+                .color(c.on_surface),
             text(subtitle).size(16).color(c.on_surface_variant),
         ]
         .spacing(2)
@@ -2435,8 +2615,11 @@ impl App {
             col = col.push(text(err).color(c.error));
         }
         col = col.push(self.photos_toolbar(c));
-        const COLUMNS: usize = 5;
-        for chunk in g.photos.chunks(COLUMNS) {
+        // Columnas según el ancho de la página (~190 px por foto).
+        let columns = ((self.layout().page_width - 56.0) / 190.0)
+            .floor()
+            .clamp(2.0, 8.0) as usize;
+        for chunk in g.photos.chunks(columns) {
             let mut r = row![].spacing(10);
             for (id, _name, _date, _w, _h, _size, thumb, _original) in chunk {
                 // Entrada animada de las fotos nuevas: aparecen (opacidad) y
@@ -2485,7 +2668,7 @@ impl App {
                         }),
                 );
             }
-            for _ in chunk.len()..COLUMNS {
+            for _ in chunk.len()..columns {
                 r = r.push(space().width(Length::FillPortion(1)));
             }
             col = col.push(r);
@@ -2723,6 +2906,47 @@ impl App {
             self.config.animations,
             Message::SetAnimations,
         ));
+        // Posición del menú de pestañas.
+        let nav_seg = row(layout::NavPosition::ALL.iter().enumerate().map(|(i, nav)| {
+            let selected = self.config.nav == *nav;
+            button(
+                text(nav.label())
+                    .size(13)
+                    .font(SEMIBOLD)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center),
+            )
+            .padding(Padding::from([10, 0]))
+            .width(Length::Fill)
+            .style(style::button(
+                c,
+                ButtonKind::Segment {
+                    selected,
+                    first: i == 0,
+                    last: i == layout::NavPosition::ALL.len() - 1,
+                },
+            ))
+            .on_press(Message::SetNav(*nav))
+            .into()
+        }))
+        .spacing(3);
+        theme_card = theme_card
+            .push(space().height(6))
+            .push(text(t("gui.settings.nav")).size(16).font(SEMIBOLD))
+            .push(
+                text(t("gui.settings.nav_detail"))
+                    .size(13)
+                    .color(c.on_surface_variant),
+            )
+            .push(space().height(4))
+            .push(nav_seg)
+            .push(self.switch_row(
+                c,
+                t("gui.settings.side_panel"),
+                Some(t("gui.settings.side_panel_detail")),
+                self.config.side_panel,
+                Message::SetSidePanel,
+            ));
 
         let daemon_card = {
             let (label, action): (&str, Element<'_, Message>) = match self.state {

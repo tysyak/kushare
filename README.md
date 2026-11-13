@@ -16,11 +16,13 @@ Después de instalar, abre los puertos del enlace en el firewall si tienes uno (
 
 ## Interfaz gráfica
 
-`kushare-gui` es un "Enlace Móvil" para Linux. No hace red por su cuenta: controla al daemon por D-Bus. Páginas:
+`kushare-gui` es un "Enlace Móvil" para Linux. No hace red por su cuenta: controla al daemon por D-Bus.
+
+Se adapta al tamaño de la ventana y usa todo su ancho. Si la ventana es ancha, el **panel del teléfono** (miniatura con su fondo de pantalla, conexión, batería, timbre, llamada en curso y sus notificaciones) se ve siempre al lado de la página; si es estrecha, queda una franja de estado arriba y las columnas se apilan. Las pestañas del menú pueden ir a la izquierda, arriba, abajo o a la derecha (*Ajustes → Apariencia*). Páginas:
 
 - **Teléfono**: fondo de pantalla, batería, timbre, llamada en curso, multimedia, audio del teléfono en el PC, y la salida/entrada de audio de este PC.
 - **Mensajes**: los SMS del teléfono (buscar, leer, responder, nuevos).
-- **Llamadas**: marcador con letras (busca contactos por nombre, número o teclas T9) y llamadas recientes.
+- **Llamadas**: llamadas recientes con la foto del contacto (o sus iniciales) y marcador con letras (busca contactos por nombre, número o teclas T9).
 - **Fotos**: galería al instante (con caché), visor propio (abrir, copiar, guardar como, eliminar). Cuando el teléfono tiene una foto nueva, el escritorio avisa con su miniatura (*Ver*, *Copiar*, *Galería*).
 - **Notificaciones**: las notificaciones que hay en el teléfono, con acciones, respuesta y descartar.
 - **Portapapeles**: compartido con el teléfono, con historial opcional.

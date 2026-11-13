@@ -6,6 +6,42 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.6.0] - 2026-11-13
+
+### Añadido
+- **Disposición adaptativa** en la GUI: usa todo el ancho de la ventana (antes
+  920 px como mucho) y, si es ancha, muestra el **panel del teléfono** al lado
+  de la página, como Enlace Móvil: miniatura con su fondo de pantalla, nombre,
+  Bluetooth/Wi-Fi, batería, «Conectado», timbre (normal / vibrar / silencio),
+  llamada en curso y sus **notificaciones siempre a la vista**. En ventanas
+  estrechas queda una franja de estado arriba (con cuántas notificaciones hay),
+  los títulos y márgenes se reducen y las columnas se apilan.
+  *Ajustes → Apariencia → Mostrar panel del teléfono* lo oculta.
+- **Menú de pestañas a elegir**: izquierda (como antes), arriba (como Enlace
+  Móvil), abajo o derecha (*Ajustes → Apariencia*).
+- **Fotos de los contactos** en *Llamadas* (o sus iniciales en un círculo de
+  color si no tienen) y el tipo de llamada (perdida, saliente…) bajo el nombre.
+  El PC las guarda en `~/.cache/kushare/contacts` y solo pide las que faltan.
+  Protocolo: `CallLogEntry.photo_key`, `Contact.photo_key` y
+  `Feature.contact_photos_request/contact_photos` (por el enlace de datos Wi-Fi
+  si lo hay). Con un teléfono 0.5.x salen las iniciales.
+
+### Cambiado
+- *Llamadas* como en Enlace Móvil: los recientes a la izquierda ocupando todo
+  el alto y el teclado a la derecha. *Mensajes* y *Notificaciones* también
+  llenan el alto de la ventana; la galería pone más columnas cuanto más ancha.
+- *Mensajes*: avatares con iniciales; en ventanas estrechas se ve la lista o la
+  conversación (con «←» para volver).
+- D-Bus: `CallLog` y `Contacts` devuelven también la ruta de la foto.
+
+### Corregido
+- Sin Wi-Fi común con el teléfono (otra red o aislamiento de clientes), cada
+  petición pesada esperaba 2 s intentando abrir el enlace de datos: ahora, si
+  la última prueba dijo que no llega, va directa por Bluetooth (se vuelve a
+  probar al cambiar de red).
+- La precarga de fotos solo se hace por Wi-Fi: por Bluetooth ocupaba el enlace
+  varios minutos al arrancar y retrasaba SMS, llamadas y notificaciones.
+
 ## [0.5.2] - 2026-11-11
 
 ### Cambiado

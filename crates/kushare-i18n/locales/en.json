@@ -157,7 +157,7 @@
     "settings": {
       "about": "About",
       "animations": "Animations",
-      "animations_detail": "Shapes that spin while connected or searching.",
+      "animations_detail": "Smooth transitions and shapes that spin while there is activity.",
       "appearance": "Appearance",
       "check": "Check connection",
       "check_detail": "Checks port, firewall, mDNS, Bluetooth and notifications.",
@@ -184,7 +184,7 @@
       "language_system": "System",
       "language_restart": "Language saved: it applies the next time you open kushare.",
       "prefetch": "Preload recent photos",
-      "prefetch_detail": "Downloads the latest phone photos in the background so they open instantly (over Bluetooth too).",
+      "prefetch_detail": "Downloads the latest phone photos in the background, when it is on the same Wi-Fi, so they open instantly.",
       "update_check": "Check for updates",
       "update_check_detail": "Looks for a new version on GitHub once a day.",
       "receive_confirm": "Ask before receiving over Wi-Fi",
@@ -194,7 +194,15 @@
       "hybrid": "Hybrid connection (recommended)",
       "hybrid_detail": "Control, calls and notifications over Bluetooth (low power); photos, texts and lists over Wi-Fi when the phone is on the same network. Off: everything over Bluetooth.",
       "dynamic_lock": "Dynamic lock",
-      "dynamic_lock_detail": "Locks this PC when the phone moves away (Bluetooth lost for about 30 s). It warns first with “Cancel”."
+      "dynamic_lock_detail": "Locks this PC when the phone moves away (Bluetooth lost for about 30 s). It warns first with “Cancel”.",
+      "nav": "Tab menu",
+      "nav_detail": "Where the tabs to switch pages go.",
+      "nav_left": "Left",
+      "nav_top": "Top",
+      "nav_bottom": "Bottom",
+      "nav_right": "Right",
+      "side_panel": "Show phone panel",
+      "side_panel_detail": "When the window is wide, the phone status and its notifications are always shown next to the page."
     },
     "theme": {
       "dark": "Dark",
@@ -228,7 +236,16 @@
       "call_number": "Call {number}",
       "calling": "Calling {number} from the phone…",
       "recent": "Recent",
-      "empty": "No calls (or the call log permission is missing on the phone)."
+      "empty": "No calls (or the call log permission is missing on the phone).",
+      "incoming": "Incoming call",
+      "dialing": "Calling…",
+      "active": "In call",
+      "kind_incoming": "Incoming",
+      "kind_outgoing": "Outgoing",
+      "kind_missed": "Missed",
+      "kind_rejected": "Declined",
+      "kind_blocked": "Blocked",
+      "kind_voicemail": "Voicemail"
     },
     "clip": {
       "subtitle": "Copy on one side, paste on the other",
@@ -313,6 +330,13 @@
       "delete_question": "Delete this photo from the phone?",
       "deleted": "Photo deleted from the phone",
       "confirm_on_phone": "Confirm it on the phone: you got a notification to delete it."
+    },
+    "panel": {
+      "connected": "Connected",
+      "disconnected": "Phone disconnected",
+      "disconnected_detail": "Open kushare on the phone or bring it closer to the PC.",
+      "notifications": "Notifications",
+      "dismiss_all": "Clear all"
     }
   },
   "tray": {

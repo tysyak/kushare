@@ -511,7 +511,9 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
             }
         },
         LinkCommand::Calls { device, limit } => {
-            for (number, name, date, duration, kind) in daemon.call_log(&device, limit).await? {
+            for (number, name, date, duration, kind, _photo) in
+                daemon.call_log(&device, limit).await?
+            {
                 let who = if name.is_empty() {
                     number
                 } else {
@@ -531,7 +533,7 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
         }
         LinkCommand::Contacts { device, search } => {
             let search = search.map(|s| s.to_lowercase());
-            for (name, numbers, starred) in daemon.contacts(&device, false).await? {
+            for (name, numbers, starred, _photo) in daemon.contacts(&device, false).await? {
                 if search.as_ref().is_some_and(|q| {
                     !name.to_lowercase().contains(q) && !numbers.iter().any(|n| n.contains(q))
                 }) {

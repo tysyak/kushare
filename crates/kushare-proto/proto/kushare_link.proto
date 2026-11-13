@@ -203,6 +203,8 @@ message Feature {
     CommandResult command_result = 32;
     LanAddress lan_address = 33;
     LanStatus lan_status = 34;
+    ContactPhotosRequest contact_photos_request = 35;
+    ContactPhotos contact_photos = 36;
   }
 }
 
@@ -474,6 +476,9 @@ message CallLogEntry {
   int64 date_ms = 3;
   uint32 duration_s = 4;
   CallType type = 5;
+  // Foto del contacto: "<contactId>-<photoId>" (cambia si cambia la foto);
+  // vacía si no tiene. Se pide aparte con `ContactPhotosRequest`.
+  string photo_key = 6;
 }
 
 message CallLog {
@@ -491,6 +496,8 @@ message Contact {
   string name = 1;
   repeated string numbers = 2;
   bool starred = 3;
+  // Como `CallLogEntry.photo_key`.
+  string photo_key = 4;
 }
 
 message Contacts {
@@ -562,4 +569,24 @@ message LanAddress {
 // muestren "Bluetooth + Wi-Fi" solo cuando de verdad se alcanzan por la red.
 message LanStatus {
   bool ready = 1;
+}
+
+// Pide las miniaturas de las fotos de contacto con estas claves
+// (`photo_key`). Como mucho 60 por petición.
+message ContactPhotosRequest {
+  uint64 request_id = 1;
+  repeated string keys = 2;
+}
+
+message ContactPhoto {
+  string key = 1;
+  // JPEG o PNG pequeño (~96 px, como mucho 64 KB).
+  bytes image = 2;
+}
+
+// Las que no existen o no se pudieron leer, se omiten.
+message ContactPhotos {
+  uint64 request_id = 1;
+  repeated ContactPhoto photos = 2;
+  string error = 3;
 }

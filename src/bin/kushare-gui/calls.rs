@@ -184,6 +184,7 @@ impl App {
 
     pub(crate) fn calls_view(&self, c: Colors) -> Element<'_, Message> {
         let s = &self.calls;
+        let compact = self.layout().compact;
         let col =
             column![self.title(c, t("gui.nav.calls"), t("gui.calls.subtitle").into())].spacing(14);
         if self.phone_peers().is_empty() {
@@ -195,8 +196,33 @@ impl App {
         if let Some(err) = &s.error {
             col = col.push(text(err).color(c.error));
         }
+        // Como en Enlace Móvil: los recientes a la izquierda, ocupando el
+        // alto, y el teclado a la derecha. En ventanas estrechas, apilados.
+        if compact {
+            return col
+                .push(self.dial_pad(c))
+                .push(self.recent_calls(c, false))
+                .into();
+        }
+        col.push(
+            row![
+                container(self.recent_calls(c, true))
+                    .width(Length::FillPortion(3))
+                    .height(Length::Fill),
+                container(scrollable(self.dial_pad(c)).height(Length::Fill))
+                    .width(Length::FillPortion(2))
+                    .height(Length::Fill),
+            ]
+            .spacing(16)
+            .height(Length::Fill),
+        )
+        .height(Length::Fill)
+        .into()
+    }
 
-        // Teclado.
+    /// Teclado, botón de llamar y contactos que coinciden con lo escrito.
+    fn dial_pad(&self, c: Colors) -> Element<'_, Message> {
+        let s = &self.calls;
         let display = row![
             text_input(t("gui.calls.type"), &s.input)
                 .on_input(|v| Message::Calls(Msg::Input(v)))
@@ -212,6 +238,22 @@ impl App {
         .spacing(6)
         .align_y(Alignment::Center);
         let mut pad = column![display].spacing(10);
+
+        // Contactos que coinciden (por número, nombre o teclas), arriba del
+        // teclado para verlos mientras se escribe.
+        if !s.input.is_empty() {
+            let found: Vec<&ContactRow> = s
+                .contacts
+                .iter()
+                .filter(|ct| matches(ct, &s.input))
+                .take(4)
+                .collect();
+            for ct in found {
+                for n in ct.1.iter().take(2) {
+                    pad = pad.push(self.call_row(c, &ct.0, &ct.3, None, n.clone(), n.clone()));
+                }
+            }
+        }
         for chunk in KEYS.chunks(3) {
             let mut r = row![].spacing(10);
             for (key, letters) in chunk {
@@ -261,45 +303,27 @@ impl App {
                 (!number.is_empty()).then_some(Message::Calls(Msg::Dial(String::new()))),
             ),
         );
-
-        // Sugerencias de contactos.
-        let found: Vec<&ContactRow> = s
-            .contacts
-            .iter()
-            .filter(|ct| matches(ct, &s.input))
-            .take(6)
-            .collect();
-        for ct in found {
-            for n in ct.1.iter().take(2) {
-                pad = pad.push(self.call_row(
-                    c,
-                    Icon::Person,
-                    c.secondary,
-                    ct.0.clone(),
-                    n.clone(),
-                    n.clone(),
-                ));
-            }
-        }
-        let pad = container(pad)
+        container(pad)
             .padding(18)
-            .width(Length::FillPortion(2))
-            .style(style::card(c.container_high, c.on_surface, Shape::Wide));
+            .width(Length::Fill)
+            .style(style::card(c.container_high, c.on_surface, Shape::Wide))
+            .into()
+    }
 
-        // Recientes.
-        let mut recents = column![
-            row![
-                self.section(c, t("gui.calls.recent")),
-                space().width(Length::Fill),
-                button(labeled(Icon::Refresh, t("gui.photos.reload"), c.primary))
-                    .style(style::button(c, ButtonKind::Text))
-                    .on_press_maybe((!s.loading).then_some(Message::Calls(Msg::Load))),
-            ]
-            .align_y(Alignment::Center)
+    /// Llamadas recientes; `fill`: lista desplazable que llena el alto.
+    fn recent_calls(&self, c: Colors, fill: bool) -> Element<'_, Message> {
+        let s = &self.calls;
+        let header = row![
+            self.section(c, t("gui.calls.recent")),
+            space().width(Length::Fill),
+            button(labeled(Icon::Refresh, t("gui.photos.reload"), c.primary))
+                .style(style::button(c, ButtonKind::Text))
+                .on_press_maybe((!s.loading).then_some(Message::Calls(Msg::Load))),
         ]
-        .spacing(6);
+        .align_y(Alignment::Center);
+        let mut list = column![].spacing(6);
         if s.log.is_empty() {
-            recents = recents.push(
+            list = list.push(
                 text(if s.loading {
                     t("gui.common.loading")
                 } else {
@@ -308,17 +332,20 @@ impl App {
                 .color(c.on_surface_variant),
             );
         }
-        for (number, name, date, duration, kind) in &s.log {
-            let (icon, color) = match kind.as_str() {
-                "outgoing" => (Icon::CallMade, c.primary),
-                "missed" | "rejected" | "blocked" => (Icon::CallMissed, c.error),
-                _ => (Icon::CallReceived, c.tertiary),
+        for (number, name, date, duration, kind, photo) in &s.log {
+            let (icon, color, label) = match kind.as_str() {
+                "outgoing" => (Icon::CallMade, c.primary, t("gui.calls.kind_outgoing")),
+                "missed" => (Icon::CallMissed, c.error, t("gui.calls.kind_missed")),
+                "rejected" => (Icon::CallMissed, c.error, t("gui.calls.kind_rejected")),
+                "blocked" => (Icon::CallMissed, c.error, t("gui.calls.kind_blocked")),
+                "voicemail" => (
+                    Icon::CallReceived,
+                    c.tertiary,
+                    t("gui.calls.kind_voicemail"),
+                ),
+                _ => (Icon::CallReceived, c.tertiary, t("gui.calls.kind_incoming")),
             };
-            let who = if name.is_empty() {
-                number.clone()
-            } else {
-                name.clone()
-            };
+            let who = if name.is_empty() { number } else { name };
             let mut detail = fmt_time(*date);
             if *duration > 0 {
                 detail = format!("{detail} · {}:{:02}", duration / 60, duration % 60);
@@ -326,33 +353,52 @@ impl App {
             if !name.is_empty() {
                 detail = format!("{number} · {detail}");
             }
-            recents = recents.push(self.call_row(c, icon, color, who, detail, number.clone()));
+            list = list.push(self.call_row(
+                c,
+                who,
+                photo,
+                Some((icon, color, label)),
+                detail,
+                number.clone(),
+            ));
         }
-        let recents = container(
-            scrollable(recents.padding(Padding::default().right(14.0)))
-                .height(Length::Fixed(560.0)),
-        )
-        .width(Length::FillPortion(3));
-        col.push(row![pad, recents].spacing(16)).into()
+        if fill {
+            column![
+                header,
+                scrollable(list.padding(Padding::default().right(14.0))).height(Length::Fill)
+            ]
+            .spacing(6)
+            .height(Length::Fill)
+            .into()
+        } else {
+            column![header, list].spacing(6).into()
+        }
     }
 
+    /// Fila de una llamada o un contacto: avatar (foto o iniciales), nombre,
+    /// tipo de llamada (si lo hay) y botones de mensaje y llamar.
     fn call_row<'a>(
         &self,
         c: Colors,
-        icon: Icon,
-        color: Color,
-        title: String,
+        title: &str,
+        photo: &str,
+        kind: Option<(Icon, Color, &'static str)>,
         detail: String,
         number: String,
     ) -> Element<'a, Message> {
+        let mut texts = column![text(title.to_string()).size(15).font(SEMIBOLD)].spacing(1);
+        if let Some((icon, color, label)) = kind {
+            texts = texts.push(
+                row![icon.view(14.0, color), text(label).size(12).color(color)]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+            );
+        }
+        texts = texts.push(text(detail).size(12).color(c.on_surface_variant));
         container(
             row![
-                icon.view(20.0, color),
-                column![
-                    text(title).size(15).font(SEMIBOLD),
-                    text(detail).size(12).color(c.on_surface_variant)
-                ]
-                .width(Length::Fill),
+                avatar(c, title, photo, 40.0),
+                texts.width(Length::Fill),
                 button(Icon::Message.view(18.0, c.on_secondary_container))
                     .padding(8)
                     .style(style::button(c, ButtonKind::Tonal))
@@ -378,7 +424,12 @@ mod tests {
 
     #[test]
     fn contacts_match_by_keys_name_or_number() {
-        let ana: ContactRow = ("Ana López".into(), vec!["+52 55 1234 5678".into()], false);
+        let ana: ContactRow = (
+            "Ana López".into(),
+            vec!["+52 55 1234 5678".into()],
+            false,
+            String::new(),
+        );
         assert!(matches(&ana, "262")); // A-N-A
         assert!(matches(&ana, "567")); // L-O-P (segunda palabra)
         assert!(matches(&ana, "lopez")); // sin acento

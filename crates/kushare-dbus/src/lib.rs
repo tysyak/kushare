@@ -72,11 +72,13 @@ pub type SmsThreadRow = (String, String, String, String, i64, bool, u32, bool);
 pub type SmsRow = (String, String, String, i64, bool, bool, bool);
 
 /// Llamada del registro: (número, nombre, fecha en ms, duración en s, tipo
-/// "incoming"|"outgoing"|"missed"|"rejected"|"blocked"|"voicemail").
-pub type CallLogRow = (String, String, i64, u32, String);
+/// "incoming"|"outgoing"|"missed"|"rejected"|"blocked"|"voicemail", ruta
+/// local de la foto del contacto o "").
+pub type CallLogRow = (String, String, i64, u32, String, String);
 
-/// Contacto: (nombre, números, favorito).
-pub type ContactRow = (String, Vec<String>, bool);
+/// Contacto: (nombre, números, favorito, ruta local de la foto o "" — solo
+/// las ya guardadas en el PC).
+pub type ContactRow = (String, Vec<String>, bool, String);
 
 /// Notificación activa del teléfono: (key, app_id, app, título, texto,
 /// fecha en ms, ruta del icono o "", acciones (id, etiqueta, es_respuesta)).

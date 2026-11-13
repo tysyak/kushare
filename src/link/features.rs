@@ -40,6 +40,10 @@ const BATTERY_POLL: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// Las listas largas (contactos, SMS) por Bluetooth tardan más.
 const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Fotos de contacto: cuántas se piden a la vez y cuánto se espera (son un
+/// adorno: si tardan, se muestran las iniciales).
+const CONTACT_PHOTOS_MAX: usize = 60;
+const CONTACT_PHOTOS_TIMEOUT: Duration = Duration::from_secs(10);
 /// Una foto grande por Bluetooth puede tardar: 5 min de margen (10 de fondo).
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 const BACKGROUND_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -149,6 +153,9 @@ pub struct Features {
     /// Fotos descargándose ahora (peer, id), para no pedirlas dos veces.
     inflight: Mutex<HashSet<(String, String)>>,
     contacts: Mutex<HashMap<String, (Instant, Vec<pb::Contact>)>>,
+    /// Fotos de contacto que el teléfono no devolvió: (peer, clave). No se
+    /// vuelven a pedir hasta reiniciar.
+    photo_missing: Mutex<HashSet<(String, String)>>,
     /// Dónde escucha cada teléfono en la red local (modo híbrido).
     lan: Mutex<HashMap<String, Vec<std::net::SocketAddr>>>,
     /// ¿Se alcanza al peer por Wi-Fi? (resultado de la última prueba).
@@ -199,6 +206,7 @@ impl Features {
             downloads: Mutex::default(),
             inflight: Mutex::default(),
             contacts: Mutex::default(),
+            photo_missing: Mutex::default(),
             lan: Mutex::default(),
             lan_ready: Mutex::default(),
             lan_probe,
@@ -325,6 +333,7 @@ impl Features {
             F::SmsMessages(r) => Some(r.request_id),
             F::CallLog(r) => Some(r.request_id),
             F::Contacts(r) => Some(r.request_id),
+            F::ContactPhotos(r) => Some(r.request_id),
             F::ActiveNotifications(r) => Some(r.request_id),
             F::Wallpaper(r) => Some(r.request_id),
             F::CommandResult(r) => Some(r.request_id),
@@ -438,6 +447,8 @@ impl Features {
             | F::CallLog(_)
             | F::ContactsRequest(_)
             | F::Contacts(_)
+            | F::ContactPhotosRequest(_)
+            | F::ContactPhotos(_)
             | F::Dial(_)
             | F::ActiveNotificationsRequest(_)
             | F::ActiveNotifications(_)
@@ -470,6 +481,22 @@ impl Features {
     pub async fn ensure_bulk(&self, peer_id: &str) {
         let ok = self.try_bulk(peer_id).await;
         self.set_lan_ready(peer_id, ok);
+    }
+
+    /// Antes de una petición pesada: abre el enlace de datos, salvo que la
+    /// última prueba ya dijo que el Wi-Fi no llega (redes distintas o con
+    /// aislamiento). Así no se esperan 2 s por cada petición: la prueba se
+    /// repite sola al cambiar la red del teléfono o la del PC.
+    async fn bulk_for_request(&self, peer_id: &str) {
+        let known_unreachable = self
+            .lan_ready
+            .lock()
+            .expect("mutex envenenado")
+            .get(peer_id)
+            == Some(&false);
+        if !known_unreachable {
+            self.ensure_bulk(peer_id).await;
+        }
     }
 
     /// Abre el enlace de datos si se puede. `true` si queda abierto.
@@ -649,7 +676,7 @@ impl Features {
         offset: u32,
         limit: u32,
     ) -> anyhow::Result<pb::SmsThreads> {
-        self.ensure_bulk(peer_id).await;
+        self.bulk_for_request(peer_id).await;
         let reply = self
             .request(
                 peer_id,
@@ -677,7 +704,7 @@ impl Features {
         limit: u32,
         before_ms: i64,
     ) -> anyhow::Result<Vec<pb::SmsMessage>> {
-        self.ensure_bulk(peer_id).await;
+        self.bulk_for_request(peer_id).await;
         let thread_id = thread_id.to_string();
         let reply = self
             .request(
@@ -721,7 +748,7 @@ impl Features {
         peer_id: &str,
         limit: u32,
     ) -> anyhow::Result<Vec<pb::CallLogEntry>> {
-        self.ensure_bulk(peer_id).await;
+        self.bulk_for_request(peer_id).await;
         let reply = self
             .request(
                 peer_id,
@@ -749,7 +776,7 @@ impl Features {
         {
             return Ok(list.clone());
         }
-        self.ensure_bulk(peer_id).await;
+        self.bulk_for_request(peer_id).await;
         let reply = self
             .request(
                 peer_id,
@@ -767,6 +794,93 @@ impl Features {
             .expect("mutex envenenado")
             .insert(peer_id.to_string(), (Instant::now(), list.clone()));
         Ok(list)
+    }
+
+    fn contact_photo_path(&self, peer_id: &str, key: &str) -> PathBuf {
+        self.cache_dir
+            .join("contacts")
+            .join(sanitize(peer_id))
+            .join(format!("{}.img", sanitize(key)))
+    }
+
+    /// Foto de contacto ya guardada en este PC (sin pedir nada al teléfono).
+    pub fn cached_contact_photo(&self, peer_id: &str, key: &str) -> Option<PathBuf> {
+        let path = self.contact_photo_path(peer_id, key);
+        (!key.is_empty() && path.exists()).then_some(path)
+    }
+
+    /// Fotos de contacto por clave: las de la caché y, en una sola petición
+    /// corta, las que faltan. Si el teléfono no responde (o es una versión
+    /// sin fotos), simplemente no hay foto.
+    pub async fn contact_photos(
+        &self,
+        peer_id: &str,
+        keys: impl IntoIterator<Item = String>,
+    ) -> HashMap<String, PathBuf> {
+        let mut found = HashMap::new();
+        let mut missing: Vec<String> = Vec::new();
+        {
+            let skip = self.photo_missing.lock().expect("mutex envenenado");
+            for key in keys {
+                if key.is_empty() || found.contains_key(&key) || missing.contains(&key) {
+                    continue;
+                }
+                match self.cached_contact_photo(peer_id, &key) {
+                    Some(path) => {
+                        found.insert(key, path);
+                    }
+                    None if !skip.contains(&(peer_id.to_string(), key.clone())) => {
+                        missing.push(key)
+                    }
+                    None => {}
+                }
+            }
+        }
+        missing.truncate(CONTACT_PHOTOS_MAX);
+        if missing.is_empty() {
+            return found;
+        }
+        self.bulk_for_request(peer_id).await;
+        let asked = missing.clone();
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| {
+                    F::ContactPhotosRequest(pb::ContactPhotosRequest {
+                        request_id,
+                        keys: asked,
+                    })
+                },
+                CONTACT_PHOTOS_TIMEOUT,
+            )
+            .await;
+        let photos = match reply {
+            Ok(F::ContactPhotos(p)) if p.error.is_empty() => p.photos,
+            Ok(F::ContactPhotos(p)) => {
+                tracing::debug!("fotos de contacto: {}", p.error);
+                return found;
+            }
+            _ => return found,
+        };
+        for photo in photos {
+            if !missing.contains(&photo.key) || photo.image.is_empty() {
+                continue;
+            }
+            let path = self.contact_photo_path(peer_id, &photo.key);
+            match write_private(&path, &photo.image) {
+                Ok(()) => {
+                    found.insert(photo.key, path);
+                }
+                Err(err) => tracing::warn!("no se pudo guardar una foto de contacto: {err}"),
+            }
+        }
+        let mut skip = self.photo_missing.lock().expect("mutex envenenado");
+        for key in missing {
+            if !found.contains_key(&key) {
+                skip.insert((peer_id.to_string(), key));
+            }
+        }
+        found
     }
 
     /// Llama a `number` desde el teléfono.
@@ -787,7 +901,7 @@ impl Features {
         &self,
         peer_id: &str,
     ) -> anyhow::Result<Vec<(pb::Notification, Option<PathBuf>)>> {
-        self.ensure_bulk(peer_id).await;
+        self.bulk_for_request(peer_id).await;
         let have_icons = self.manager.cached_icon_hashes();
         let reply = self
             .request(
@@ -844,7 +958,7 @@ impl Features {
                 });
             }
         }
-        self.ensure_bulk(peer_id).await;
+        self.bulk_for_request(peer_id).await;
         let reply = self
             .request(
                 peer_id,
@@ -934,7 +1048,7 @@ impl Features {
         offset: u32,
         limit: u32,
     ) -> anyhow::Result<(u32, Vec<PhotoEntry>)> {
-        self.ensure_bulk(peer_id).await;
+        self.bulk_for_request(peer_id).await;
         let dir = self.thumb_dir(peer_id);
         create_private_dir(&dir)?;
         let have = cached_thumbnails(&dir);
@@ -1091,7 +1205,7 @@ impl Features {
         id: &str,
         background: bool,
     ) -> anyhow::Result<PathBuf> {
-        self.ensure_bulk(peer_id).await;
+        self.bulk_for_request(peer_id).await;
         let request_id = self.new_request_id();
         let (tx, rx) = oneshot::channel();
         let dir = self.photo_dir(peer_id);
@@ -1312,7 +1426,12 @@ async fn prefetch_task(features: Arc<Features>, mut rx: mpsc::UnboundedReceiver<
                     .collect(),
                 None => Vec::new(),
             };
-            if settings.photo_prefetch {
+            // Solo por Wi-Fi (`list_photos` ya probó el enlace de datos): por
+            // Bluetooth, precargar fotos ocupa el enlace minutos y retrasa todo
+            // lo demás (SMS, llamadas, notificaciones). Las que se abren a mano
+            // se siguen descargando por Bluetooth.
+            let wifi = features.lan_ready(&peer) || features.manager.has_bulk(&peer);
+            if settings.photo_prefetch && wifi {
                 // Las nuevas primero, para que "Ver" del aviso sea instantáneo.
                 for photo in new.iter().chain(list.iter()) {
                     if features.original_path(&peer, &photo.info.id).is_some()

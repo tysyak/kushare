@@ -47,6 +47,8 @@ pub enum Msg {
     Sent(Result<(), String>),
     New,
     NewTo(String),
+    /// Volver a la lista (ventana estrecha: se ve una cosa u otra).
+    Back,
     /// Señal del daemon: (peer, conversación).
     Changed(String, String),
 }
@@ -158,6 +160,12 @@ impl App {
                 s.messages.clear();
                 s.new_to = Some(String::new());
                 s.draft.clear();
+                Task::none()
+            }
+            Msg::Back => {
+                s.selected = None;
+                s.new_to = None;
+                s.messages.clear();
                 Task::none()
             }
             Msg::NewTo(to) => {
@@ -282,6 +290,13 @@ impl App {
             let (id, address, name, snippet, date, unread, _count, outgoing) = th;
             let selected = s.selected.as_deref() == Some(id.as_str());
             let who = if name.is_empty() { address } else { name };
+            // Nombres sin espacios muy largos (códigos) no se pueden partir:
+            // recortarlos para que no tapen la fecha.
+            let who = if who.chars().count() > 32 {
+                format!("{}…", who.chars().take(31).collect::<String>())
+            } else {
+                who.clone()
+            };
             let preview: String = snippet.replace('\n', " ").chars().take(60).collect();
             let preview = if *outgoing {
                 tf("gui.sms.you", &[("text", &preview)])
@@ -291,29 +306,18 @@ impl App {
             list = list.push(
                 button(
                     row![
-                        shape_icon(
-                            Icon::Person,
-                            Blob::Circle,
-                            if *unread {
-                                c.primary
-                            } else {
-                                c.secondary_container
-                            },
-                            if *unread {
-                                c.on_primary
-                            } else {
-                                c.on_secondary_container
-                            },
-                            40.0,
-                            0.0
-                        ),
+                        avatar(c, &who, "", 40.0),
                         column![
                             row![
                                 text(who.clone())
                                     .size(15)
                                     .font(if *unread { BOLD } else { SEMIBOLD })
                                     .width(Length::Fill),
-                                text(fmt_time(*date)).size(12).color(c.on_surface_variant),
+                                text(fmt_time(*date)).size(12).color(if *unread {
+                                    c.primary
+                                } else {
+                                    c.on_surface_variant
+                                }),
                             ]
                             .spacing(6),
                             text(preview).size(13).color(c.on_surface_variant),
@@ -341,21 +345,44 @@ impl App {
                 .on_press(Message::Sms(Msg::Open(id.clone()))),
             );
         }
-        let threads =
-            container(scrollable(list).height(Length::Fixed(520.0))).width(Length::FillPortion(2));
-
+        let threads = container(
+            scrollable(list.padding(Padding::default().right(10.0))).height(Length::Fill),
+        )
+        .height(Length::Fill);
         let conversation = container(self.sms_conversation(c))
             .padding(16)
-            .width(Length::FillPortion(3))
-            .height(Length::Fixed(520.0))
+            .height(Length::Fill)
             .style(style::card(c.container_high, c.on_surface, Shape::List));
-        col.push(row![threads, conversation].spacing(14)).into()
+        // Ventana estrecha: la lista o la conversación abierta, no ambas.
+        let open = s.selected.is_some() || s.new_to.is_some();
+        let body: Element<'_, Message> = match (self.layout().compact, open) {
+            (true, false) => threads.width(Length::Fill).into(),
+            (true, true) => conversation.width(Length::Fill).into(),
+            (false, _) => row![
+                threads.width(Length::FillPortion(2)),
+                conversation.width(Length::FillPortion(3))
+            ]
+            .spacing(14)
+            .height(Length::Fill)
+            .into(),
+        };
+        col.push(body).height(Length::Fill).into()
     }
 
     fn sms_conversation(&self, c: Colors) -> Element<'_, Message> {
         let s = &self.sms;
+        let back: Element<'_, Message> = if self.layout().compact {
+            button(Icon::ChevronLeft.view(22.0, c.on_surface))
+                .padding(6)
+                .style(style::button(c, ButtonKind::Text))
+                .on_press(Message::Sms(Msg::Back))
+                .into()
+        } else {
+            space().width(0).into()
+        };
         let header: Element<'_, Message> = match (&s.new_to, &s.selected) {
             (Some(to), _) => row![
+                back,
                 text(t("gui.sms.to")).font(SEMIBOLD),
                 text_input(t("gui.sms.number"), to)
                     .on_input(|v| Message::Sms(Msg::NewTo(v)))
@@ -377,8 +404,10 @@ impl App {
                     .unwrap_or_default();
                 let number = th.map(|t| t.1.clone()).unwrap_or_default();
                 row![
+                    back,
+                    avatar(c, &name, "", 36.0),
                     column![
-                        text(name).size(18).font(BOLD),
+                        text(name.clone()).size(18).font(BOLD),
                         text(number.clone()).size(12).color(c.on_surface_variant)
                     ]
                     .width(Length::Fill),
@@ -390,6 +419,7 @@ impl App {
                                 .then(|| Message::Calls(super::calls::Msg::Dial(number.clone())))
                         ),
                 ]
+                .spacing(10)
                 .align_y(Alignment::Center)
                 .into()
             }

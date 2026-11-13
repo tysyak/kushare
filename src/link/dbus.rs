@@ -473,6 +473,11 @@ impl DaemonApi {
             .call_log(&id, limit)
             .await
             .map_err(failed)?;
+        let photos = self
+            .link
+            .features
+            .contact_photos(&id, entries.iter().map(|e| e.photo_key.clone()))
+            .await;
         Ok(entries
             .into_iter()
             .map(|e| {
@@ -484,22 +489,35 @@ impl DaemonApi {
                     pb::CallType::Blocked => "blocked",
                     pb::CallType::Voicemail => "voicemail",
                 };
-                (e.number, e.name, e.date_ms, e.duration_s, kind.to_string())
+                let photo = photos
+                    .get(&e.photo_key)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (
+                    e.number,
+                    e.name,
+                    e.date_ms,
+                    e.duration_s,
+                    kind.to_string(),
+                    photo,
+                )
             })
             .collect())
     }
 
     async fn contacts(&self, peer: &str, refresh: bool) -> fdo::Result<Vec<ContactRow>> {
         let id = self.link.resolve(peer).map_err(failed)?;
-        let list = self
-            .link
-            .features
-            .contacts(&id, refresh)
-            .await
-            .map_err(failed)?;
+        let features = &self.link.features;
+        let list = features.contacts(&id, refresh).await.map_err(failed)?;
         Ok(list
             .into_iter()
-            .map(|c| (c.name, c.numbers, c.starred))
+            .map(|c| {
+                let photo = features
+                    .cached_contact_photo(&id, &c.photo_key)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (c.name, c.numbers, c.starred, photo)
+            })
             .collect())
     }
 

@@ -1964,6 +1964,7 @@ pub fn is_heavy(feature: &pb::Feature) -> bool {
                 | F::Contacts(_)
                 | F::ActiveNotifications(_)
                 | F::Wallpaper(_)
+                | F::ContactPhotos(_)
         )
     )
 }
@@ -2021,6 +2022,14 @@ mod tests {
             public_key: identity.public_key().to_vec(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn contact_photos_go_by_the_data_lane() {
+        use pb::feature::Kind as F;
+        let f = |kind| pb::Feature { kind: Some(kind) };
+        assert!(is_heavy(&f(F::ContactPhotos(Default::default()))));
+        assert!(!is_heavy(&f(F::ContactPhotosRequest(Default::default()))));
     }
 
     #[test]

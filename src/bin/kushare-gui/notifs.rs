@@ -14,6 +14,8 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 const GONE_GRACE: Duration = Duration::from_secs(3);
+/// Caracteres del texto de una notificación que se ven en el panel.
+const PANEL_BODY_CHARS: usize = 140;
 
 #[derive(Debug, Clone, Default)]
 pub struct NotifState {
@@ -225,7 +227,7 @@ impl App {
                 Task::none()
             }
             Msg::Changed(peer) => {
-                if s.peer == peer && self.screen == Screen::Notifications {
+                if s.peer == peer && self.notifs_visible() {
                     Task::done(Message::Notifs(Msg::Load))
                 } else {
                     Task::none()
@@ -236,7 +238,6 @@ impl App {
 
     pub(crate) fn notifs_view(&self, c: Colors) -> Element<'_, Message> {
         let s = &self.notifs;
-        let now = Instant::now();
         let shown = s.list.len() - s.leaving.len().min(s.list.len());
         let col = column![self.title(
             c,
@@ -279,6 +280,27 @@ impl App {
         if let Some(err) = &s.error {
             col = col.push(text(err).color(c.error));
         }
+        col.push(
+            scrollable(
+                container(self.notif_cards(c, false)).padding(Padding::default().right(14.0)),
+            )
+            .height(Length::Fill),
+        )
+        .height(Length::Fill)
+        .into()
+    }
+
+    /// Tarjetas de las notificaciones (página o, `compact`, panel lateral).
+    pub(crate) fn notif_cards(&self, c: Colors, compact: bool) -> Element<'_, Message> {
+        let s = &self.notifs;
+        let now = Instant::now();
+        let shown = s.list.len() - s.leaving.len().min(s.list.len());
+        let (icon_size, pad, title_size, body_size) = if compact {
+            (32.0, 12, 14, 13)
+        } else {
+            (40.0, 14, 16, 14)
+        };
+        let mut col = column![];
         if shown == 0 && !s.animating() {
             col = col.push(
                 text(if s.loading {
@@ -299,36 +321,48 @@ impl App {
                     Blob::Circle,
                     c.secondary_container,
                     c.on_secondary_container,
-                    40.0,
+                    icon_size,
                     0.0,
                 )
             } else {
                 iced::widget::image(iced::widget::image::Handle::from_path(icon))
-                    .width(Length::Fixed(40.0))
-                    .height(Length::Fixed(40.0))
-                    .border_radius(20.0)
+                    .width(Length::Fixed(icon_size))
+                    .height(Length::Fixed(icon_size))
+                    .border_radius(icon_size / 2.0)
                     .into()
             };
-            let mut buttons = row![].spacing(8);
+            let mut buttons = row![].spacing(if compact { 4 } else { 8 });
             for (id, label, is_reply) in actions {
                 let msg = if *is_reply {
                     Msg::StartReply(key.clone(), id.clone())
                 } else {
                     Msg::Action(key.clone(), id.clone())
                 };
+                let icon = if *is_reply {
+                    Icon::Reply
+                } else {
+                    Icon::OpenInNew
+                };
+                let content: Element<'_, Message> = if compact {
+                    row![
+                        icon.view(14.0, c.primary),
+                        text(label).size(12).font(SEMIBOLD)
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center)
+                    .into()
+                } else {
+                    labeled(icon, label, c.primary)
+                };
                 buttons = buttons.push(
-                    button(labeled(
-                        if *is_reply {
-                            Icon::Reply
+                    button(content)
+                        .padding(if compact {
+                            Padding::from([4, 10])
                         } else {
-                            Icon::OpenInNew
-                        },
-                        label,
-                        c.primary,
-                    ))
-                    .padding(Padding::from([6, 14]))
-                    .style(style::button(c, ButtonKind::Outlined))
-                    .on_press(Message::Notifs(msg)),
+                            Padding::from([6, 14])
+                        })
+                        .style(style::button(c, ButtonKind::Outlined))
+                        .on_press(Message::Notifs(msg)),
                 );
             }
             let mut body_col = column![
@@ -338,14 +372,22 @@ impl App {
                     text(fmt_time(*date)).size(12).color(c.on_surface_variant),
                 ]
                 .spacing(6),
-                text(title.clone()).size(16).font(BOLD),
+                text(title.clone()).size(title_size).font(BOLD),
             ]
             .spacing(2);
             if !body.is_empty() {
-                body_col = body_col.push(text(body.clone()).size(14));
+                // En el panel, solo el principio de los textos largos.
+                let body = if compact && body.chars().count() > PANEL_BODY_CHARS {
+                    let cut: String = body.chars().take(PANEL_BODY_CHARS).collect();
+                    format!("{}…", cut.trim_end())
+                } else {
+                    body.clone()
+                };
+                body_col = body_col.push(text(body).size(body_size));
             }
             if !actions.is_empty() {
-                body_col = body_col.push(buttons);
+                // En el panel, estrecho, los botones pasan a la línea siguiente.
+                body_col = body_col.push(buttons.wrap().vertical_spacing(4));
             }
             if let Some((rkey, _, draft)) = &s.reply
                 && rkey == key
@@ -380,13 +422,13 @@ impl App {
                             .style(style::button(c, ButtonKind::Text))
                             .on_press(Message::Notifs(Msg::Dismiss(key.clone()))),
                     ]
-                    .spacing(14),
+                    .spacing(if compact { 10 } else { 14 }),
                 )
-                .padding(14)
+                .padding(pad)
                 .width(Length::Fill)
                 .style(style::card(c.container_high, c.on_surface, Shape::List)),
             )
-            .padding(Padding::ZERO.bottom(12));
+            .padding(Padding::ZERO.bottom(if compact { 8 } else { 12 }));
             cards = cards.push(self.notif_motion(key, card.into(), now));
         }
         col.push(cards).into()

@@ -332,3 +332,78 @@ pub fn shape_icon<'a, M: 'a>(
         .height(Length::Fixed(size))
         .into()
 }
+
+/// Avatar de un contacto: su foto en círculo o, si no tiene, sus iniciales
+/// en un círculo de color fijo para ese nombre (sin nombre, un icono).
+pub fn avatar<'a, M: 'a>(
+    c: super::style::Colors,
+    name: &str,
+    photo: &str,
+    size: f32,
+) -> Element<'a, M> {
+    if !photo.is_empty() {
+        return iced::widget::image(iced::widget::image::Handle::from_path(photo))
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(size / 2.0)
+            .into();
+    }
+    let palette = [
+        (c.primary_container, c.on_primary_container),
+        (c.secondary_container, c.on_secondary_container),
+        (c.tertiary_container, c.on_tertiary_container),
+    ];
+    let hash = name
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    let (bg, fg) = palette[hash as usize % palette.len()];
+    let letters = initials(name);
+    let inner: Element<'a, M> = if letters.is_empty() {
+        Icon::Person.view(size * 0.5, fg)
+    } else {
+        iced::widget::text(letters)
+            .size(size * 0.4)
+            .font(iced::Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            })
+            .color(fg)
+            .into()
+    };
+    container(center(inner))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .style(move |_: &iced::Theme| container::Style {
+            background: Some(bg.into()),
+            border: iced::Border {
+                radius: (size / 2.0).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Iniciales (hasta dos) de las palabras que empiezan por letra.
+pub fn initials(name: &str) -> String {
+    name.split_whitespace()
+        .filter_map(|w| w.chars().next())
+        .filter(|ch| ch.is_alphabetic())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::initials;
+
+    #[test]
+    fn initials_skip_numbers_and_symbols() {
+        assert_eq!(initials("ana lópez garcía"), "AL");
+        assert_eq!(initials("Ángel"), "Á");
+        assert_eq!(initials("+52 55 1234"), "");
+        assert_eq!(initials("Mamá ❤"), "M");
+    }
+}

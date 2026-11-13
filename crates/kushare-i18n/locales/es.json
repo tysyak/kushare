@@ -157,7 +157,7 @@
     "settings": {
       "about": "Acerca de",
       "animations": "Animaciones",
-      "animations_detail": "Formas que giran mientras hay conexión o búsqueda.",
+      "animations_detail": "Transiciones suaves y formas que giran mientras hay actividad.",
       "appearance": "Apariencia",
       "check": "Comprobar conexión",
       "check_detail": "Revisa puerto, firewall, mDNS, Bluetooth y notificaciones.",
@@ -184,7 +184,7 @@
       "language_system": "Sistema",
       "language_restart": "Idioma guardado: se aplica al volver a abrir kushare.",
       "prefetch": "Precargar las fotos recientes",
-      "prefetch_detail": "Descarga en segundo plano las últimas fotos del teléfono para que se abran al instante (también por Bluetooth).",
+      "prefetch_detail": "Descarga en segundo plano las últimas fotos del teléfono, cuando está en la misma Wi-Fi, para que se abran al instante.",
       "update_check": "Buscar actualizaciones",
       "update_check_detail": "Mira una vez al día si hay una versión nueva en GitHub.",
       "receive_confirm": "Preguntar antes de recibir por Wi-Fi",
@@ -194,7 +194,15 @@
       "hybrid": "Conexión híbrida (recomendada)",
       "hybrid_detail": "Control, llamadas y notificaciones por Bluetooth (bajo consumo); fotos, SMS y listas por Wi-Fi cuando el teléfono está en la misma red. Apagado: todo por Bluetooth.",
       "dynamic_lock": "Bloqueo dinámico",
-      "dynamic_lock_detail": "Bloquea el PC si el teléfono se aleja (se pierde el Bluetooth unos 30 s). Avisa antes con «Cancelar»."
+      "dynamic_lock_detail": "Bloquea el PC si el teléfono se aleja (se pierde el Bluetooth unos 30 s). Avisa antes con «Cancelar».",
+      "nav": "Menú de pestañas",
+      "nav_detail": "Dónde van las pestañas para cambiar de página.",
+      "nav_left": "Izquierda",
+      "nav_top": "Arriba",
+      "nav_bottom": "Abajo",
+      "nav_right": "Derecha",
+      "side_panel": "Mostrar panel del teléfono",
+      "side_panel_detail": "Si la ventana es ancha, el estado del teléfono y sus notificaciones se ven siempre al lado de la página."
     },
     "theme": {
       "dark": "Oscuro",
@@ -228,7 +236,16 @@
       "call_number": "Llamar al {number}",
       "calling": "Llamando al {number} desde el teléfono…",
       "recent": "Recientes",
-      "empty": "No hay llamadas (o falta el permiso del registro de llamadas en el teléfono)."
+      "empty": "No hay llamadas (o falta el permiso del registro de llamadas en el teléfono).",
+      "incoming": "Llamada entrante",
+      "dialing": "Llamando…",
+      "active": "En llamada",
+      "kind_incoming": "Entrante",
+      "kind_outgoing": "Saliente",
+      "kind_missed": "Perdida",
+      "kind_rejected": "Rechazada",
+      "kind_blocked": "Bloqueada",
+      "kind_voicemail": "Buzón de voz"
     },
     "clip": {
       "subtitle": "Copia en un lado y pega en el otro",
@@ -313,6 +330,13 @@
       "delete_question": "¿Borrar esta foto del teléfono?",
       "deleted": "Foto borrada del teléfono",
       "confirm_on_phone": "Confírmalo en el teléfono: te llegó un aviso para borrarla."
+    },
+    "panel": {
+      "connected": "Conectado",
+      "disconnected": "Teléfono desconectado",
+      "disconnected_detail": "Abre kushare en el teléfono o acércalo al PC.",
+      "notifications": "Notificaciones",
+      "dismiss_all": "Borrar todo"
     }
   },
   "tray": {
