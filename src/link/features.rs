@@ -72,8 +72,16 @@ pub struct PeerState {
     pub battery: Option<pb::BatteryStatus>,
     pub ringer: Option<pb::Ringer>,
     pub call: Option<pb::CallState>,
+    /// Reproductores, sin los bytes de la carátula (van a `art`).
     pub players: Vec<pb::MediaPlayer>,
+    /// Cuándo llegaron los reproductores (ms Unix de este PC): la posición
+    /// se extrapola desde aquí.
+    pub players_at_ms: i64,
+    /// Carátula guardada de cada reproductor (por id).
+    pub art: HashMap<String, PathBuf>,
     pub outputs: Option<pb::AudioOutputs>,
+    /// El teléfono está sonando para encontrarlo.
+    pub finding: bool,
 }
 
 /// Estado local que se manda a cada peer al conectar.
@@ -363,7 +371,24 @@ impl Features {
                 }
             }
             F::MediaPlayers(p) => {
-                state.players = p.players;
+                let art_dir = self.cache_dir.join("art");
+                state.art.clear();
+                state.players = p
+                    .players
+                    .into_iter()
+                    .map(|mut player| {
+                        let art = std::mem::take(&mut player.art);
+                        if let Some(path) = save_art(&art_dir, &art) {
+                            state.art.insert(player.id.clone(), path);
+                        }
+                        player
+                    })
+                    .collect();
+                state.players_at_ms = now_unix_ms();
+                RemoteChange::State
+            }
+            F::FindPhone(f) => {
+                state.finding = f.ring;
                 RemoteChange::State
             }
             F::AudioOutputs(o) => {
@@ -472,6 +497,19 @@ impl Features {
         }
         self.manager
             .send_feature(peer_id, pb::Feature { kind: Some(kind) });
+        Ok(())
+    }
+
+    /// Hace sonar el teléfono para encontrarlo (`ring = false`: lo para).
+    pub fn find_phone(&self, peer_id: &str, ring: bool) -> anyhow::Result<()> {
+        self.send(peer_id, F::FindPhone(pb::FindPhone { ring }))?;
+        // Hasta que el teléfono confirme, se da por hecho.
+        self.peers
+            .lock()
+            .expect("mutex envenenado")
+            .entry(peer_id.to_string())
+            .or_default()
+            .finding = ring;
         Ok(())
     }
 
@@ -1627,6 +1665,41 @@ fn replace_if_changed<T: PartialEq + Clone>(slot: &mut Option<T>, value: &T) -> 
     true
 }
 
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// Guarda una carátula por su hash (la GUI la carga por ruta y la cachea:
+/// una ruta nueva por imagen nueva) y borra las que lleven días sin usarse.
+fn save_art(dir: &Path, image: &[u8]) -> Option<PathBuf> {
+    if image.is_empty() {
+        return None;
+    }
+    let hash = kushare_link::icon_hash(image);
+    let path = dir.join(format!("{}.{}", &hash[..32], image_extension(image)));
+    if !path.exists() {
+        if let Err(err) = write_private(&path, image) {
+            tracing::debug!(%err, "no se pudo guardar una carátula");
+            return None;
+        }
+        // Limpieza: las de hace más de 3 días.
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let old = std::time::SystemTime::now() - Duration::from_secs(3 * 24 * 3600);
+            for e in entries.flatten() {
+                if e.metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t < old)
+                {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
+    Some(path)
+}
+
 /// Extensión de una imagen según sus primeros bytes (Android da JPEG o PNG).
 fn image_extension(data: &[u8]) -> &'static str {
     if data.starts_with(b"\x89PNG") {
@@ -1930,6 +2003,7 @@ async fn mpris_players(conn: &zbus::Connection) -> Vec<pb::MediaPlayer> {
             can_pause: as_bool(player.get("CanPause")),
             can_next: as_bool(player.get("CanGoNext")),
             can_previous: as_bool(player.get("CanGoPrevious")),
+            ..Default::default()
         });
     }
     players

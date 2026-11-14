@@ -205,6 +205,7 @@ message Feature {
     LanStatus lan_status = 34;
     ContactPhotosRequest contact_photos_request = 35;
     ContactPhotos contact_photos = 36;
+    FindPhone find_phone = 37;
   }
 }
 
@@ -236,6 +237,12 @@ message MediaPlayer {
   bool can_pause = 8;
   bool can_next = 9;
   bool can_previous = 10;
+  // Carátula (JPEG/PNG pequeño, ~200 px). Vacía si no hay.
+  bytes art = 11;
+  // Posición en el momento de mandar el mensaje y duración (0 = no se
+  // sabe). El receptor la extrapola mientras suena.
+  int64 position_ms = 12;
+  int64 duration_ms = 13;
 }
 
 // Lista completa de reproductores del emisor.
@@ -569,6 +576,14 @@ message LanAddress {
 // muestren "Bluetooth + Wi-Fi" solo cuando de verdad se alcanzan por la red.
 message LanStatus {
   bool ready = 1;
+}
+
+// Encontrar el teléfono. PC → teléfono: `ring = true` lo hace sonar (aunque
+// esté en silencio o en No molestar) con la linterna parpadeando hasta que
+// se silencie o pasen 5 min; `false` lo para. Teléfono → PC: su estado
+// (se manda al empezar y al terminar).
+message FindPhone {
+  bool ring = 1;
 }
 
 // Pide las miniaturas de las fotos de contacto con estas claves

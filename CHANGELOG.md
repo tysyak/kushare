@@ -6,6 +6,21 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+### Añadido
+- **Encontrar teléfono**: lo hace sonar a todo volumen aunque esté en silencio,
+  vibración o No molestar, con la linterna parpadeando, hasta que se silencie
+  en su pantalla o pasen 5 min. GUI (panel del teléfono y página *Teléfono*),
+  CLI (`kushare find <disp>` / `--stop`) y TUI (tecla `f`). Protocolo:
+  `Feature.find_phone`.
+- **Lo que suena en el teléfono** con su carátula, título, artista, controles y
+  barra de progreso: en el panel del teléfono de la GUI, en la TUI y en
+  `kushare status`. Protocolo: `MediaPlayer.art/position_ms/duration_ms`.
+- **TUI nueva, parecida a la GUI**: ahora controla al daemon por D-Bus, con
+  pestañas (Inicio, Teléfono, Mensajes, Llamadas, Notificaciones, Portapapeles,
+  Dispositivos, Enviar) y, si la terminal es ancha, el panel del teléfono con su
+  estado, lo que suena y sus notificaciones. Sustituye a la TUI antigua de
+  Quick Share (que tenía su propio receptor).
+
 ## [0.6.1] - 2026-11-13
 
 ### Corregido

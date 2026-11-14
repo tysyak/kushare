@@ -43,7 +43,7 @@ Scaffold inicial funcional:
 - **`crates/kushare-dbus`** — cliente D-Bus del daemon (`org.kushare.Daemon`), compartido por la CLI y la GUI.
 - **`kushare-gui`** (`src/bin/kushare-gui/`) — interfaz gráfica (iced).
 - **`crates/kushare-link`** — enlace persistente kushare ⇄ kushare: identidad Ed25519, emparejado con PIN, reconexión automática, notificaciones, filtros por app y configuración sincronizada. Sin dependencias de Linux de escritorio: lo usa también la app Android.
-- **`kushare-tui`** (`src/bin/kushare-tui/`) — interfaz de terminal con dos pantallas, "Enviar" y "Recibir", al estilo de la app Quick Share de Android (ver más abajo).
+- **`kushare-tui`** (`src/bin/kushare-tui/`) — interfaz de terminal parecida a la GUI, que controla al daemon (ver más abajo).
 
 Varias partes del protocolo (ver comentarios `TODO(android-validation)` en el código) se basan en documentación pública de implementaciones de referencia (`Martichou/rquickshare`, `grishka/NearDrop`) y en capturas propias contra un Android real, pero no están completamente confirmadas byte a byte.
 
@@ -228,16 +228,15 @@ sudo ufw allow 47816/tcp && sudo ufw allow 5353/udp   # enlace persistente
 
 ## `kushare-tui`
 
-Interfaz de terminal con dos pantallas, al estilo de la app Quick Share de Android:
+El "Enlace Móvil" en la terminal, como la GUI: controla al daemon por D-Bus (tiene que estar corriendo). Pestañas arriba (Inicio, Teléfono, Mensajes, Llamadas, Notificaciones, Portapapeles, Dispositivos, Enviar) y, si la terminal es ancha, el panel del teléfono a la izquierda: estado, lo que suena (con su barra de progreso) y sus notificaciones.
 
 ```sh
-cargo run --bin kushare-tui                        # menú: Enviar / Recibir
-cargo run --bin kushare-tui -- --receive            # entra directo a "Recibir"
-cargo run --bin kushare-tui -- --send="archivo.txt" # entra directo a "Enviar" con ese archivo
+kushare-tui                          # pestaña Inicio
+kushare-tui --screen calls           # abre una pestaña (phone, messages, calls, notifications, …)
+kushare-tui --send="archivo.txt"     # pestaña Enviar con ese archivo
 ```
 
-- **Recibir**: nombre de dispositivo editable (`e`), visibilidad por mDNS activable/desactivable (`v`), y un log en vivo de la actividad de transferencia.
-- **Enviar**: si no se pasó `--send`, ofrece elegir el archivo con [`yazi`](https://yazi-rs.github.io/) (tecla `y`, si está instalado) o escribiendo la ruta a mano (`p`); después lista los dispositivos descubiertos por mDNS en vivo y envía con Enter.
+Teclas: `Tab`/`←→` o `1`–`8` cambian de pestaña, `↑↓` (`j k`) se mueven, `Enter` abre o usa, `f` busca el teléfono, `Espacio` reproduce/pausa, `< >` anterior/siguiente, `r` recarga y `q` sale. En cada pestaña, la línea de abajo dice sus teclas (p. ej. en Notificaciones: `x` descartar, `X` todas, `w` responder).
 
 ## Empaquetado
 

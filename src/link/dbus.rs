@@ -86,6 +86,16 @@ fn peer_state_reply(state: &super::features::PeerState) -> PeerStateReply {
                 p.can_pause,
                 p.can_next,
                 p.can_previous,
+                (
+                    state
+                        .art
+                        .get(&p.id)
+                        .map(|a| a.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    p.position_ms,
+                    p.duration_ms,
+                    state.players_at_ms,
+                ),
             )
         })
         .collect();
@@ -105,6 +115,7 @@ fn peer_state_reply(state: &super::features::PeerState) -> PeerStateReply {
         players,
         selectable,
         outputs,
+        state.finding,
     )
 }
 
@@ -304,6 +315,11 @@ impl DaemonApi {
             .features
             .set_audio_output(&id, output)
             .map_err(failed)
+    }
+
+    fn find_phone(&self, peer: &str, ring: bool) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        self.link.features.find_phone(&id, ring).map_err(failed)
     }
 
     fn set_ringer(&self, peer: &str, mode: &str) -> fdo::Result<()> {

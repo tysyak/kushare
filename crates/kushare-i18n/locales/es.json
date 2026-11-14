@@ -336,7 +336,10 @@
       "disconnected": "Teléfono desconectado",
       "disconnected_detail": "Abre kushare en el teléfono o acércalo al PC.",
       "notifications": "Notificaciones",
-      "dismiss_all": "Borrar todo"
+      "dismiss_all": "Borrar todo",
+      "find": "Buscar teléfono",
+      "find_stop": "Dejar de sonar",
+      "find_started": "El teléfono está sonando: silencíalo en su pantalla."
     }
   },
   "tray": {
@@ -365,5 +368,35 @@
     "send_file_to": "Enviar archivo…",
     "send_notifications": "Enviarle mis notificaciones",
     "unpair": "Desemparejar"
+  },
+  "tui": {
+    "copied": "Copiado en el PC.",
+    "no_phone": "No hay ningún teléfono conectado por Bluetooth.",
+    "sent": "Mensaje enviado.",
+    "not_a_file": "No es un archivo: {path}",
+    "daemon_off": "El daemon de kushare no está corriendo.",
+    "daemon_off_detail": "Arráncalo con `kushare` (o desde el menú de aplicaciones); esta pantalla se conecta sola.",
+    "now_playing": "Sonando",
+    "keys_title": "Teclas",
+    "keys_tabs": "Tab / ← → o 1–8: cambiar de pestaña",
+    "keys_move": "↑ ↓ (j k): moverse · Enter: abrir o usar · r: recargar",
+    "keys_media": "Espacio: reproducir/pausar · < >: anterior/siguiente",
+    "keys_find": "f: buscar el teléfono (suena aunque esté en silencio) · otra vez f: pararlo",
+    "keys_quit": "q: salir",
+    "keys_phone": "Timbre: n normal · v vibrar · s silencio — Llamada: a contestar · h colgar · m silenciar micro",
+    "write": "escribir",
+    "dial": "marcar",
+    "copy": "copiar",
+    "offline": "sin conexión",
+    "scan": "buscar",
+    "no_file": "(ningún archivo)",
+    "keys_send": "e: elegir archivo (ruta) · Enter: mandarlo al teléfono por Bluetooth",
+    "input_sms": "Mensaje",
+    "input_dial": "Número",
+    "input_reply": "Respuesta",
+    "input_path": "Archivo",
+    "keys_notifs": "x descartar · X todas · Enter acción · w responder",
+    "keys_messages": "Enter abrir · w escribir · Esc volver",
+    "keys_short": "Tab pestañas · ↑↓ mover · f buscar teléfono · Espacio ⏯ · q salir"
   }
 }

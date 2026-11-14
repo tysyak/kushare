@@ -191,6 +191,13 @@ impl App {
         .align_y(Alignment::Center);
         let mut col = column![header].spacing(12);
 
+        // Lo que suena ahora (entre el estado y los botones de timbre).
+        if let Some((_, _, _, players, ..)) = state
+            && let Some(media) = self.media_card(c, &p.id, players)
+        {
+            col = col.push(media);
+        }
+
         // Timbre: tres botones conectados, como en Enlace Móvil.
         if let Some((_, ringer, ..)) = state
             && !ringer.is_empty()
@@ -225,6 +232,46 @@ impl App {
             .spacing(2);
             col = col.push(seg);
         }
+
+        // Encontrar el teléfono: suena aunque esté en silencio.
+        let finding = state.is_some_and(|st| st.6);
+        col = col.push(
+            button(
+                row![
+                    Icon::RingVolume.view(
+                        18.0,
+                        if finding {
+                            c.on_primary
+                        } else {
+                            c.on_secondary_container
+                        }
+                    ),
+                    text(if finding {
+                        t("gui.panel.find_stop")
+                    } else {
+                        t("gui.panel.find")
+                    })
+                    .size(14)
+                    .font(SEMIBOLD),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .padding(Padding::from([8, 14]))
+            .width(Length::Fill)
+            .style(style::button(
+                c,
+                if finding {
+                    ButtonKind::Filled
+                } else {
+                    ButtonKind::Tonal
+                },
+            ))
+            .on_press(Message::FindPhone {
+                peer: p.id.clone(),
+                ring: !finding,
+            }),
+        );
 
         // Llamada en curso: quién y los botones para atender o colgar.
         if let Some((_, _, call, ..)) = state
@@ -292,6 +339,135 @@ impl App {
             );
         }
         card(c, col.into())
+    }
+
+    /// Reproductor activo (o el último en pausa) con su carátula, controles
+    /// y barra de progreso, como en el panel de Android.
+    pub(crate) fn media_card<'a>(
+        &self,
+        c: Colors,
+        peer: &str,
+        players: &'a [kushare_dbus::PlayerRow],
+    ) -> Option<Element<'a, Message>> {
+        let p = players
+            .iter()
+            .find(|p| p.5 == "playing")
+            .or_else(|| players.iter().find(|p| !p.2.is_empty()))?;
+        let (id, name, title, artist, _album, st, can_play, can_pause, can_next, can_prev, prog) =
+            p;
+        let (art, position, duration, at) = prog;
+        let playing = st == "playing";
+        let art_view: Element<'a, Message> = if art.is_empty() {
+            container(Icon::Headphones.view(26.0, c.on_secondary_container))
+                .center(Length::Fixed(52.0))
+                .style(move |_: &Theme| container::Style {
+                    background: Some(c.secondary_container.into()),
+                    border: iced::Border {
+                        radius: 10.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            iced::widget::image(iced::widget::image::Handle::from_path(art))
+                .width(Length::Fixed(52.0))
+                .height(Length::Fixed(52.0))
+                .content_fit(iced::ContentFit::Cover)
+                .border_radius(10.0)
+                .into()
+        };
+        let media = |action: &'static str| Message::Media {
+            peer: peer.to_string(),
+            player: id.clone(),
+            action,
+        };
+        let control = |icon: Icon, size: f32, msg: Option<Message>, filled: bool| {
+            button(
+                container(icon.view(size, if filled { c.on_primary } else { c.on_surface }))
+                    .center(Length::Fixed(size + 10.0)),
+            )
+            .padding(2)
+            .style(style::button(
+                c,
+                if filled {
+                    ButtonKind::Filled
+                } else {
+                    ButtonKind::Text
+                },
+            ))
+            .on_press_maybe(msg)
+        };
+        let subtitle = if artist.is_empty() { name } else { artist };
+        let mut col = column![
+            row![
+                art_view,
+                column![
+                    text(if title.is_empty() { name } else { title })
+                        .size(14)
+                        .font(BOLD),
+                    text(subtitle.clone()).size(12).color(c.on_surface_variant),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                control(
+                    Icon::Previous,
+                    18.0,
+                    can_prev.then(|| media("previous")),
+                    false
+                ),
+                control(
+                    if playing { Icon::Pause } else { Icon::Play },
+                    20.0,
+                    (if playing { *can_pause } else { *can_play }).then(|| media("play-pause")),
+                    true,
+                ),
+                control(Icon::Next, 18.0, can_next.then(|| media("next")), false),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(8);
+        // Progreso: extrapolado desde que llegó mientras suena.
+        if *duration > 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as i64);
+            let pos = if playing {
+                position + (now - at).max(0)
+            } else {
+                *position
+            }
+            .clamp(0, *duration);
+            let fmt = |ms: i64| format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60);
+            col = col
+                .push(
+                    iced::widget::progress_bar(0.0..=*duration as f32, pos as f32)
+                        .girth(4)
+                        .style(move |_: &Theme| iced::widget::progress_bar::Style {
+                            background: c.container_highest.into(),
+                            bar: c.primary.into(),
+                            border: iced::Border {
+                                radius: 2.0.into(),
+                                ..Default::default()
+                            },
+                        }),
+                )
+                .push(row![
+                    text(fmt(pos)).size(11).color(c.on_surface_variant),
+                    space().width(Length::Fill),
+                    text(format!("-{}", fmt(duration - pos)))
+                        .size(11)
+                        .color(c.on_surface_variant),
+                ]);
+        }
+        Some(
+            container(col)
+                .padding(10)
+                .width(Length::Fill)
+                .style(style::card(c.container, c.on_surface, Shape::List))
+                .into(),
+        )
     }
 
     /// Franja de estado para ventanas sin panel: el teléfono y cuántas

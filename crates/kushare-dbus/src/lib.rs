@@ -27,7 +27,7 @@ pub type BatteryRow = (bool, u32, bool);
 
 /// Reproductor: (id, nombre, título, artista, álbum, estado
 /// "playing"|"paused"|"stopped", puede_reproducir, puede_pausar,
-/// puede_siguiente, puede_anterior).
+/// puede_siguiente, puede_anterior, [`PlayerProgress`]).
 pub type PlayerRow = (
     String,
     String,
@@ -39,7 +39,13 @@ pub type PlayerRow = (
     bool,
     bool,
     bool,
+    PlayerProgress,
 );
+
+/// Carátula y progreso de un reproductor: (ruta de la carátula o "",
+/// posición en ms, duración en ms (0 = no se sabe), ms Unix en que se midió
+/// la posición).
+pub type PlayerProgress = (String, i64, i64, i64);
 
 /// Salida de audio: (id, nombre, activa).
 pub type OutputRow = (String, String, bool);
@@ -57,6 +63,7 @@ pub type PeerStateReply = (
     Vec<PlayerRow>,
     bool,
     Vec<OutputRow>,
+    bool,
 );
 
 /// Foto de la galería: (id, nombre, fecha en ms, ancho, alto, tamaño en
@@ -143,6 +150,8 @@ pub trait Daemon {
     fn set_audio_output(&self, peer: &str, output: &str) -> zbus::Result<()>;
     /// `mode`: normal|vibrate|silent.
     fn set_ringer(&self, peer: &str, mode: &str) -> zbus::Result<()>;
+    /// Hace sonar el teléfono para encontrarlo (`ring = false`: lo para).
+    fn find_phone(&self, peer: &str, ring: bool) -> zbus::Result<()>;
     /// `action`: answer|reject|hangup|mute|unmute.
     fn call_command(&self, peer: &str, action: &str) -> zbus::Result<()>;
     /// Página de la galería del peer (más reciente primero): (total, fotos).

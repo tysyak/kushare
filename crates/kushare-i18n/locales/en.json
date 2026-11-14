@@ -336,7 +336,10 @@
       "disconnected": "Phone disconnected",
       "disconnected_detail": "Open kushare on the phone or bring it closer to the PC.",
       "notifications": "Notifications",
-      "dismiss_all": "Clear all"
+      "dismiss_all": "Clear all",
+      "find": "Find phone",
+      "find_stop": "Stop ringing",
+      "find_started": "The phone is ringing: silence it on its screen."
     }
   },
   "tray": {
@@ -365,5 +368,35 @@
     "send_file_to": "Send file…",
     "send_notifications": "Send it my notifications",
     "unpair": "Unpair"
+  },
+  "tui": {
+    "copied": "Copied on the PC.",
+    "no_phone": "No phone connected over Bluetooth.",
+    "sent": "Message sent.",
+    "not_a_file": "Not a file: {path}",
+    "daemon_off": "The kushare daemon is not running.",
+    "daemon_off_detail": "Start it with `kushare` (or from the app menu); this screen connects by itself.",
+    "now_playing": "Now playing",
+    "keys_title": "Keys",
+    "keys_tabs": "Tab / ← → or 1–8: switch tab",
+    "keys_move": "↑ ↓ (j k): move · Enter: open or use · r: reload",
+    "keys_media": "Space: play/pause · < >: previous/next",
+    "keys_find": "f: find the phone (rings even when silent) · f again: stop it",
+    "keys_quit": "q: quit",
+    "keys_phone": "Ringer: n normal · v vibrate · s silent — Call: a answer · h hang up · m mute mic",
+    "write": "write",
+    "dial": "dial",
+    "copy": "copy",
+    "offline": "offline",
+    "scan": "scan",
+    "no_file": "(no file)",
+    "keys_send": "e: choose a file (path) · Enter: send it to the phone over Bluetooth",
+    "input_sms": "Message",
+    "input_dial": "Number",
+    "input_reply": "Reply",
+    "input_path": "File",
+    "keys_notifs": "x dismiss · X all · Enter action · w reply",
+    "keys_messages": "Enter open · w write · Esc back",
+    "keys_short": "Tab tabs · ↑↓ move · f find phone · Space ⏯ · q quit"
   }
 }

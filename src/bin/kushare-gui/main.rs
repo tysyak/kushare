@@ -308,6 +308,13 @@ enum Message {
         peer: String,
         mode: &'static str,
     },
+    /// Hacer sonar el teléfono para encontrarlo (`ring = false`: pararlo).
+    FindPhone {
+        peer: String,
+        ring: bool,
+    },
+    /// Cada segundo mientras suena algo (barra de progreso).
+    Clock,
     CallCommand {
         peer: String,
         action: &'static str,
@@ -502,6 +509,15 @@ impl App {
         subs.push(iced::window::resize_events().map(|(_, size)| Message::Resized(size)));
         if self.config.animations && (self.ui.active() || self.notifs.animating()) {
             subs.push(iced::window::frames().map(|_| Message::Frame));
+        }
+        // La barra de progreso de lo que suena avanza cada segundo.
+        let playing = self
+            .snapshot
+            .states
+            .values()
+            .any(|st| st.3.iter().any(|p| p.5 == "playing" && p.10.2 > 0));
+        if playing {
+            subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Clock));
         }
         if self.viewer.is_some() {
             subs.push(iced::keyboard::listen().filter_map(|event| match event {
@@ -963,6 +979,15 @@ impl App {
             Message::SetRinger { peer, mode } => {
                 self.call("", move |d| async move { d.set_ringer(&peer, mode).await })
             }
+            Message::FindPhone { peer, ring } => self.call(
+                if ring {
+                    t("gui.panel.find_started")
+                } else {
+                    ""
+                },
+                move |d| async move { d.find_phone(&peer, ring).await },
+            ),
+            Message::Clock => Task::none(),
             Message::CallCommand { peer, action } => {
                 self.call(
                     "",
@@ -2254,7 +2279,7 @@ impl App {
     }
 
     fn phone_card<'a>(&'a self, c: Colors, p: &'a Peer) -> Element<'a, Message> {
-        let Some((battery, ringer, call, players, selectable, outputs)) =
+        let Some((battery, ringer, call, players, selectable, outputs, _)) =
             self.snapshot.states.get(&p.id)
         else {
             return text(t("gui.common.loading")).into();
@@ -2289,6 +2314,13 @@ impl App {
                 text(battery_text).size(15),
             ]
             .width(Length::Fill),
+            button(Icon::RingVolume.view(18.0, c.on_surface))
+                .padding(8)
+                .style(style::button(c, ButtonKind::Text))
+                .on_press(Message::FindPhone {
+                    peer: p.id.clone(),
+                    ring: !self.snapshot.states.get(&p.id).is_some_and(|st| st.6),
+                }),
             button(Icon::Refresh.view(18.0, c.on_surface))
                 .padding(8)
                 .style(style::button(c, ButtonKind::Text))

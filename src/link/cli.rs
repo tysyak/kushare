@@ -95,6 +95,13 @@ pub enum LinkCommand {
         device: String,
         output: Option<String>,
     },
+    /// Hace sonar el teléfono para encontrarlo, aunque esté en silencio
+    /// (`--stop` lo para).
+    Find {
+        device: String,
+        #[arg(long)]
+        stop: bool,
+    },
     /// Cambia el modo de timbre del teléfono.
     Ringer {
         device: String,
@@ -356,8 +363,11 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
             set_blocked(&daemon, &device, way, &app, false).await?
         }
         LinkCommand::Status { device } => {
-            let ((has_bat, percent, charging), ringer, call, players, _, outputs) =
+            let ((has_bat, percent, charging), ringer, call, players, _, outputs, finding) =
                 daemon.peer_state(&device).await?;
+            if finding {
+                println!("Sonando para encontrarlo (`kushare find --stop` lo para).");
+            }
             if has_bat {
                 let c = if charging { " (cargando)" } else { "" };
                 println!("Batería: {percent} %{c}");
@@ -385,6 +395,24 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                     .collect::<Vec<_>>()
                     .join(" — ");
                 println!("  {} [{}] {what}\n    id: {}", p.1, p.5, p.0);
+                // Progreso (extrapolado si está sonando) y carátula.
+                let (art, position, duration, at) = &p.10;
+                if *duration > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() as i64);
+                    let pos = if p.5 == "playing" {
+                        position + (now - at).max(0)
+                    } else {
+                        *position
+                    }
+                    .clamp(0, *duration);
+                    let fmt = |ms: i64| format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60);
+                    println!("    {} / {}", fmt(pos), fmt(*duration));
+                }
+                if !art.is_empty() {
+                    println!("    carátula: {art}");
+                }
             }
             println!("Salidas de audio:");
             if outputs.is_empty() {
@@ -412,7 +440,7 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
             println!("Hecho.");
         }
         LinkCommand::Audio { device, output } => {
-            let (.., selectable, outputs) = daemon.peer_state(&device).await?;
+            let (.., selectable, outputs, _) = daemon.peer_state(&device).await?;
             match output {
                 None => {
                     for (id, name, active) in &outputs {
@@ -428,6 +456,17 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                     println!("Salida: {}", out.1);
                 }
             }
+        }
+        LinkCommand::Find { device, stop } => {
+            daemon.find_phone(&device, !stop).await?;
+            println!(
+                "{}",
+                if stop {
+                    "Ya no suena."
+                } else {
+                    "Sonando: silencíalo en la pantalla del teléfono (o `kushare find --stop`)."
+                }
+            );
         }
         LinkCommand::Ringer { device, mode } => {
             daemon.set_ringer(&device, &verb(mode)).await?;
