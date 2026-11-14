@@ -206,6 +206,15 @@ message Feature {
     ContactPhotosRequest contact_photos_request = 35;
     ContactPhotos contact_photos = 36;
     FindPhone find_phone = 37;
+    CamerasRequest cameras_request = 38;
+    Cameras cameras = 39;
+    WebcamStart webcam_start = 40;
+    WebcamStop webcam_stop = 41;
+    WebcamFrame webcam_frame = 42;
+    WebcamAck webcam_ack = 43;
+    WebcamState webcam_state = 44;
+    QrScan qr_scan = 45;
+    QrResult qr_result = 46;
   }
 }
 
@@ -584,6 +593,80 @@ message LanStatus {
 // (se manda al empezar y al terminar).
 message FindPhone {
   bool ring = 1;
+}
+
+// --- Cámaras del teléfono: webcam y escáner de QR (0.7) -----------------
+
+message CamerasRequest {
+  uint64 request_id = 1;
+}
+
+message CameraInfo {
+  // Id de Camera2 en el teléfono.
+  string id = 1;
+  // "back" | "front" | "external".
+  string facing = 2;
+  // Megapíxeles del sensor y distancia focal (para distinguirlas).
+  float megapixels = 3;
+  float focal_mm = 4;
+  // Agrupa varias cámaras (el teléfono elige según el zoom).
+  bool logical = 5;
+  // Sensor infrarrojo cercano (NIR) o monocromo: visión nocturna.
+  bool infrared = 6;
+  bool monochrome = 7;
+}
+
+message Cameras {
+  uint64 request_id = 1;
+  repeated CameraInfo cameras = 2;
+  string error = 3;
+}
+
+// PC → teléfono: empezar a mandar la cámara `camera_id` (vacío = la
+// trasera principal) como webcam, a ~`width`×`height` y `fps` como mucho.
+message WebcamStart {
+  string camera_id = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 fps = 4;
+  // Calidad JPEG 1–100.
+  uint32 quality = 5;
+}
+
+message WebcamStop {}
+
+// Teléfono → PC: un fotograma JPEG (va por el enlace de datos Wi-Fi). Como
+// mucho hay `2` sin confirmar con `WebcamAck`: si el PC se retrasa, el
+// teléfono descarta fotogramas en vez de acumular retraso.
+message WebcamFrame {
+  uint32 seq = 1;
+  bytes jpeg = 2;
+  // Grados a girar en sentido horario para verla derecha (0/90/180/270).
+  uint32 rotation = 3;
+  // Espejo horizontal (cámara frontal).
+  bool mirror = 4;
+}
+
+message WebcamAck {
+  uint32 seq = 1;
+}
+
+// Teléfono → PC: estado de la webcam (al empezar, al parar o si falla).
+message WebcamState {
+  bool active = 1;
+  string camera_id = 2;
+  string error = 3;
+}
+
+// PC → teléfono: abrir el escáner de QR.
+message QrScan {}
+
+// Teléfono → PC: un código leído (QR, código de barras…).
+message QrResult {
+  string text = 1;
+  // Formato ZXing: "QR_CODE", "EAN_13"…
+  string format = 2;
+  int64 date_ms = 3;
 }
 
 // Pide las miniaturas de las fotos de contacto con estas claves

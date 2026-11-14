@@ -9,7 +9,9 @@ pub mod clipboard;
 pub mod dbus;
 pub mod features;
 pub mod proximity;
+pub mod qr;
 pub mod settings;
+pub mod webcam;
 
 use kushare_discovery::mdns::{
     LINK_SERVICE_TYPE, LinkPeerSighting, MdnsAdvertiser, MdnsScanner, link_peer_from_event,
@@ -47,6 +49,10 @@ const PHOTO_VIEW: &str = "kushare-photo-view";
 const PHOTO_COPY: &str = "kushare-photo-copy";
 const PHOTO_GALLERY: &str = "kushare-photo-gallery";
 const LOCK_CANCEL: &str = "kushare-lock-cancel";
+const QR_OPEN: &str = "kushare-qr-open";
+const QR_COPY: &str = "kushare-qr-copy";
+const QR_COPY_PASSWORD: &str = "kushare-qr-copy-password";
+const QR_SAVE: &str = "kushare-qr-save";
 const RECEIVE_ACCEPT: &str = "kushare-receive-accept";
 const RECEIVE_REJECT: &str = "kushare-receive-reject";
 /// Sin respuesta en este tiempo, el envío por Wi-Fi se rechaza.
@@ -621,6 +627,10 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         .features
         .take_new_photos()
         .expect("el receptor de fotos nuevas se toma una sola vez");
+    let mut new_qr = handle
+        .features
+        .take_new_qr()
+        .expect("el receptor de códigos QR se toma una sola vez");
     let (proximity_tx, mut proximity_rx) = mpsc::unbounded_channel();
     let loop_handle = handle.clone();
     tokio::spawn(async move {
@@ -637,6 +647,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
             proximity: proximity::Proximity::default(),
             proximity_tx,
             lock_prompts: HashMap::new(),
+            qr_prompts: HashMap::new(),
         };
         loop {
             tokio::select! {
@@ -645,6 +656,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
                 Some(e) = notifier_events.recv() => ui.on_notifier_event(e).await,
                 Some(r) = receive_rx.recv() => ui.ask_receive(r).await,
                 Some(p) = new_photos.recv() => ui.show_new_photos(p).await,
+                Some(q) = new_qr.recv() => ui.show_qr(q).await,
                 Some(e) = proximity_rx.recv() => ui.on_proximity(e).await,
                 else => break,
             }
@@ -758,6 +770,8 @@ struct DesktopUi {
     proximity_tx: mpsc::UnboundedSender<proximity::ProximityEvent>,
     /// Aviso de bloqueo dinámico: id → (peer, cancelar).
     lock_prompts: HashMap<u32, (String, Arc<std::sync::atomic::AtomicBool>)>,
+    /// Avisos de códigos QR → el código.
+    qr_prompts: HashMap<u32, qr::QrEntry>,
 }
 
 impl DesktopUi {
@@ -796,6 +810,75 @@ impl DesktopUi {
                 cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             let _ = self.notifier.close(id).await;
+        }
+    }
+
+    /// Aviso de código QR leído en el teléfono, con lo que tenga sentido
+    /// según su contenido. Nada se abre solo: siempre es un botón.
+    async fn show_qr(&mut self, entry: qr::QrEntry) {
+        let name = self.peer_name(&entry.device);
+        let kind = qr::QrKind::of(&entry.text);
+        let (summary, body, actions): (String, String, Vec<(String, String)>) = match &kind {
+            qr::QrKind::Url => (
+                tf("daemon.qr_title_url", &[("name", &name)]),
+                entry.text.clone(),
+                vec![
+                    (QR_OPEN.into(), t("daemon.qr_open").into()),
+                    (QR_COPY.into(), t("daemon.qr_copy").into()),
+                ],
+            ),
+            qr::QrKind::Wifi { ssid, password, .. } => (
+                tf("daemon.qr_title_wifi", &[("name", &name)]),
+                tf(
+                    "daemon.qr_wifi_body",
+                    &[("ssid", ssid), ("password", password)],
+                ),
+                vec![
+                    (QR_COPY_PASSWORD.into(), t("daemon.qr_copy_password").into()),
+                    (QR_COPY.into(), t("daemon.qr_copy").into()),
+                ],
+            ),
+            _ => (
+                tf("daemon.qr_title", &[("name", &name)]),
+                entry.text.chars().take(300).collect(),
+                vec![
+                    (QR_COPY.into(), t("daemon.qr_copy").into()),
+                    (QR_SAVE.into(), t("daemon.qr_save").into()),
+                ],
+            ),
+        };
+        let shown = self
+            .notifier
+            .notify_full(&MirrorNotification {
+                app_name: "kushare".into(),
+                summary,
+                body,
+                actions,
+                ..Default::default()
+            })
+            .await;
+        if let Ok(id) = shown {
+            if self.qr_prompts.len() > 20 {
+                self.qr_prompts.clear();
+            }
+            self.qr_prompts.insert(id, entry);
+        }
+    }
+
+    fn on_qr_action(&self, entry: &qr::QrEntry, action: &str) {
+        let clipboard = &self.handle.features.clipboard;
+        let result = match action {
+            QR_OPEN => qr::open_url(&entry.text),
+            QR_COPY => clipboard.copy_text(&entry.text),
+            QR_COPY_PASSWORD => match qr::QrKind::of(&entry.text) {
+                qr::QrKind::Wifi { password, .. } => clipboard.copy_text(&password),
+                _ => Ok(()),
+            },
+            QR_SAVE => qr::save_to_downloads(entry).map(|_| ()).map_err(Into::into),
+            _ => Ok(()),
+        };
+        if let Err(err) = result {
+            tracing::info!(?err, "acción de código QR fallida");
         }
     }
 
@@ -1223,6 +1306,10 @@ impl DesktopUi {
                     && let Some((_, cancel)) = self.lock_prompts.remove(&id)
                 {
                     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+                if let Some(entry) = self.qr_prompts.get(&id) {
+                    self.on_qr_action(entry, &action);
                     return;
                 }
                 if let Some((peer, photo)) = self.photo_prompts.get(&id).cloned() {

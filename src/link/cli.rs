@@ -163,6 +163,16 @@ pub enum LinkCommand {
         #[arg(long)]
         dismiss: Option<String>,
     },
+    /// El teléfono como webcam del PC (cámara virtual v4l2loopback).
+    Webcam {
+        #[command(subcommand)]
+        action: WebcamAction,
+    },
+    /// Escáner de QR del teléfono e historial de códigos leídos.
+    Qr {
+        #[command(subcommand)]
+        action: QrAction,
+    },
     /// Historial del portapapeles (`--clear` lo borra; `--copy <n>` copia una entrada).
     Clipboard {
         #[arg(long)]
@@ -188,6 +198,42 @@ pub enum LinkCommand {
     Update {
         #[arg(long)]
         download: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WebcamAction {
+    /// Lista las cámaras del teléfono (frontal, traseras, infrarroja…).
+    Cameras {
+        device: String,
+    },
+    /// Empieza: `--camera` acepta el id o parte de la etiqueta («frontal», «tele»…).
+    Start {
+        device: String,
+        #[arg(long)]
+        camera: Option<String>,
+    },
+    Stop,
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum QrAction {
+    /// Abre el escáner en el teléfono; lo leído llega al PC con un aviso.
+    Scan { device: String },
+    /// Códigos leídos (el número es el que usan open/copy/save/forget).
+    List,
+    /// Abre en el navegador (solo si es una web http/https).
+    Open { index: u32 },
+    /// Copia al portapapeles del PC.
+    Copy { index: u32 },
+    /// Guarda el texto en Descargas.
+    Save { index: u32 },
+    /// Borra uno del historial (`--all`: todos).
+    Forget {
+        index: Option<i32>,
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -596,6 +642,87 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                         fmt_date(date)
                     );
                 }
+            }
+        },
+        LinkCommand::Webcam { action } => match action {
+            WebcamAction::Cameras { device } => {
+                for (id, label, _) in daemon.cameras(&device).await? {
+                    println!("  {id:>3}  {label}");
+                }
+            }
+            WebcamAction::Start { device, camera } => {
+                let camera = match camera {
+                    Some(q) => {
+                        let cameras = daemon.cameras(&device).await?;
+                        pick(&cameras, &q, |c| &c.0, |c| &c.1)?.0.clone()
+                    }
+                    None => String::new(),
+                };
+                let path = daemon.webcam_start(&device, &camera).await?;
+                println!(
+                    "Webcam en {path}: elígela en la app (navegador, OBS, videollamada…). \
+                     `kushare webcam stop` la para."
+                );
+            }
+            WebcamAction::Stop => {
+                daemon.webcam_stop().await?;
+                println!("Webcam parada.");
+            }
+            WebcamAction::Status => {
+                let (active, peer, camera, path, fps, error) = daemon.webcam_status().await?;
+                if peer.is_empty() {
+                    println!("La webcam no está en marcha.");
+                } else {
+                    let state = if active { "activa" } else { "arrancando" };
+                    let camera = if camera.is_empty() {
+                        "por defecto"
+                    } else {
+                        &camera
+                    };
+                    println!("Webcam {state} · {path} · cámara {camera} · {fps} fps");
+                    if !error.is_empty() {
+                        println!("Error del teléfono: {error}");
+                    }
+                }
+            }
+        },
+        LinkCommand::Qr { action } => match action {
+            QrAction::Scan { device } => {
+                daemon.qr_scan(&device).await?;
+                println!("Escáner abierto en el teléfono: lo que leas llegará aquí con un aviso.");
+            }
+            QrAction::List => {
+                let list = daemon.qr_history().await?;
+                if list.is_empty() {
+                    println!("Aún no hay códigos (`kushare qr scan <disp>`).");
+                }
+                for (i, (text, format, date, kind, _)) in list.iter().enumerate() {
+                    let short: String = text.chars().take(70).collect();
+                    println!(
+                        "{i:>3}  [{}] {kind:<7} {}  ({format})",
+                        fmt_date(*date),
+                        short.replace('\n', " ")
+                    );
+                }
+            }
+            QrAction::Open { index } => {
+                daemon.qr_open(index).await?;
+                println!("Abierto en el navegador.");
+            }
+            QrAction::Copy { index } => {
+                daemon.qr_copy(index).await?;
+                println!("Copiado.");
+            }
+            QrAction::Save { index } => {
+                println!("Guardado en {}", daemon.qr_save(index).await?);
+            }
+            QrAction::Forget { index, all } => {
+                let index = if all { -1 } else { index.unwrap_or(-2) };
+                if index == -2 {
+                    anyhow::bail!("indica el número o --all");
+                }
+                daemon.qr_forget(index).await?;
+                println!("Borrado.");
             }
         },
         LinkCommand::Clipboard { clear, copy } => {

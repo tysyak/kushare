@@ -1965,6 +1965,7 @@ pub fn is_heavy(feature: &pb::Feature) -> bool {
                 | F::ActiveNotifications(_)
                 | F::Wallpaper(_)
                 | F::ContactPhotos(_)
+                | F::WebcamFrame(_)
         )
     )
 }
@@ -2030,6 +2031,8 @@ mod tests {
         let f = |kind| pb::Feature { kind: Some(kind) };
         assert!(is_heavy(&f(F::ContactPhotos(Default::default()))));
         assert!(!is_heavy(&f(F::ContactPhotosRequest(Default::default()))));
+        assert!(is_heavy(&f(F::WebcamFrame(Default::default()))));
+        assert!(!is_heavy(&f(F::WebcamAck(Default::default()))));
     }
 
     #[test]

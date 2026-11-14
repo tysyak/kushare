@@ -43,6 +43,9 @@ const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Fotos de contacto: cuántas se piden a la vez y cuánto se espera (son un
 /// adorno: si tardan, se muestran las iniciales).
 const CONTACT_PHOTOS_MAX: usize = 60;
+/// Webcam: fotogramas por segundo y calidad JPEG que se piden al teléfono.
+const WEBCAM_FPS: u32 = 25;
+const WEBCAM_QUALITY: u32 = 75;
 const CONTACT_PHOTOS_TIMEOUT: Duration = Duration::from_secs(10);
 /// Una foto grande por Bluetooth puede tardar: 5 min de margen (10 de fondo).
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
@@ -184,6 +187,25 @@ pub struct Features {
     new_photos_rx: Mutex<Option<mpsc::UnboundedReceiver<NewPhotos>>>,
     pub settings: Arc<SettingsStore>,
     pub clipboard: Arc<Clipboard>,
+    /// Historial de códigos QR leídos con el teléfono.
+    pub qr: Arc<super::qr::QrStore>,
+    /// Códigos nuevos, para avisar en el escritorio.
+    qr_new: mpsc::UnboundedSender<super::qr::QrEntry>,
+    qr_new_rx: Mutex<Option<mpsc::UnboundedReceiver<super::qr::QrEntry>>>,
+    /// El teléfono como webcam (una a la vez).
+    webcam: Mutex<Option<WebcamSession>>,
+}
+
+/// Webcam en marcha: de qué teléfono y cámara, y a qué cámara virtual.
+pub struct WebcamSession {
+    pub peer: String,
+    pub camera: String,
+    pub sink: super::webcam::Sink,
+    /// El teléfono confirmó que la cámara está abierta.
+    pub active: bool,
+    pub error: String,
+    /// Para calcular los fotogramas por segundo.
+    pub last_count: (Instant, u64),
 }
 
 enum LocalCommand {
@@ -205,6 +227,7 @@ impl Features {
         let (new_photos, new_photos_rx) = mpsc::unbounded_channel();
         let (lan_probe, lan_probe_rx) = mpsc::unbounded_channel();
         let clipboard = Clipboard::start(manager.clone(), settings.clone(), data_dir);
+        let (qr_new, qr_new_rx) = mpsc::unbounded_channel();
         let features = Arc::new(Self {
             manager,
             peers: Mutex::default(),
@@ -228,6 +251,10 @@ impl Features {
             new_photos_rx: Mutex::new(Some(new_photos_rx)),
             settings,
             clipboard,
+            qr: Arc::new(super::qr::QrStore::open(data_dir)),
+            qr_new,
+            qr_new_rx: Mutex::new(Some(qr_new_rx)),
+            webcam: Mutex::default(),
         });
         tokio::spawn(battery_task(features.clone()));
         tokio::spawn(local_task(features.clone(), command_rx));
@@ -238,6 +265,11 @@ impl Features {
     }
 
     /// Receptor de los avisos de fotos nuevas (solo se puede tomar una vez).
+    /// Códigos QR nuevos (para el aviso del escritorio). Se toma una vez.
+    pub fn take_new_qr(&self) -> Option<mpsc::UnboundedReceiver<super::qr::QrEntry>> {
+        self.qr_new_rx.lock().expect("mutex envenenado").take()
+    }
+
     pub fn take_new_photos(&self) -> Option<mpsc::UnboundedReceiver<NewPhotos>> {
         self.new_photos_rx.lock().expect("mutex envenenado").take()
     }
@@ -342,6 +374,7 @@ impl Features {
             F::CallLog(r) => Some(r.request_id),
             F::Contacts(r) => Some(r.request_id),
             F::ContactPhotos(r) => Some(r.request_id),
+            F::Cameras(r) => Some(r.request_id),
             F::ActiveNotifications(r) => Some(r.request_id),
             F::Wallpaper(r) => Some(r.request_id),
             F::CommandResult(r) => Some(r.request_id),
@@ -390,6 +423,43 @@ impl Features {
             F::FindPhone(f) => {
                 state.finding = f.ring;
                 RemoteChange::State
+            }
+            F::WebcamFrame(frame) => {
+                drop(peers);
+                self.on_webcam_frame(peer_id, frame);
+                return None;
+            }
+            F::WebcamState(ws) => {
+                drop(peers);
+                let mut webcam = self.webcam.lock().expect("mutex envenenado");
+                if let Some(session) = webcam.as_mut().filter(|s| s.peer == peer_id) {
+                    session.active = ws.active;
+                    session.error = ws.error.clone();
+                    if !ws.active {
+                        tracing::info!(error = %ws.error, "el teléfono paró la webcam");
+                        if ws.error.is_empty() {
+                            *webcam = None;
+                        }
+                    }
+                }
+                return Some(RemoteChange::State);
+            }
+            F::QrResult(r) => {
+                drop(peers);
+                let entry = super::qr::QrEntry {
+                    text: r.text,
+                    format: r.format,
+                    date_ms: if r.date_ms > 0 {
+                        r.date_ms
+                    } else {
+                        now_unix_ms()
+                    },
+                    device: peer_id.to_string(),
+                };
+                if self.qr.add(entry.clone()) {
+                    let _ = self.qr_new.send(entry);
+                }
+                return None;
             }
             F::AudioOutputs(o) => {
                 state.outputs = Some(o);
@@ -474,6 +544,12 @@ impl Features {
             | F::Contacts(_)
             | F::ContactPhotosRequest(_)
             | F::ContactPhotos(_)
+            | F::CamerasRequest(_)
+            | F::Cameras(_)
+            | F::WebcamStart(_)
+            | F::WebcamStop(_)
+            | F::WebcamAck(_)
+            | F::QrScan(_)
             | F::Dial(_)
             | F::ActiveNotificationsRequest(_)
             | F::ActiveNotifications(_)
@@ -498,6 +574,133 @@ impl Features {
         self.manager
             .send_feature(peer_id, pb::Feature { kind: Some(kind) });
         Ok(())
+    }
+
+    // --- Cámaras: webcam y QR ------------------------------------------------
+
+    /// Cámaras del teléfono.
+    pub async fn cameras(&self, peer_id: &str) -> anyhow::Result<Vec<pb::CameraInfo>> {
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| F::CamerasRequest(pb::CamerasRequest { request_id }),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        match reply {
+            F::Cameras(c) if c.error.is_empty() => Ok(c.cameras),
+            F::Cameras(c) => anyhow::bail!("{}", phone_error(&c.error)),
+            _ => anyhow::bail!("respuesta inesperada del teléfono"),
+        }
+    }
+
+    /// Empieza a usar la cámara `camera_id` del teléfono como webcam del PC
+    /// (vacía = la trasera por defecto). Devuelve la cámara virtual usada.
+    pub async fn webcam_start(&self, peer_id: &str, camera_id: &str) -> anyhow::Result<PathBuf> {
+        if !self.manager.is_connected(peer_id) {
+            anyhow::bail!("el dispositivo no está conectado");
+        }
+        let Some(device) = super::webcam::find_device() else {
+            anyhow::bail!(
+                "no hay cámara virtual: instala v4l2loopback (Arch/Debian/Ubuntu: \
+                 v4l2loopback-dkms; Fedora: v4l2loopback de RPM Fusion) y \
+                 cárgalo con «sudo modprobe v4l2loopback exclusive_caps=1»"
+            );
+        };
+        // El vídeo solo cabe por Wi-Fi: hay que abrir (o tener) el enlace de datos.
+        self.ensure_bulk(peer_id).await;
+        if !self.manager.has_bulk(peer_id) {
+            anyhow::bail!(
+                "la webcam necesita que el teléfono y el PC estén en la misma Wi-Fi \
+                 (por Bluetooth no cabe el vídeo)"
+            );
+        }
+        self.webcam_stop();
+        let sink = super::webcam::Sink::open(&device)?;
+        // La cámara del teléfono va apaisada: pedir el lado mayor como ancho.
+        let (w, h) = (sink.width.max(sink.height), sink.width.min(sink.height));
+        self.send(
+            peer_id,
+            F::WebcamStart(pb::WebcamStart {
+                camera_id: camera_id.to_string(),
+                width: w,
+                height: h,
+                fps: WEBCAM_FPS,
+                quality: WEBCAM_QUALITY,
+            }),
+        )?;
+        let frames = sink.frames.load(Ordering::Relaxed);
+        *self.webcam.lock().expect("mutex envenenado") = Some(WebcamSession {
+            peer: peer_id.to_string(),
+            camera: camera_id.to_string(),
+            sink,
+            active: false,
+            error: String::new(),
+            last_count: (Instant::now(), frames),
+        });
+        Ok(device)
+    }
+
+    /// Para la webcam (si la hay).
+    pub fn webcam_stop(&self) {
+        if let Some(session) = self.webcam.lock().expect("mutex envenenado").take() {
+            let _ = self.send(&session.peer, F::WebcamStop(pb::WebcamStop {}));
+        }
+    }
+
+    /// Estado: (activa, teléfono, cámara, dispositivo, fps, error).
+    pub fn webcam_status(&self) -> (bool, String, String, String, u32, String) {
+        let mut webcam = self.webcam.lock().expect("mutex envenenado");
+        let Some(s) = webcam.as_mut() else {
+            return Default::default();
+        };
+        let now = Instant::now();
+        let count = s.sink.frames.load(Ordering::Relaxed);
+        let secs = now.duration_since(s.last_count.0).as_secs_f32();
+        let fps = if secs > 0.0 {
+            ((count - s.last_count.1) as f32 / secs).round() as u32
+        } else {
+            0
+        };
+        if secs >= 2.0 {
+            s.last_count = (now, count);
+        }
+        (
+            s.active,
+            s.peer.clone(),
+            s.camera.clone(),
+            s.sink.device.to_string_lossy().into_owned(),
+            fps,
+            s.error.clone(),
+        )
+    }
+
+    fn on_webcam_frame(&self, peer_id: &str, frame: pb::WebcamFrame) {
+        let webcam = self.webcam.lock().expect("mutex envenenado");
+        let Some(session) = webcam.as_ref().filter(|s| s.peer == peer_id) else {
+            // Llegan fotogramas sin haberlos pedido (o tras parar): que pare.
+            drop(webcam);
+            let _ = self.send(peer_id, F::WebcamStop(pb::WebcamStop {}));
+            return;
+        };
+        session.sink.push(super::webcam::Frame {
+            jpeg: frame.jpeg,
+            rotation: frame.rotation,
+            mirror: frame.mirror,
+        });
+        drop(webcam);
+        // Confirmar para que el teléfono mande el siguiente.
+        self.manager.send_feature(
+            peer_id,
+            pb::Feature {
+                kind: Some(F::WebcamAck(pb::WebcamAck { seq: frame.seq })),
+            },
+        );
+    }
+
+    /// Abre el escáner de QR en el teléfono.
+    pub fn qr_scan(&self, peer_id: &str) -> anyhow::Result<()> {
+        self.send(peer_id, F::QrScan(pb::QrScan {}))
     }
 
     /// Hace sonar el teléfono para encontrarlo (`ring = false`: lo para).
@@ -542,13 +745,20 @@ impl Features {
         if !self.settings.get().hybrid {
             return false;
         }
-        let addrs = self
+        let mut addrs = self
             .lan
             .lock()
             .expect("mutex envenenado")
             .get(peer_id)
             .cloned()
             .unwrap_or_default();
+        // Solo para pruebas: abrir el enlace de datos por otra dirección
+        // (p. ej. `adb forward tcp:47817 tcp:47816` y `127.0.0.1:47817`).
+        if let Ok(addr) = std::env::var("KUSHARE_TEST_BULK_ADDR")
+            && let Ok(addr) = addr.parse()
+        {
+            addrs = vec![addr];
+        }
         if addrs.is_empty() {
             return false;
         }

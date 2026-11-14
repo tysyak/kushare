@@ -74,6 +74,7 @@ arboard = { version = "3", default-features = false }
 ureq = "3"
 sha2 = "0.10"
 if-addrs = "0.15"
+zune-jpeg = "0.4.21"
 
 [package.metadata.deb]
 maintainer = "Cristian Romero Andrade <mascrit@gmail.com>"

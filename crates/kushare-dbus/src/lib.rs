@@ -83,6 +83,17 @@ pub type SmsRow = (String, String, String, i64, bool, bool, bool);
 /// local de la foto del contacto o "").
 pub type CallLogRow = (String, String, i64, u32, String, String);
 
+/// Cámara del teléfono: (id, etiqueta legible, "back"|"front"|"external").
+pub type CameraRow = (String, String, String);
+
+/// Estado de la webcam: (activa, teléfono, cámara, dispositivo `/dev/videoN`,
+/// fotogramas por segundo, error).
+pub type WebcamRow = (bool, String, String, String, u32, String);
+
+/// Código QR leído: (texto, formato, fecha en ms, tipo
+/// "url"|"wifi"|"phone"|"email"|"contact"|"text", teléfono).
+pub type QrRow = (String, String, i64, String, String);
+
 /// Contacto: (nombre, números, favorito, ruta local de la foto o "" — solo
 /// las ya guardadas en el PC).
 pub type ContactRow = (String, Vec<String>, bool, String);
@@ -152,6 +163,24 @@ pub trait Daemon {
     fn set_ringer(&self, peer: &str, mode: &str) -> zbus::Result<()>;
     /// Hace sonar el teléfono para encontrarlo (`ring = false`: lo para).
     fn find_phone(&self, peer: &str, ring: bool) -> zbus::Result<()>;
+    /// Cámaras del teléfono.
+    fn cameras(&self, peer: &str) -> zbus::Result<Vec<CameraRow>>;
+    /// Usa la cámara del teléfono como webcam; devuelve `/dev/videoN`.
+    fn webcam_start(&self, peer: &str, camera: &str) -> zbus::Result<String>;
+    fn webcam_stop(&self) -> zbus::Result<()>;
+    fn webcam_status(&self) -> zbus::Result<WebcamRow>;
+    /// Abre el escáner de QR en el teléfono.
+    fn qr_scan(&self, peer: &str) -> zbus::Result<()>;
+    /// Códigos leídos, más reciente primero.
+    fn qr_history(&self) -> zbus::Result<Vec<QrRow>>;
+    /// Abre en el navegador el código `index` (solo si es una web).
+    fn qr_open(&self, index: u32) -> zbus::Result<()>;
+    /// Copia el código `index` al portapapeles del PC.
+    fn qr_copy(&self, index: u32) -> zbus::Result<()>;
+    /// Guarda el código `index` en Descargas; devuelve la ruta.
+    fn qr_save(&self, index: u32) -> zbus::Result<String>;
+    /// Borra uno (`index` ≥ 0) o todos (`-1`).
+    fn qr_forget(&self, index: i32) -> zbus::Result<()>;
     /// `action`: answer|reject|hangup|mute|unmute.
     fn call_command(&self, peer: &str, action: &str) -> zbus::Result<()>;
     /// Página de la galería del peer (más reciente primero): (total, fotos).
@@ -241,6 +270,9 @@ pub trait Daemon {
     /// Cambió el historial del portapapeles.
     #[zbus(signal)]
     fn clipboard_changed(&self) -> zbus::Result<()>;
+    /// Cambió el historial de códigos QR.
+    #[zbus(signal)]
+    fn qr_changed(&self) -> zbus::Result<()>;
 }
 
 /// Conecta con el daemon en el bus de sesión. Falla si no está corriendo.

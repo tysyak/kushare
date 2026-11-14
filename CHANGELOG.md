@@ -20,6 +20,22 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
   Dispositivos, Enviar) y, si la terminal es ancha, el panel del teléfono con su
   estado, lo que suena y sus notificaciones. Sustituye a la TUI antigua de
   Quick Share (que tenía su propio receptor).
+- **El teléfono como webcam del PC**: se elige cualquiera de sus cámaras
+  (frontal, traseras, teleobjetivo, multicámara, visión nocturna…) y aparece
+  como una webcam más (navegador, OBS, videollamadas) a través de
+  **v4l2loopback** (cualquier variante, también la de DroidCam). El vídeo va
+  en JPEG por el enlace de datos Wi-Fi cifrado y se descodifica en Rust puro;
+  si el PC se retrasa se descartan fotogramas en vez de acumular retraso. GUI
+  (página *Cámara* y botón en el panel), CLI (`kushare webcam
+  cameras|start|stop|status`) y TUI (pestaña 9). Necesita la misma Wi-Fi.
+- **Escáner de QR y códigos de barras** del teléfono: lo leído llega al PC
+  con un aviso según lo que sea (web: *Abrir en el navegador* / *Copiar*;
+  Wi-Fi: red y *Copiar contraseña*; texto: *Copiar* / *Guardar*) y queda en
+  un historial (`~/.local/share/kushare/qr.json`, solo para tu usuario). Solo
+  se abren webs http/https y siempre con un clic. GUI (página *Cámara* y
+  botón en el panel), CLI (`kushare qr scan|list|open|copy|save|forget`) y TUI
+  (pestaña 0).
+- Protocolo: `Feature` 38–46 (cámaras, webcam, QR).
 
 ## [0.6.1] - 2026-11-13
 

@@ -5,8 +5,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures_util::StreamExt;
 use kushare_dbus::{
-    CallLogRow, ClipRow, DaemonProxy, PeerRow, PeerStateReply, PhoneNotificationRow, SmsRow,
-    SmsThreadRow,
+    CallLogRow, CameraRow, ClipRow, DaemonProxy, PeerRow, PeerStateReply, PhoneNotificationRow,
+    QrRow, SmsRow, SmsThreadRow, WebcamRow,
 };
 use kushare_i18n::{t, tf};
 use std::collections::HashMap;
@@ -24,10 +24,12 @@ pub enum Tab {
     Clipboard,
     Devices,
     Send,
+    Camera,
+    Qr,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Home,
         Tab::Phone,
         Tab::Messages,
@@ -36,6 +38,8 @@ impl Tab {
         Tab::Clipboard,
         Tab::Devices,
         Tab::Send,
+        Tab::Camera,
+        Tab::Qr,
     ];
 
     pub fn label(self) -> &'static str {
@@ -48,6 +52,8 @@ impl Tab {
             Tab::Clipboard => t("gui.nav.clipboard"),
             Tab::Devices => t("gui.nav.devices"),
             Tab::Send => t("gui.nav.send"),
+            Tab::Camera => t("gui.nav.camera"),
+            Tab::Qr => t("gui.camera.qr_title"),
         }
     }
 
@@ -61,6 +67,8 @@ impl Tab {
             "clipboard" => Tab::Clipboard,
             "devices" => Tab::Devices,
             "send" => Tab::Send,
+            "camera" => Tab::Camera,
+            "qr" => Tab::Qr,
             _ => return None,
         })
     }
@@ -94,6 +102,10 @@ pub enum Ev {
     NotificationsChanged,
     SmsChanged(String),
     ClipboardChanged,
+    QrChanged,
+    Cameras(Result<Vec<CameraRow>, String>),
+    Webcam(WebcamRow),
+    Qr(Vec<QrRow>),
     Snapshot {
         name: String,
         peers: Vec<PeerRow>,
@@ -122,6 +134,9 @@ pub struct App {
     pub conversation: Option<(String, Vec<SmsRow>)>,
     pub calls: Vec<CallLogRow>,
     pub clipboard: Vec<ClipRow>,
+    pub cameras: Vec<CameraRow>,
+    pub webcam: WebcamRow,
+    pub qr: Vec<QrRow>,
     /// Selección de cada lista (por pestaña).
     pub selected: HashMap<&'static str, usize>,
     pub input: Option<Input>,
@@ -158,6 +173,9 @@ impl App {
             conversation: None,
             calls: Vec::new(),
             clipboard: Vec::new(),
+            cameras: Vec::new(),
+            webcam: Default::default(),
+            qr: Vec::new(),
             selected: HashMap::new(),
             input: None,
             send_path,
@@ -263,8 +281,23 @@ impl App {
                 Ev::Clipboard(d.clipboard_history().await.map_err(err_text))
             }),
             Tab::Notifications => self.load_notifications(),
+            Tab::Camera => {
+                self.spawn(move |d| async move {
+                    Ev::Cameras(d.cameras(&peer).await.map_err(err_text))
+                });
+                self.load_webcam();
+            }
+            Tab::Qr => self.load_qr(),
             _ => self.loading = false,
         }
+    }
+
+    fn load_webcam(&self) {
+        self.spawn(|d| async move { Ev::Webcam(d.webcam_status().await.unwrap_or_default()) });
+    }
+
+    fn load_qr(&self) {
+        self.spawn(|d| async move { Ev::Qr(d.qr_history().await.unwrap_or_default()) });
     }
 
     fn open_thread(&mut self, thread: String) {
@@ -290,6 +323,10 @@ impl App {
             .is_some_and(|(_, at)| at.elapsed() > TOAST)
         {
             self.toast = None;
+        }
+        // fps de la webcam mientras se ve su pestaña o está en marcha.
+        if self.connected && (self.tab == Tab::Camera || !self.webcam.1.is_empty()) {
+            self.load_webcam();
         }
     }
 
@@ -318,6 +355,19 @@ impl App {
                         self.open_thread(open);
                     }
                 }
+            }
+            Ev::QrChanged => self.load_qr(),
+            Ev::Cameras(r) => {
+                self.loading = false;
+                match r {
+                    Ok(list) => self.cameras = list,
+                    Err(e) => self.toast(e),
+                }
+            }
+            Ev::Webcam(st) => self.webcam = st,
+            Ev::Qr(list) => {
+                self.loading = false;
+                self.qr = list;
             }
             Ev::ClipboardChanged => {
                 if self.tab == Tab::Clipboard {
@@ -407,10 +457,11 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Tab | KeyCode::Right if self.conversation.is_none() => self.switch(1),
             KeyCode::BackTab | KeyCode::Left if self.conversation.is_none() => self.switch(-1),
-            KeyCode::Char(c @ '1'..='8') => {
+            KeyCode::Char(c @ '1'..='9') => {
                 let i = c as usize - '1' as usize;
                 self.go(Tab::ALL[i]);
             }
+            KeyCode::Char('0') => self.go(Tab::Qr),
             KeyCode::Up | KeyCode::Char('k') => self.move_sel(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_sel(1),
             KeyCode::Char('r') => {
@@ -459,6 +510,8 @@ impl App {
             Tab::Notifications => ("notifs", self.notifs.len()),
             Tab::Clipboard => ("clipboard", self.clipboard.len()),
             Tab::Devices => ("devices", self.peers.len()),
+            Tab::Camera => ("cameras", self.cameras.len()),
+            Tab::Qr => ("qr", self.qr.len()),
             _ => return None,
         })
     }
@@ -598,6 +651,83 @@ impl App {
                 KeyCode::Enter => self.send_file(),
                 _ => {}
             },
+            Tab::Camera => {
+                if code == KeyCode::Enter {
+                    if self.webcam.1.is_empty() {
+                        let camera = self
+                            .cameras
+                            .get(self.sel("cameras"))
+                            .map(|c| c.0.clone())
+                            .unwrap_or_default();
+                        let Some(peer) = self.phone().map(|p| p.0.clone()) else {
+                            return;
+                        };
+                        self.spawn(move |d| async move {
+                            Ev::Done(
+                                d.webcam_start(&peer, &camera)
+                                    .await
+                                    .map(|dev| tf("gui.camera.started", &[("device", &dev)]))
+                                    .map_err(err_text),
+                            )
+                        });
+                    } else {
+                        self.spawn(|d| async move {
+                            Ev::Done(
+                                d.webcam_stop()
+                                    .await
+                                    .map(|_| t("gui.camera.stopped").to_string())
+                                    .map_err(err_text),
+                            )
+                        });
+                    }
+                }
+            }
+            Tab::Qr => {
+                let i = self.sel("qr") as u32;
+                match code {
+                    KeyCode::Char('s') => self
+                        .command(t("gui.camera.scan_opened").into(), |d, peer| async move {
+                            d.qr_scan(&peer).await
+                        }),
+                    KeyCode::Enter if self.qr.get(i as usize).is_some_and(|q| q.3 == "url") => {
+                        self.spawn(move |d| async move {
+                            Ev::Done(d.qr_open(i).await.map(|_| String::new()).map_err(err_text))
+                        });
+                    }
+                    KeyCode::Enter | KeyCode::Char('c') if !self.qr.is_empty() => {
+                        self.spawn(move |d| async move {
+                            Ev::Done(
+                                d.qr_copy(i)
+                                    .await
+                                    .map(|_| t("tui.copied").to_string())
+                                    .map_err(err_text),
+                            )
+                        });
+                    }
+                    KeyCode::Char('g') if !self.qr.is_empty() => {
+                        self.spawn(move |d| async move {
+                            Ev::Done(
+                                d.qr_save(i)
+                                    .await
+                                    .map(|p| tf("gui.camera.qr_saved", &[("path", &p)]))
+                                    .map_err(err_text),
+                            )
+                        });
+                    }
+                    KeyCode::Char('x') if !self.qr.is_empty() => {
+                        self.qr.remove(i as usize);
+                        self.spawn(move |d| async move {
+                            Ev::Done(
+                                d.qr_forget(i as i32)
+                                    .await
+                                    .map(|_| String::new())
+                                    .map_err(err_text),
+                            )
+                        });
+                    }
+                    _ => {}
+                }
+            }
             Tab::Home => {}
         }
     }
@@ -747,6 +877,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
             Ok(mut sms),
             Ok(mut notifs),
             Ok(mut clip),
+            Ok(mut qr),
             Ok(mut owner),
         ) = (
             daemon.receive_peers_changed().await,
@@ -754,6 +885,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
             daemon.receive_sms_changed().await,
             daemon.receive_phone_notifications_changed().await,
             daemon.receive_clipboard_changed().await,
+            daemon.receive_qr_changed().await,
             daemon.inner().receive_owner_changed().await,
         )
         else {
@@ -782,6 +914,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
                 },
                 Some(_) = notifs.next() => Ev::NotificationsChanged,
                 Some(_) = clip.next() => Ev::ClipboardChanged,
+                Some(_) = qr.next() => Ev::QrChanged,
                 Some(new_owner) = owner.next() => {
                     if new_owner.is_none() {
                         break;

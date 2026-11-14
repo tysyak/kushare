@@ -6,6 +6,7 @@
 
 mod anim;
 mod calls;
+mod camera;
 mod clip;
 mod daemon;
 mod icons;
@@ -132,6 +133,7 @@ enum Screen {
     Photos,
     Notifications,
     Clipboard,
+    Camera,
     Send,
     Settings,
 }
@@ -205,6 +207,7 @@ struct App {
     calls: calls::CallsState,
     notifs: notifs::NotifState,
     clip: clip::ClipState,
+    camera: camera::CameraState,
     viewer: Option<viewer::Viewer>,
     /// Ajustes del daemon: (nombre, activado).
     daemon_settings: Vec<(String, bool)>,
@@ -353,6 +356,7 @@ enum Message {
     Calls(calls::Msg),
     Notifs(notifs::Msg),
     Clip(clip::Msg),
+    Camera(camera::Msg),
     Viewer(viewer::Msg),
     /// Abrir *Mensajes* con un SMS nuevo (o la conversación) para este número.
     OpenSmsTo(String),
@@ -393,6 +397,7 @@ impl App {
                 Ok("photos") => Screen::Photos,
                 Ok("notifications") => Screen::Notifications,
                 Ok("clipboard") => Screen::Clipboard,
+                Ok("camera") => Screen::Camera,
                 Ok("devices") => Screen::Devices,
                 Ok("settings") => Screen::Settings,
                 _ => Screen::Home,
@@ -412,6 +417,7 @@ impl App {
             calls: Default::default(),
             notifs: Default::default(),
             clip: Default::default(),
+            camera: Default::default(),
             viewer: None,
             daemon_settings: Vec::new(),
             update: UpdateStatus::default(),
@@ -509,6 +515,13 @@ impl App {
         subs.push(iced::window::resize_events().map(|(_, size)| Message::Resized(size)));
         if self.config.animations && (self.ui.active() || self.notifs.animating()) {
             subs.push(iced::window::frames().map(|_| Message::Frame));
+        }
+        // Estado de la webcam (fps) mientras se ve su página o está en marcha.
+        if self.webcam_watch() && self.state == DaemonState::Running {
+            subs.push(
+                iced::time::every(Duration::from_secs(2))
+                    .map(|_| Message::Camera(camera::Msg::Poll)),
+            );
         }
         // La barra de progreso de lo que suena avanza cada segundo.
         let playing = self
@@ -654,6 +667,7 @@ impl App {
             Message::Daemon(Event::NotificationsChanged(peer)) => {
                 Task::done(Message::Notifs(notifs::Msg::Changed(peer)))
             }
+            Message::Daemon(Event::QrChanged) => Task::done(Message::Camera(camera::Msg::Load)),
             Message::Daemon(Event::ClipboardChanged) => {
                 if self.screen == Screen::Clipboard {
                     Task::done(Message::Clip(clip::Msg::Load))
@@ -750,6 +764,7 @@ impl App {
                         return Task::done(Message::Notifs(notifs::Msg::Load));
                     }
                     Screen::Clipboard => return Task::done(Message::Clip(clip::Msg::Load)),
+                    Screen::Camera => return Task::done(Message::Camera(camera::Msg::Load)),
                     Screen::Phone => {
                         let mut tasks = vec![Task::done(Message::LoadLocalAudio)];
                         for p in self.phone_peers() {
@@ -1154,6 +1169,7 @@ impl App {
             Message::Calls(m) => self.calls_update(m),
             Message::Notifs(m) => self.notifs_update(m),
             Message::Clip(m) => self.clip_update(m),
+            Message::Camera(m) => self.camera_update(m),
             Message::Viewer(m) => self.viewer_update(m),
             Message::Key(key) => {
                 use iced::keyboard::{Key, key::Named};
@@ -1348,6 +1364,7 @@ impl App {
             Screen::Photos => self.photos(c),
             Screen::Notifications => self.notifs_view(c),
             Screen::Clipboard => self.clip_view(c),
+            Screen::Camera => self.camera_view(c),
             Screen::Send => self.send(c),
             Screen::Settings => self.settings(c),
         };
@@ -1443,6 +1460,7 @@ impl App {
                 Screen::Notifications,
             ),
             (Icon::Clipboard, t("gui.nav.clipboard"), Screen::Clipboard),
+            (Icon::Camera, t("gui.nav.camera"), Screen::Camera),
             (Icon::Send, t("gui.nav.send"), Screen::Send),
             (Icon::Devices, t("gui.nav.devices"), Screen::Devices),
             (Icon::Settings, t("gui.nav.settings"), Screen::Settings),

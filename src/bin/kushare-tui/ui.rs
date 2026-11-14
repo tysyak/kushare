@@ -53,7 +53,7 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
     let titles: Vec<Line> = Tab::ALL
         .iter()
         .enumerate()
-        .map(|(i, tab)| Line::from(format!("{} {}", i + 1, tab.label())))
+        .map(|(i, tab)| Line::from(format!("{} {}", (i + 1) % 10, tab.label())))
         .collect();
     let selected = Tab::ALL.iter().position(|t| *t == app.tab).unwrap_or(0);
     let tabs = Tabs::new(titles)
@@ -269,7 +269,7 @@ fn draw_page(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(p, area);
         return;
     }
-    let needs_phone = !matches!(app.tab, Tab::Home | Tab::Devices | Tab::Clipboard);
+    let needs_phone = !matches!(app.tab, Tab::Home | Tab::Devices | Tab::Clipboard | Tab::Qr);
     if needs_phone && app.phone().is_none() {
         let p = Paragraph::new(vec![
             Line::from(t("gui.phone.none").to_string()).bold(),
@@ -288,6 +288,8 @@ fn draw_page(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Clipboard => draw_clipboard(frame, area, app),
         Tab::Devices => draw_devices(frame, area, app),
         Tab::Send => draw_send(frame, area, app),
+        Tab::Camera => draw_camera(frame, area, app),
+        Tab::Qr => draw_qr(frame, area, app),
     }
 }
 
@@ -590,6 +592,97 @@ fn draw_send(frame: &mut Frame, area: Rect, app: &App) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn draw_camera(frame: &mut Frame, area: Rect, app: &App) {
+    let [status, list] = Layout::vertical([Constraint::Length(4), Constraint::Min(3)]).areas(area);
+    let (active, peer, _, device, fps, error) = &app.webcam;
+    let line = if peer.is_empty() {
+        t("gui.camera.off").to_string()
+    } else if !error.is_empty() {
+        tf("gui.camera.error", &[("error", error)])
+    } else if *active {
+        tf("gui.camera.on", &[("device", device), ("fps", fps)])
+    } else {
+        t("gui.camera.starting").to_string()
+    };
+    let style = if *active {
+        Style::default().fg(ACCENT).bold()
+    } else {
+        Style::default()
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(line, style),
+            Line::from(t("tui.keys_camera").to_string()).fg(DIM),
+        ])
+        .block(block(t("gui.camera.webcam"))),
+        status,
+    );
+    let items: Vec<ListItem> = app
+        .cameras
+        .iter()
+        .map(|(id, label, _)| ListItem::new(Line::from(format!("{id:>3}  {label}"))))
+        .collect();
+    let mut state = ListState::default();
+    if !app.cameras.is_empty() {
+        state.select(Some(app.sel("cameras")));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(block(t("tui.cameras")))
+            .highlight_style(Style::default().bg(Color::Rgb(0x3A, 0x22, 0x4A))),
+        list,
+        &mut state,
+    );
+}
+
+fn draw_qr(frame: &mut Frame, area: Rect, app: &App) {
+    let width = area.width.saturating_sub(4) as usize;
+    let items: Vec<ListItem> = app
+        .qr
+        .iter()
+        .map(|(text, format, date, kind, _)| {
+            let label = match kind.as_str() {
+                "url" => t("gui.camera.kind_url"),
+                "wifi" => t("gui.camera.kind_wifi"),
+                "phone" => t("gui.camera.kind_phone"),
+                "email" => t("gui.camera.kind_email"),
+                "contact" => t("gui.camera.kind_contact"),
+                _ => t("gui.camera.kind_text"),
+            };
+            ListItem::new(vec![
+                Line::from(format!("{label} · {} · {format}", fmt_time(*date))).fg(DIM),
+                Line::from(cut(&text.replace('\n', " "), width)).bold(),
+            ])
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !app.qr.is_empty() {
+        state.select(Some(app.sel("qr")));
+    }
+    let title = format!("{} · {}", t("gui.camera.qr_title"), t("tui.keys_qr"));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(block(&title))
+            .highlight_style(Style::default().bg(Color::Rgb(0x3A, 0x22, 0x4A))),
+        area,
+        &mut state,
+    );
+    if app.qr.is_empty() {
+        let inner = Rect {
+            x: area.x + 2,
+            y: area.y + 1,
+            width: area.width.saturating_sub(4),
+            height: 2,
+        };
+        frame.render_widget(
+            Paragraph::new(t("gui.camera.qr_empty").to_string())
+                .fg(DIM)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+    }
 }
 
 // --- Pie: entrada de texto, aviso o ayuda --------------------------------------

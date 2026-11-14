@@ -119,6 +119,61 @@ fn peer_state_reply(state: &super::features::PeerState) -> PeerStateReply {
     )
 }
 
+/// Cámaras con una etiqueta legible: «Trasera · 50 MP», «Trasera · 12 MP ·
+/// teleobjetivo», «Frontal · 12 MP», «Trasera · 16 MP · infrarroja»…
+fn camera_rows(cameras: &[pb::CameraInfo]) -> Vec<kushare_dbus::CameraRow> {
+    use kushare_i18n::t;
+    // Focal de referencia: la mediana de las traseras simples.
+    let mut focals: Vec<f32> = cameras
+        .iter()
+        .filter(|c| c.facing == "back" && !c.logical && c.focal_mm > 0.0)
+        .map(|c| c.focal_mm)
+        .collect();
+    focals.sort_by(f32::total_cmp);
+    let reference = focals.get(focals.len() / 2).copied().unwrap_or(0.0);
+    cameras
+        .iter()
+        .map(|c| {
+            let mut parts = vec![
+                match c.facing.as_str() {
+                    "front" => t("daemon.camera_front"),
+                    "external" => t("daemon.camera_external"),
+                    _ => t("daemon.camera_back"),
+                }
+                .to_string(),
+            ];
+            if c.megapixels > 0.0 {
+                parts.push(format!("{:.0} MP", c.megapixels));
+            }
+            if c.infrared {
+                parts.push(t("daemon.camera_infrared").into());
+            } else if c.monochrome {
+                parts.push(t("daemon.camera_mono").into());
+            }
+            if c.logical {
+                parts.push(t("daemon.camera_logical").into());
+            } else if c.facing == "back" && reference > 0.0 && focals.len() > 1 {
+                if c.focal_mm > reference * 1.5 {
+                    parts.push(t("daemon.camera_tele").into());
+                } else if c.focal_mm < reference * 0.75 {
+                    parts.push(t("daemon.camera_wide").into());
+                }
+            }
+            (c.id.clone(), parts.join(" · "), c.facing.clone())
+        })
+        .collect()
+}
+
+impl DaemonApi {
+    fn qr_entry(&self, index: u32) -> fdo::Result<super::qr::QrEntry> {
+        self.link
+            .features
+            .qr
+            .get(index as usize)
+            .ok_or_else(|| fdo::Error::InvalidArgs(format!("no hay código QR {index}")))
+    }
+}
+
 fn failed(err: anyhow::Error) -> fdo::Error {
     fdo::Error::Failed(format!("{err:#}"))
 }
@@ -315,6 +370,74 @@ impl DaemonApi {
             .features
             .set_audio_output(&id, output)
             .map_err(failed)
+    }
+
+    async fn cameras(&self, peer: &str) -> fdo::Result<Vec<kushare_dbus::CameraRow>> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let cameras = self.link.features.cameras(&id).await.map_err(failed)?;
+        Ok(camera_rows(&cameras))
+    }
+
+    async fn webcam_start(&self, peer: &str, camera: &str) -> fdo::Result<String> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let device = self
+            .link
+            .features
+            .webcam_start(&id, camera)
+            .await
+            .map_err(failed)?;
+        Ok(device.to_string_lossy().into_owned())
+    }
+
+    fn webcam_stop(&self) {
+        self.link.features.webcam_stop();
+    }
+
+    fn webcam_status(&self) -> kushare_dbus::WebcamRow {
+        self.link.features.webcam_status()
+    }
+
+    fn qr_scan(&self, peer: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        self.link.features.qr_scan(&id).map_err(failed)
+    }
+
+    fn qr_history(&self) -> Vec<kushare_dbus::QrRow> {
+        self.link
+            .features
+            .qr
+            .list()
+            .into_iter()
+            .map(|e| {
+                let kind = super::qr::QrKind::of(&e.text).name().to_string();
+                (e.text, e.format, e.date_ms, kind, e.device)
+            })
+            .collect()
+    }
+
+    fn qr_open(&self, index: u32) -> fdo::Result<()> {
+        let entry = self.qr_entry(index)?;
+        super::qr::open_url(&entry.text).map_err(failed)
+    }
+
+    fn qr_copy(&self, index: u32) -> fdo::Result<()> {
+        let entry = self.qr_entry(index)?;
+        self.link
+            .features
+            .clipboard
+            .copy_text(&entry.text)
+            .map_err(failed)
+    }
+
+    fn qr_save(&self, index: u32) -> fdo::Result<String> {
+        let entry = self.qr_entry(index)?;
+        super::qr::save_to_downloads(&entry)
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| fdo::Error::Failed(e.to_string()))
+    }
+
+    fn qr_forget(&self, index: i32) {
+        self.link.features.qr.forget(index);
     }
 
     fn find_phone(&self, peer: &str, ring: bool) -> fdo::Result<()> {
@@ -757,6 +880,9 @@ impl DaemonApi {
     async fn clipboard_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(signal)]
+    async fn qr_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
     async fn phone_notifications_changed(
         emitter: &SignalEmitter<'_>,
         peer_id: &str,
@@ -793,6 +919,7 @@ impl DaemonApi {
 pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
     let mut events = link.events.subscribe();
     let clipboard_changes = link.features.clipboard.subscribe();
+    let qr_changes = link.features.qr.subscribe();
     let connection = zbus::connection::Builder::session()?
         .serve_at(OBJECT_PATH, DaemonApi { link })?
         .build()
@@ -812,6 +939,15 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
         tokio::spawn(async move {
             while changes.changed().await.is_ok() {
                 let _ = DaemonApi::clipboard_changed(iface.signal_emitter()).await;
+            }
+        });
+    }
+    {
+        let iface = iface.clone();
+        let mut changes = qr_changes;
+        tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                let _ = DaemonApi::qr_changed(iface.signal_emitter()).await;
             }
         });
     }
@@ -862,7 +998,9 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
                             | F::MediaPlayers(_)
                             | F::AudioOutputs(_)
                             | F::RingerMode(_)
-                            | F::CallState(_),
+                            | F::CallState(_)
+                            | F::FindPhone(_)
+                            | F::WebcamState(_),
                         ) => DaemonApi::peer_state_changed(emitter, &device_id).await,
                         Some(F::PhotosChanged(_)) => {
                             DaemonApi::photos_changed(emitter, &device_id).await

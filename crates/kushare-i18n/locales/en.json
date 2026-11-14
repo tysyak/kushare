@@ -30,7 +30,23 @@
     "photo_gallery": "Gallery",
     "lock_title": "{name} moved away",
     "lock_body": "This PC will lock in 10 s (dynamic lock).",
-    "lock_cancel": "Cancel"
+    "lock_cancel": "Cancel",
+    "camera_front": "Front",
+    "camera_back": "Back",
+    "camera_external": "External",
+    "camera_infrared": "infrared (night vision)",
+    "camera_mono": "monochrome",
+    "camera_logical": "multi-camera",
+    "camera_tele": "telephoto",
+    "camera_wide": "wide angle",
+    "qr_title": "Code scanned on {name}",
+    "qr_title_url": "Website scanned on {name}",
+    "qr_title_wifi": "Wi-Fi scanned on {name}",
+    "qr_wifi_body": "Network “{ssid}” · password: {password}",
+    "qr_open": "Open in browser",
+    "qr_copy": "Copy",
+    "qr_copy_password": "Copy password",
+    "qr_save": "Save"
   },
   "gui": {
     "apps": {
@@ -99,7 +115,8 @@
       "messages": "Messages",
       "calls": "Calls",
       "notifications": "Notifications",
-      "clipboard": "Clipboard"
+      "clipboard": "Clipboard",
+      "camera": "Camera"
     },
     "pairing": {
       "hint": "Check that the other device shows the same code",
@@ -339,7 +356,36 @@
       "dismiss_all": "Clear all",
       "find": "Find phone",
       "find_stop": "Stop ringing",
-      "find_started": "The phone is ringing: silence it on its screen."
+      "find_started": "The phone is ringing: silence it on its screen.",
+      "scan_qr": "Scan QR",
+      "webcam": "Webcam"
+    },
+    "camera": {
+      "subtitle": "The phone as a webcam and QR scanner",
+      "none_detail": "Connect your phone to use its camera as the PC webcam.",
+      "webcam": "PC webcam",
+      "webcam_detail": "Pick the camera (front, back, telephoto, night vision…) and it shows up as another webcam in the browser, OBS or video calls. Needs the same Wi-Fi and the v4l2loopback module.",
+      "off": "Stopped",
+      "starting": "Starting on the phone…",
+      "on": "On at {device} · {fps} fps",
+      "error": "The phone could not: {error}",
+      "start": "Use as webcam",
+      "stop": "Stop",
+      "started": "Webcam at {device}: pick it in your app.",
+      "stopped": "Webcam stopped.",
+      "qr_title": "QR codes",
+      "scan": "Scan with the phone",
+      "scan_opened": "Scanner opened on the phone.",
+      "qr_clear": "Clear all",
+      "qr_empty": "Nothing scanned yet: what you read with the phone will show up here.",
+      "qr_saved": "Saved to {path}",
+      "open": "Open",
+      "kind_url": "Web",
+      "kind_wifi": "Wi-Fi",
+      "kind_phone": "Phone",
+      "kind_email": "Email",
+      "kind_contact": "Contact",
+      "kind_text": "Text"
     }
   },
   "tray": {
@@ -378,7 +424,7 @@
     "daemon_off_detail": "Start it with `kushare` (or from the app menu); this screen connects by itself.",
     "now_playing": "Now playing",
     "keys_title": "Keys",
-    "keys_tabs": "Tab / ← → or 1–8: switch tab",
+    "keys_tabs": "Tab / ← → or 1–9, 0: switch tab",
     "keys_move": "↑ ↓ (j k): move · Enter: open or use · r: reload",
     "keys_media": "Space: play/pause · < >: previous/next",
     "keys_find": "f: find the phone (rings even when silent) · f again: stop it",
@@ -397,6 +443,9 @@
     "input_path": "File",
     "keys_notifs": "x dismiss · X all · Enter action · w reply",
     "keys_messages": "Enter open · w write · Esc back",
-    "keys_short": "Tab tabs · ↑↓ move · f find phone · Space ⏯ · q quit"
+    "keys_short": "Tab tabs · ↑↓ move · f find phone · Space ⏯ · q quit",
+    "keys_camera": "↑↓ pick camera · Enter: use as webcam / stop",
+    "cameras": "Phone cameras",
+    "keys_qr": "s scan · Enter open/copy · c copy · g save · x delete"
   }
 }

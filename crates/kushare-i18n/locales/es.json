@@ -30,7 +30,23 @@
     "photo_gallery": "Galería",
     "lock_title": "{name} se alejó",
     "lock_body": "El PC se bloqueará en 10 s (bloqueo dinámico).",
-    "lock_cancel": "Cancelar"
+    "lock_cancel": "Cancelar",
+    "camera_front": "Frontal",
+    "camera_back": "Trasera",
+    "camera_external": "Externa",
+    "camera_infrared": "infrarroja (visión nocturna)",
+    "camera_mono": "monocromo",
+    "camera_logical": "multicámara",
+    "camera_tele": "teleobjetivo",
+    "camera_wide": "gran angular",
+    "qr_title": "Código escaneado en {name}",
+    "qr_title_url": "Web escaneada en {name}",
+    "qr_title_wifi": "Wi-Fi escaneada en {name}",
+    "qr_wifi_body": "Red «{ssid}» · contraseña: {password}",
+    "qr_open": "Abrir en el navegador",
+    "qr_copy": "Copiar",
+    "qr_copy_password": "Copiar contraseña",
+    "qr_save": "Guardar"
   },
   "gui": {
     "apps": {
@@ -99,7 +115,8 @@
       "messages": "Mensajes",
       "calls": "Llamadas",
       "notifications": "Notificaciones",
-      "clipboard": "Portapapeles"
+      "clipboard": "Portapapeles",
+      "camera": "Cámara"
     },
     "pairing": {
       "hint": "Comprueba que el otro dispositivo muestra el mismo código",
@@ -339,7 +356,36 @@
       "dismiss_all": "Borrar todo",
       "find": "Buscar teléfono",
       "find_stop": "Dejar de sonar",
-      "find_started": "El teléfono está sonando: silencíalo en su pantalla."
+      "find_started": "El teléfono está sonando: silencíalo en su pantalla.",
+      "scan_qr": "Escanear QR",
+      "webcam": "Webcam"
+    },
+    "camera": {
+      "subtitle": "El teléfono como webcam y como escáner de QR",
+      "none_detail": "Conecta tu teléfono para usar su cámara como webcam del PC.",
+      "webcam": "Webcam del PC",
+      "webcam_detail": "Elige la cámara (frontal, traseras, teleobjetivo, visión nocturna…) y aparecerá como una webcam más en el navegador, OBS o las videollamadas. Necesita la misma Wi-Fi y el módulo v4l2loopback.",
+      "off": "Parada",
+      "starting": "Arrancando en el teléfono…",
+      "on": "Activa en {device} · {fps} fps",
+      "error": "El teléfono no pudo: {error}",
+      "start": "Usar como webcam",
+      "stop": "Parar",
+      "started": "Webcam en {device}: elígela en tu app.",
+      "stopped": "Webcam parada.",
+      "qr_title": "Códigos QR",
+      "scan": "Escanear con el teléfono",
+      "scan_opened": "Escáner abierto en el teléfono.",
+      "qr_clear": "Borrar todo",
+      "qr_empty": "Aún no has escaneado nada: lo que leas con el teléfono aparecerá aquí.",
+      "qr_saved": "Guardado en {path}",
+      "open": "Abrir",
+      "kind_url": "Web",
+      "kind_wifi": "Wi-Fi",
+      "kind_phone": "Teléfono",
+      "kind_email": "Correo",
+      "kind_contact": "Contacto",
+      "kind_text": "Texto"
     }
   },
   "tray": {
@@ -378,7 +424,7 @@
     "daemon_off_detail": "Arráncalo con `kushare` (o desde el menú de aplicaciones); esta pantalla se conecta sola.",
     "now_playing": "Sonando",
     "keys_title": "Teclas",
-    "keys_tabs": "Tab / ← → o 1–8: cambiar de pestaña",
+    "keys_tabs": "Tab / ← → o 1–9, 0: cambiar de pestaña",
     "keys_move": "↑ ↓ (j k): moverse · Enter: abrir o usar · r: recargar",
     "keys_media": "Espacio: reproducir/pausar · < >: anterior/siguiente",
     "keys_find": "f: buscar el teléfono (suena aunque esté en silencio) · otra vez f: pararlo",
@@ -397,6 +443,9 @@
     "input_path": "Archivo",
     "keys_notifs": "x descartar · X todas · Enter acción · w responder",
     "keys_messages": "Enter abrir · w escribir · Esc volver",
-    "keys_short": "Tab pestañas · ↑↓ mover · f buscar teléfono · Espacio ⏯ · q salir"
+    "keys_short": "Tab pestañas · ↑↓ mover · f buscar teléfono · Espacio ⏯ · q salir",
+    "keys_camera": "↑↓ elegir cámara · Enter: usar como webcam / parar",
+    "cameras": "Cámaras del teléfono",
+    "keys_qr": "s escanear · Enter abrir/copiar · c copiar · g guardar · x borrar"
   }
 }

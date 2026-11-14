@@ -273,6 +273,58 @@ impl App {
             }),
         );
 
+        // Accesos a la cámara del teléfono: escanear un QR y la webcam.
+        let webcam_on = !self.camera.webcam.1.is_empty();
+        let quick = |icon: Icon, label: &'static str, on: bool, msg: Message| {
+            button(
+                row![
+                    icon.view(
+                        16.0,
+                        if on {
+                            c.on_primary
+                        } else {
+                            c.on_secondary_container
+                        }
+                    ),
+                    text(label).size(13).font(SEMIBOLD),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding(Padding::from([7, 10]))
+            .width(Length::Fill)
+            .style(style::button(
+                c,
+                if on {
+                    ButtonKind::Filled
+                } else {
+                    ButtonKind::Tonal
+                },
+            ))
+            .on_press(msg)
+        };
+        col = col.push(
+            row![
+                quick(
+                    Icon::QrCode,
+                    t("gui.panel.scan_qr"),
+                    false,
+                    Message::Camera(camera::Msg::Scan)
+                ),
+                quick(
+                    Icon::Camera,
+                    t("gui.panel.webcam"),
+                    webcam_on,
+                    if webcam_on {
+                        Message::Camera(camera::Msg::Stop)
+                    } else {
+                        Message::Navigate(Screen::Camera)
+                    }
+                ),
+            ]
+            .spacing(6),
+        );
+
         // Llamada en curso: quién y los botones para atender o colgar.
         if let Some((_, _, call, ..)) = state
             && call.0 != "idle"

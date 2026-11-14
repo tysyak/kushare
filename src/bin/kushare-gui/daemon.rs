@@ -117,6 +117,8 @@ pub enum Event {
     NotificationsChanged(String),
     /// Cambió el historial del portapapeles.
     ClipboardChanged,
+    /// Cambió el historial de códigos QR (se leyó uno en el teléfono).
+    QrChanged,
     PairingRequested {
         id: String,
         name: String,
@@ -148,6 +150,7 @@ pub fn events() -> Subscription<Event> {
                     Ok(mut sms_changed),
                     Ok(mut notifs_changed),
                     Ok(mut clipboard_changed),
+                    Ok(mut qr_changed),
                     Ok(mut owner),
                 ) = (
                     daemon.receive_pairing_requested().await,
@@ -158,6 +161,7 @@ pub fn events() -> Subscription<Event> {
                     daemon.receive_sms_changed().await,
                     daemon.receive_phone_notifications_changed().await,
                     daemon.receive_clipboard_changed().await,
+                    daemon.receive_qr_changed().await,
                     daemon.inner().receive_owner_changed().await,
                 )
                 else {
@@ -190,6 +194,7 @@ pub fn events() -> Subscription<Event> {
                             Err(_) => continue,
                         },
                         Some(_) = clipboard_changed.next() => Event::ClipboardChanged,
+                        Some(_) = qr_changed.next() => Event::QrChanged,
                         Some(new_owner) = owner.next() => {
                             if new_owner.is_none() {
                                 break; // el daemon se cerró
