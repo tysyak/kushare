@@ -6,6 +6,8 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.7.0] - 2026-11-13
+
 ### Añadido
 - **Encontrar teléfono**: lo hace sonar a todo volumen aunque esté en silencio,
   vibración o No molestar, con la linterna parpadeando, hasta que se silencie
