@@ -6,6 +6,8 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.8.2] - 2026-11-16
+
 ### Añadido
 - **Ventana propia para responder** a una notificación del teléfono
   (`kushare-gui --reply`): el mensaje y un cuadro de texto de varias líneas,
