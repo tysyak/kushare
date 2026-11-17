@@ -215,6 +215,11 @@ message Feature {
     WebcamState webcam_state = 44;
     QrScan qr_scan = 45;
     QrResult qr_result = 46;
+    MicStart mic_start = 47;
+    MicStop mic_stop = 48;
+    MicAudio mic_audio = 49;
+    MicState mic_state = 50;
+    Dtmf dtmf = 51;
   }
 }
 
@@ -667,6 +672,46 @@ message QrResult {
   // Formato ZXing: "QR_CODE", "EAN_13"…
   string format = 2;
   int64 date_ms = 3;
+}
+
+// --- El teléfono como micrófono del PC y tonos DTMF (0.8) ----------------
+
+enum MicCodec {
+  // PCM con signo, 16 bits, little-endian, mono (por Wi-Fi).
+  MIC_PCM16 = 0;
+  // IMA-ADPCM de 4 bits, mono (solo Bluetooth). Cada bloque empieza con
+  // la muestra (i16 LE) y el índice de paso (u8) del predictor.
+  MIC_IMA_ADPCM = 1;
+}
+
+// PC → teléfono: empezar a mandar el micrófono.
+message MicStart {
+  uint32 rate = 1;
+  MicCodec codec = 2;
+}
+
+message MicStop {}
+
+// Teléfono → PC: un bloque de audio (≈ 40 ms). Sin confirmación: si se
+// pierde alguno, el PC rellena con silencio.
+message MicAudio {
+  uint32 seq = 1;
+  bytes data = 2;
+}
+
+// Teléfono → PC: estado del micrófono (al empezar, al parar o si falla).
+message MicState {
+  bool active = 1;
+  string error = 2;
+  MicCodec codec = 3;
+  uint32 rate = 4;
+}
+
+// PC → teléfono: tonos DTMF en la llamada en curso ("0-9*#ABCD").
+// Responde con `CommandResult` (mismo `request_id`).
+message Dtmf {
+  uint64 request_id = 1;
+  string digits = 2;
 }
 
 // Pide las miniaturas de las fotos de contacto con estas claves

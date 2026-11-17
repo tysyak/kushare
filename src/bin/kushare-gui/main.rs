@@ -518,10 +518,13 @@ impl App {
         }
         // Estado de la webcam (fps) mientras se ve su página o está en marcha.
         if self.webcam_watch() && self.state == DaemonState::Running {
-            subs.push(
-                iced::time::every(Duration::from_secs(2))
-                    .map(|_| Message::Camera(camera::Msg::Poll)),
-            );
+            // Con el micrófono a la vista, más a menudo para el medidor.
+            let every = if self.mic_meter() {
+                Duration::from_millis(200)
+            } else {
+                Duration::from_secs(2)
+            };
+            subs.push(iced::time::every(every).map(|_| Message::Camera(camera::Msg::Poll)));
         }
         // La barra de progreso de lo que suena avanza cada segundo.
         let playing = self

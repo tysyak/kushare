@@ -116,7 +116,7 @@
       "calls": "Calls",
       "notifications": "Notifications",
       "clipboard": "Clipboard",
-      "camera": "Camera"
+      "camera": "Camera & mic"
     },
     "pairing": {
       "hint": "Check that the other device shows the same code",
@@ -262,7 +262,9 @@
       "kind_missed": "Missed",
       "kind_rejected": "Declined",
       "kind_blocked": "Blocked",
-      "kind_voicemail": "Voicemail"
+      "kind_voicemail": "Voicemail",
+      "dtmf_title": "Call keypad",
+      "dtmf_hint": "Keys are sent as tones to the call (voice menus, extensions)."
     },
     "clip": {
       "subtitle": "Copy on one side, paste on the other",
@@ -358,13 +360,14 @@
       "find_stop": "Stop ringing",
       "find_started": "The phone is ringing: silence it on its screen.",
       "scan_qr": "Scan QR",
-      "webcam": "Webcam"
+      "webcam": "Webcam",
+      "mic": "Microphone"
     },
     "camera": {
-      "subtitle": "The phone as a webcam and QR scanner",
+      "subtitle": "The phone as a webcam, microphone and QR scanner",
       "none_detail": "Connect your phone to use its camera as the PC webcam.",
       "webcam": "PC webcam",
-      "webcam_detail": "Pick the camera (front, back, telephoto, night vision…) and it shows up as another webcam in the browser, OBS or video calls. Needs the same Wi-Fi and the v4l2loopback module.",
+      "webcam_detail": "Pick the camera (front, back, telephoto, night vision…) and it shows up as another webcam in the browser, OBS or video calls. Needs the same Wi-Fi and v4l2loopback or PipeWire (gst-plugin-pipewire).",
       "off": "Stopped",
       "starting": "Starting on the phone…",
       "on": "On at {device} · {fps} fps",
@@ -385,7 +388,20 @@
       "kind_phone": "Phone",
       "kind_email": "Email",
       "kind_contact": "Contact",
-      "kind_text": "Text"
+      "kind_text": "Text",
+      "backend": "Engine",
+      "backend_auto": "Automatic",
+      "backend_v4l2": "v4l2loopback",
+      "backend_pipewire": "PipeWire",
+      "mic": "PC microphone",
+      "mic_detail": "The input “Micrófono de <phone>” shows up in PC apps. Over Wi-Fi it is full quality (48 kHz); with Bluetooth only, 16 kHz.",
+      "mic_off": "Stopped",
+      "mic_starting": "Starting on the phone…",
+      "mic_on": "On · {codec}",
+      "mic_start": "Use as microphone",
+      "mic_started": "Phone microphone ready ({codec}).",
+      "mic_stopped": "Microphone stopped.",
+      "mic_default": "Use it as the default input"
     }
   },
   "tray": {
@@ -444,8 +460,10 @@
     "keys_notifs": "x dismiss · X all · Enter action · w reply",
     "keys_messages": "Enter open · w write · Esc back",
     "keys_short": "Tab tabs · ↑↓ move · f find phone · Space ⏯ · q quit",
-    "keys_camera": "↑↓ pick camera · Enter: use as webcam / stop",
+    "keys_camera": "↑↓ pick camera · Enter: webcam on/off · p engine · m microphone on/off · d default microphone",
     "cameras": "Phone cameras",
-    "keys_qr": "s scan · Enter open/copy · c copy · g save · x delete"
+    "keys_qr": "s scan · Enter open/copy · c copy · g save · x delete",
+    "mic": "Microphone",
+    "keys_dtmf": "In a call: 0–9 * # send tones"
   }
 }

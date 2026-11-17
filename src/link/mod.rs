@@ -8,6 +8,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod dbus;
 pub mod features;
+pub mod mic;
 pub mod proximity;
 pub mod qr;
 pub mod settings;

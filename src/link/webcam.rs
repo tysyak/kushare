@@ -3,6 +3,12 @@
 //! una cámara virtual **v4l2loopback** (`/dev/videoN`), que ven todas las
 //! apps (navegadores, OBS, Zoom…). Sirve cualquier variante del módulo,
 //! también la de DroidCam (`v4l2loopback_dc`, tamaño fijo y YU12).
+//!
+//! Sin v4l2loopback, la cámara virtual puede ser un nodo de **PipeWire**
+//! (`media.class=Video/Source`): sin módulo del kernel ni root. Se crea con
+//! `gst-launch-1.0 … pipewiresink` como subproceso (sin enlazar C) y se le
+//! pasan los fotogramas I420 por la entrada estándar. La ven las apps que
+//! usan PipeWire o el portal de cámara (Firefox, Chromium, OBS, GNOME).
 
 use std::fs::File;
 use std::io::Write;
@@ -80,17 +86,155 @@ pub struct Frame {
     pub mirror: bool,
 }
 
+/// Dónde se crea la cámara virtual.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    V4l2,
+    PipeWire,
+}
+
+impl Backend {
+    /// `auto` | `v4l2` | `pipewire` (ajuste `webcam-backend`).
+    pub fn parse(s: &str) -> Option<Option<Self>> {
+        match s {
+            "auto" | "" => Some(None),
+            "v4l2" | "v4l2loopback" => Some(Some(Self::V4l2)),
+            "pipewire" => Some(Some(Self::PipeWire)),
+            _ => None,
+        }
+    }
+}
+
+/// ¿Se puede crear una cámara de PipeWire (GStreamer con `pipewiresink`)?
+pub fn pipewire_available() -> bool {
+    ["pipewiresink", "rawvideoparse"].iter().all(|element| {
+        std::process::Command::new("gst-inspect-1.0")
+            .arg("--exists")
+            .arg(element)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
+/// Motor a usar: el pedido, o en automático v4l2loopback si está y si no
+/// PipeWire. `v4l2` y `pipewire` son lo que hay disponible.
+pub fn choose(wanted: Option<Backend>, v4l2: bool, pipewire: bool) -> anyhow::Result<Backend> {
+    match wanted {
+        Some(Backend::V4l2) if v4l2 => Ok(Backend::V4l2),
+        Some(Backend::PipeWire) if pipewire => Ok(Backend::PipeWire),
+        None if v4l2 => Ok(Backend::V4l2),
+        None if pipewire => Ok(Backend::PipeWire),
+        Some(Backend::V4l2) => anyhow::bail!(
+            "no hay cámara virtual v4l2loopback: instálala (Arch/Debian/Ubuntu: \
+             v4l2loopback-dkms; Fedora: v4l2loopback de RPM Fusion) y cárgala con \
+             «sudo modprobe v4l2loopback exclusive_caps=1»"
+        ),
+        Some(Backend::PipeWire) => anyhow::bail!(
+            "falta GStreamer con PipeWire: instala gst-plugin-pipewire (Arch), \
+             gstreamer1.0-pipewire (Debian/Ubuntu) o pipewire-gstreamer (Fedora), \
+             y gst-plugins-bad (rawvideoparse)"
+        ),
+        None => anyhow::bail!(
+            "no hay cámara virtual: instala gst-plugin-pipewire (sin root) o \
+             v4l2loopback-dkms y cárgalo con «sudo modprobe v4l2loopback exclusive_caps=1»"
+        ),
+    }
+}
+
 /// Escritor de la cámara virtual en su propio hilo. Si va atrasado, los
 /// fotogramas nuevos se descartan (el teléfono ya limita los pendientes).
 pub struct Sink {
     tx: mpsc::SyncSender<Frame>,
-    pub device: PathBuf,
+    /// `/dev/videoN` o «PipeWire: <nombre>».
+    pub device: String,
     pub width: u32,
     pub height: u32,
     pub frames: Arc<AtomicU64>,
+    /// `gst-launch-1.0` de la cámara de PipeWire.
+    child: Option<std::process::Child>,
+}
+
+impl Drop for Sink {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 impl Sink {
+    /// Cámara de PipeWire llamada `description` (p. ej. «kushare (Armor 28)»).
+    pub fn open_pipewire(description: &str) -> anyhow::Result<Self> {
+        let (width, height) = DEFAULT_SIZE;
+        let props = format!(
+            // gst-launch vuelve a partir sus argumentos por espacios: el valor
+            // entero va entre comillas y las del nombre, escapadas.
+            "stream-properties=\"props,media.class=Video/Source,media.role=Camera,\
+             node.name=kushare_webcam,node.description=\\\"{}\\\"\"",
+            description.replace(['"', ',', '\\'], " ")
+        );
+        let mut child = std::process::Command::new("gst-launch-1.0")
+            .args(["-q", "fdsrc", "fd=0"])
+            .arg(format!("blocksize={}", width * height * 3 / 2))
+            .args(["!", "rawvideoparse", "format=i420"])
+            .arg(format!("width={width}"))
+            .arg(format!("height={height}"))
+            .args([
+                "framerate=30/1",
+                "!",
+                "videoconvert",
+                "!",
+                "video/x-raw,format=I420",
+            ])
+            .args(["!", "pipewiresink", "mode=provide", "sync=false"])
+            .arg(props)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("no se pudo lanzar gst-launch-1.0: {e}"))?;
+        let stdin = child.stdin.take().expect("stdin con pipe");
+        // Lo que diga GStreamer (p. ej. por qué no arranca) va al log.
+        for out in [
+            child
+                .stdout
+                .take()
+                .map(|o| Box::new(o) as Box<dyn std::io::Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|e| Box::new(e) as Box<dyn std::io::Read + Send>),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                    tracing::warn!(target: "kushare::webcam", "gst-launch: {line}");
+                }
+            });
+        }
+        tracing::info!(width, height, "webcam virtual de PipeWire lista");
+        let (tx, rx) = mpsc::sync_channel::<Frame>(1);
+        let frames = Arc::new(AtomicU64::new(0));
+        let counter = frames.clone();
+        std::thread::Builder::new()
+            .name("kushare-webcam".into())
+            .spawn(move || writer(stdin, rx, width, height, YU12, counter))?;
+        Ok(Self {
+            tx,
+            device: format!("PipeWire: {description}"),
+            width,
+            height,
+            frames,
+            child: Some(child),
+        })
+    }
+
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -108,10 +252,11 @@ impl Sink {
             .spawn(move || writer(file, rx, width, height, fourcc, counter))?;
         Ok(Self {
             tx,
-            device: path.to_path_buf(),
+            device: path.display().to_string(),
             width,
             height,
             frames,
+            child: None,
         })
     }
 
@@ -177,7 +322,7 @@ fn negotiate(file: &File) -> anyhow::Result<PixFormat> {
 }
 
 fn writer(
-    mut file: File,
+    mut file: impl Write,
     rx: mpsc::Receiver<Frame>,
     width: u32,
     height: u32,
@@ -357,6 +502,20 @@ fn to_yuyv(img: &Image, rotation: u32, mirror: bool, w: u32, h: u32, out: &mut V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eleccion_del_motor() {
+        use Backend::*;
+        assert_eq!(choose(None, true, true).unwrap(), V4l2);
+        assert_eq!(choose(None, false, true).unwrap(), PipeWire);
+        assert_eq!(choose(Some(PipeWire), true, true).unwrap(), PipeWire);
+        assert!(choose(Some(V4l2), false, true).is_err());
+        assert!(choose(Some(PipeWire), true, false).is_err());
+        assert!(choose(None, false, false).is_err());
+        assert_eq!(Backend::parse("auto"), Some(None));
+        assert_eq!(Backend::parse("pipewire"), Some(Some(PipeWire)));
+        assert_eq!(Backend::parse("x"), None);
+    }
 
     #[test]
     fn v4l2_format_has_the_kernel_size() {

@@ -194,6 +194,19 @@ pub struct Features {
     qr_new_rx: Mutex<Option<mpsc::UnboundedReceiver<super::qr::QrEntry>>>,
     /// El teléfono como webcam (una a la vez).
     webcam: Mutex<Option<WebcamSession>>,
+    /// El teléfono como micrófono (uno a la vez).
+    mic: Mutex<Option<MicSession>>,
+}
+
+/// Micrófono en marcha: de qué teléfono, en qué códec y la fuente virtual.
+pub struct MicSession {
+    pub peer: String,
+    pub sink: super::mic::MicSink,
+    pub codec: super::mic::Codec,
+    pub decoder: super::mic::Decoder,
+    pub active: bool,
+    pub error: String,
+    pub make_default: bool,
 }
 
 /// Webcam en marcha: de qué teléfono y cámara, y a qué cámara virtual.
@@ -255,7 +268,10 @@ impl Features {
             qr_new,
             qr_new_rx: Mutex::new(Some(qr_new_rx)),
             webcam: Mutex::default(),
+            mic: Mutex::default(),
         });
+        // Fuente de micrófono que quedara de una ejecución anterior.
+        std::thread::spawn(super::mic::cleanup_stale);
         tokio::spawn(battery_task(features.clone()));
         tokio::spawn(local_task(features.clone(), command_rx));
         tokio::spawn(prefetch_task(features.clone(), prefetch_rx));
@@ -444,6 +460,44 @@ impl Features {
                 }
                 return Some(RemoteChange::State);
             }
+            F::MicAudio(audio) => {
+                drop(peers);
+                let mut mic = self.mic.lock().expect("mutex envenenado");
+                match mic.as_mut().filter(|s| s.peer == peer_id) {
+                    Some(session) => {
+                        let pcm = session.decoder.decode(session.codec, &audio.data);
+                        session.sink.push(pcm);
+                    }
+                    None => {
+                        // Audio sin haberlo pedido (o tras parar): que pare.
+                        drop(mic);
+                        let _ = self.send(peer_id, F::MicStop(pb::MicStop {}));
+                    }
+                }
+                return None;
+            }
+            F::MicState(ms) => {
+                drop(peers);
+                let mut mic = self.mic.lock().expect("mutex envenenado");
+                if let Some(session) = mic.as_mut().filter(|s| s.peer == peer_id) {
+                    session.active = ms.active;
+                    session.error = ms.error.clone();
+                    if ms.rate > 0 {
+                        session.codec = if ms.codec == pb::MicCodec::MicImaAdpcm as i32 {
+                            super::mic::Codec::Adpcm { rate: ms.rate }
+                        } else {
+                            super::mic::Codec::Pcm16 { rate: ms.rate }
+                        };
+                    }
+                    if !ms.active {
+                        tracing::info!(error = %ms.error, "el teléfono paró el micrófono");
+                        if ms.error.is_empty() {
+                            *mic = None;
+                        }
+                    }
+                }
+                return Some(RemoteChange::State);
+            }
             F::QrResult(r) => {
                 drop(peers);
                 let entry = super::qr::QrEntry {
@@ -550,6 +604,9 @@ impl Features {
             | F::WebcamStop(_)
             | F::WebcamAck(_)
             | F::QrScan(_)
+            | F::MicStart(_)
+            | F::MicStop(_)
+            | F::Dtmf(_)
             | F::Dial(_)
             | F::ActiveNotificationsRequest(_)
             | F::ActiveNotifications(_)
@@ -596,17 +653,23 @@ impl Features {
 
     /// Empieza a usar la cámara `camera_id` del teléfono como webcam del PC
     /// (vacía = la trasera por defecto). Devuelve la cámara virtual usada.
-    pub async fn webcam_start(&self, peer_id: &str, camera_id: &str) -> anyhow::Result<PathBuf> {
+    pub async fn webcam_start(
+        &self,
+        peer_id: &str,
+        camera_id: &str,
+        backend: Option<super::webcam::Backend>,
+    ) -> anyhow::Result<String> {
+        use super::webcam::{Backend, Sink};
         if !self.manager.is_connected(peer_id) {
             anyhow::bail!("el dispositivo no está conectado");
         }
-        let Some(device) = super::webcam::find_device() else {
-            anyhow::bail!(
-                "no hay cámara virtual: instala v4l2loopback (Arch/Debian/Ubuntu: \
-                 v4l2loopback-dkms; Fedora: v4l2loopback de RPM Fusion) y \
-                 cárgalo con «sudo modprobe v4l2loopback exclusive_caps=1»"
-            );
-        };
+        let device = super::webcam::find_device();
+        let pipewire = backend != Some(Backend::V4l2)
+            && (backend == Some(Backend::PipeWire) || device.is_none())
+            && tokio::task::spawn_blocking(super::webcam::pipewire_available)
+                .await
+                .unwrap_or(false);
+        let backend = super::webcam::choose(backend, device.is_some(), pipewire)?;
         // El vídeo solo cabe por Wi-Fi: hay que abrir (o tener) el enlace de datos.
         self.ensure_bulk(peer_id).await;
         if !self.manager.has_bulk(peer_id) {
@@ -616,7 +679,11 @@ impl Features {
             );
         }
         self.webcam_stop();
-        let sink = super::webcam::Sink::open(&device)?;
+        let sink = match (backend, &device) {
+            (Backend::V4l2, Some(path)) => Sink::open(path)?,
+            _ => Sink::open_pipewire(&format!("kushare ({})", self.peer_name(peer_id)))?,
+        };
+        let label = sink.device.clone();
         // La cámara del teléfono va apaisada: pedir el lado mayor como ancho.
         let (w, h) = (sink.width.max(sink.height), sink.width.min(sink.height));
         self.send(
@@ -638,7 +705,7 @@ impl Features {
             error: String::new(),
             last_count: (Instant::now(), frames),
         });
-        Ok(device)
+        Ok(label)
     }
 
     /// Para la webcam (si la hay).
@@ -669,10 +736,154 @@ impl Features {
             s.active,
             s.peer.clone(),
             s.camera.clone(),
-            s.sink.device.to_string_lossy().into_owned(),
+            s.sink.device.clone(),
             fps,
             s.error.clone(),
         )
+    }
+
+    /// Nombre del dispositivo emparejado (o su id).
+    fn peer_name(&self, peer_id: &str) -> String {
+        self.manager
+            .peers()
+            .into_iter()
+            .find(|p| p.device_id == peer_id)
+            .map(|p| p.device_name)
+            .unwrap_or_else(|| peer_id.to_string())
+    }
+
+    // --- Micrófono ---------------------------------------------------------
+
+    /// Empieza a usar el micrófono del teléfono como fuente de audio del PC
+    /// («Micrófono de <teléfono>»). Por Wi-Fi va en PCM de 48 kHz; solo con
+    /// Bluetooth, en ADPCM de 16 kHz. Devuelve el códec pedido.
+    pub async fn mic_start(&self, peer_id: &str, make_default: bool) -> anyhow::Result<String> {
+        use super::mic::Codec;
+        if !self.manager.is_connected(peer_id) {
+            anyhow::bail!("el dispositivo no está conectado");
+        }
+        self.ensure_bulk(peer_id).await;
+        let (codec, wire) = if self.manager.has_bulk(peer_id) {
+            (Codec::Pcm16 { rate: 48_000 }, pb::MicCodec::MicPcm16)
+        } else {
+            (Codec::Adpcm { rate: 16_000 }, pb::MicCodec::MicImaAdpcm)
+        };
+        self.mic_stop();
+        let name = format!("Micrófono de {}", self.peer_name(peer_id));
+        let sink =
+            tokio::task::spawn_blocking(move || super::mic::MicSink::open(&name, make_default))
+                .await??;
+        let rate = match codec {
+            Codec::Pcm16 { rate } | Codec::Adpcm { rate } => rate,
+        };
+        self.send(
+            peer_id,
+            F::MicStart(pb::MicStart {
+                rate,
+                codec: wire as i32,
+            }),
+        )?;
+        *self.mic.lock().expect("mutex envenenado") = Some(MicSession {
+            peer: peer_id.to_string(),
+            sink,
+            codec,
+            decoder: super::mic::Decoder::new(),
+            active: false,
+            error: String::new(),
+            make_default,
+        });
+        Ok(codec.label())
+    }
+
+    /// Para el micrófono (si lo hay) y quita la fuente virtual.
+    pub fn mic_stop(&self) {
+        let session = self.mic.lock().expect("mutex envenenado").take();
+        if let Some(session) = session {
+            let _ = self.send(&session.peer, F::MicStop(pb::MicStop {}));
+            // Descargar el módulo de pactl fuera del runtime.
+            std::thread::spawn(move || drop(session));
+        }
+    }
+
+    /// Estado: (activo, teléfono, códec, nivel 0–1000, error, predeterminado).
+    pub fn mic_status(&self) -> kushare_dbus::MicRow {
+        let mic = self.mic.lock().expect("mutex envenenado");
+        let Some(s) = mic.as_ref() else {
+            return Default::default();
+        };
+        (
+            s.active,
+            s.peer.clone(),
+            s.codec.label(),
+            s.sink.level.load(Ordering::Relaxed),
+            s.error.clone(),
+            s.make_default,
+        )
+    }
+
+    // --- Tonos DTMF ----------------------------------------------------------
+
+    /// Manda tonos DTMF a la llamada en curso del teléfono, por la primera
+    /// vía que funcione:
+    /// 1. el propio teléfono (si Android deja a kushare entrar en la llamada);
+    /// 2. Bluetooth manos libres (`AT+VTS` vía `org.pipewire.Telephony`): el
+    ///    teléfono los genera como si se pulsaran en su marcador;
+    /// 3. como sonido por el audio de la llamada (si se oye en el PC); los
+    ///    menús de voz no siempre los reconocen.
+    ///
+    /// Devuelve "phone", "bluetooth" o "audio" según por dónde fueron.
+    pub async fn dtmf(&self, peer_id: &str, digits: &str) -> anyhow::Result<&'static str> {
+        let digits: String = digits.chars().filter(|c| !c.is_whitespace()).collect();
+        if !kushare_core::audio::is_dtmf(&digits) {
+            anyhow::bail!("solo se pueden mandar 0-9, *, # y A-D");
+        }
+        let native = self.dtmf_phone(peer_id, &digits).await;
+        let native_err = match native {
+            Ok(()) => return Ok("phone"),
+            Err(err) => err,
+        };
+        let address = self
+            .manager
+            .peers()
+            .into_iter()
+            .find(|p| p.device_id == peer_id)
+            .and_then(|p| p.bt_address);
+        if let Some(address) = &address {
+            match dtmf_hfp(address, &digits).await {
+                Ok(()) => return Ok("bluetooth"),
+                Err(err) => tracing::info!(%err, "DTMF por Bluetooth HFP no disponible"),
+            }
+        }
+        match address {
+            Some(address) => match dtmf_audio(&address, &digits).await {
+                Ok(()) => Ok("audio"),
+                Err(err) => {
+                    tracing::info!(%native_err, %err, "DTMF sin vía");
+                    Err(err)
+                }
+            },
+            None => Err(native_err),
+        }
+    }
+
+    async fn dtmf_phone(&self, peer_id: &str, digits: &str) -> anyhow::Result<()> {
+        let reply = self
+            .request(
+                peer_id,
+                |request_id| {
+                    F::Dtmf(pb::Dtmf {
+                        request_id,
+                        digits: digits.to_string(),
+                    })
+                },
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        match reply {
+            F::CommandResult(r) if r.ok => Ok(()),
+            F::CommandResult(r) => anyhow::bail!("{}", phone_error(&r.error)),
+            _ => anyhow::bail!("respuesta inesperada del teléfono"),
+        }
     }
 
     fn on_webcam_frame(&self, peer_id: &str, frame: pb::WebcamFrame) {
@@ -1815,6 +2026,10 @@ fn phone_error(code: &str) -> String {
             "falta el permiso en el teléfono (kushare → Ajustes → Funciones del teléfono)".into()
         }
         "unsupported" => "el teléfono no lo admite".into(),
+        "no_call" => "no hay ninguna llamada en curso en el teléfono".into(),
+        "no_incall" => "Android aún no dejó a kushare acceder a la llamada (actualiza la app \
+                        del teléfono a la 0.8 y vuelve a llamar)"
+            .into(),
         other => format!("el teléfono respondió: {other}"),
     }
 }
@@ -2488,9 +2703,113 @@ pub async fn phone_audio(address: &str, enable: bool) -> anyhow::Result<Vec<&'st
     }
 }
 
+/// Pide al teléfono `address` que toque `digits` en su llamada por
+/// Bluetooth manos libres (`AT+VTS`), con la API de telefonía de PipeWire
+/// (`org.pipewire.Telephony`, PipeWire ≥ 1.4 con el backend HFP nativo).
+pub async fn dtmf_hfp(address: &str, digits: &str) -> anyhow::Result<()> {
+    const SERVICE: &str = "org.pipewire.Telephony";
+    const AG: &str = "org.pipewire.Telephony.AudioGateway1";
+    let conn = zbus::Connection::session().await?;
+    let manager = zbus::fdo::ObjectManagerProxy::builder(&conn)
+        .destination(SERVICE)?
+        .path("/org/pipewire/Telephony")?
+        .build()
+        .await?;
+    let objects = manager.get_managed_objects().await?;
+    let path = objects
+        .into_iter()
+        .find(|(_, ifaces)| {
+            ifaces
+                .iter()
+                .find(|(name, _)| name.as_str() == AG)
+                .and_then(|(_, props)| props.get("Address"))
+                .and_then(|v| <&str>::try_from(&**v).ok())
+                .is_some_and(|a| a.eq_ignore_ascii_case(address))
+        })
+        .map(|(path, _)| path)
+        .ok_or_else(|| anyhow::anyhow!("el teléfono no está conectado como manos libres (HFP)"))?;
+    let proxy = zbus::Proxy::new(&conn, SERVICE, path, AG).await?;
+    proxy
+        .call_method("SendTones", &(digits,))
+        .await
+        .map_err(|e| anyhow::anyhow!("el teléfono no aceptó los tonos: {e}"))?;
+    Ok(())
+}
+
+/// Toca `digits` como tonos DTMF en la llamada del teléfono `address`
+/// cuando su audio pasa por el PC (HFP). PipeWire representa el envío al
+/// teléfono como un *stream* `bluez_output.<MAC>` que graba de una fuente
+/// (el micrófono del PC): mientras suenan los tonos se le cambia a una
+/// fuente temporal con ellos y luego se devuelve a la suya.
+pub async fn dtmf_audio(address: &str, digits: &str) -> anyhow::Result<()> {
+    let mac = address.replace(':', "_").to_uppercase();
+    let out = pactl().args(["list", "source-outputs"]).output().await?;
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let Some((stream, source)) = call_stream(&listing, &mac) else {
+        anyhow::bail!(
+            "kushare no puede entrar en la llamada del teléfono (Android 16 solo deja a la app \
+             de teléfono) y la llamada no se oye en el PC: activa «Escuchar aquí» en la página \
+             Teléfono para mandar los tonos por el audio de la llamada"
+        );
+    };
+    const RATE: u32 = 16_000;
+    let pcm = kushare_core::audio::dtmf_pcm(digits, RATE, 160, 90);
+    let millis = pcm.len() as u64 * 1000 / RATE as u64;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let tones = super::mic::TempSource::open("kushare_dtmf", RATE)?;
+        let run = |args: &[&str]| {
+            std::process::Command::new("pactl")
+                .args(args)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if !run(&["move-source-output", &stream, "kushare_dtmf"]) {
+            anyhow::bail!("no se pudo pasar los tonos a la llamada");
+        }
+        // Un poco de silencio delante: el cambio de fuente tarda unos ms.
+        tones.write(&vec![0; RATE as usize / 10])?;
+        tones.write(&pcm)?;
+        std::thread::sleep(std::time::Duration::from_millis(millis + 250));
+        run(&["move-source-output", &stream, &source]);
+        Ok(())
+    })
+    .await??;
+    Ok(())
+}
+
+/// El stream que manda audio a la llamada del teléfono `mac` (con «_»):
+/// (índice del source-output, índice de su fuente). Recibe
+/// `pactl list source-outputs` en inglés.
+fn call_stream(listing: &str, mac: &str) -> Option<(String, String)> {
+    listing.split("Source Output #").skip(1).find_map(|block| {
+        let index = block.lines().next()?.trim().to_string();
+        let source = block
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("Source: "))?
+            .trim()
+            .to_string();
+        let is_call = block.lines().any(|l| {
+            let l = l.trim();
+            l.starts_with("node.name = \"bluez_output.") && l.to_uppercase().contains(mac)
+        });
+        is_call.then_some((index, source))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_de_la_llamada() {
+        let listing = "Source Output #12\n\tSource: 3\n\tProperties:\n\t\tnode.name = \"firefox\"\n\nSource Output #942\n\tSource: 95\n\tProperties:\n\t\tnode.name = \"bluez_output.AE_5E_46_C3_C3_5E.1\"\n";
+        assert_eq!(
+            call_stream(listing, "AE_5E_46_C3_C3_5E"),
+            Some(("942".into(), "95".into()))
+        );
+        assert_eq!(call_stream(listing, "00_11_22_33_44_55"), None);
+    }
 
     #[test]
     fn contact_photos_keep_their_real_format() {

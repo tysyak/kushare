@@ -378,15 +378,42 @@ impl DaemonApi {
         Ok(camera_rows(&cameras))
     }
 
-    async fn webcam_start(&self, peer: &str, camera: &str) -> fdo::Result<String> {
+    async fn webcam_start(&self, peer: &str, camera: &str, backend: &str) -> fdo::Result<String> {
         let id = self.link.resolve(peer).map_err(failed)?;
-        let device = self
-            .link
+        let backend = super::webcam::Backend::parse(backend)
+            .ok_or_else(|| fdo::Error::InvalidArgs("motor: auto, v4l2 o pipewire".into()))?;
+        self.link
             .features
-            .webcam_start(&id, camera)
+            .webcam_start(&id, camera, backend)
             .await
-            .map_err(failed)?;
-        Ok(device.to_string_lossy().into_owned())
+            .map_err(failed)
+    }
+
+    async fn mic_start(&self, peer: &str, make_default: bool) -> fdo::Result<String> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        self.link
+            .features
+            .mic_start(&id, make_default)
+            .await
+            .map_err(failed)
+    }
+
+    fn mic_stop(&self) {
+        self.link.features.mic_stop();
+    }
+
+    fn mic_status(&self) -> kushare_dbus::MicRow {
+        self.link.features.mic_status()
+    }
+
+    async fn dtmf(&self, peer: &str, digits: &str) -> fdo::Result<String> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        self.link
+            .features
+            .dtmf(&id, digits)
+            .await
+            .map(str::to_string)
+            .map_err(failed)
     }
 
     fn webcam_stop(&self) {
@@ -1000,7 +1027,8 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
                             | F::RingerMode(_)
                             | F::CallState(_)
                             | F::FindPhone(_)
-                            | F::WebcamState(_),
+                            | F::WebcamState(_)
+                            | F::MicState(_),
                         ) => DaemonApi::peer_state_changed(emitter, &device_id).await,
                         Some(F::PhotosChanged(_)) => {
                             DaemonApi::photos_changed(emitter, &device_id).await

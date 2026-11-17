@@ -6,6 +6,32 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+### Añadido
+- **El teléfono como micrófono del PC**: aparece la entrada «Micrófono de
+  <teléfono>» (`kushare_mic`, con `module-pipe-source` de pipewire-pulse) que
+  pueden usar todas las apps; opcionalmente como entrada predeterminada
+  mientras dure. Por Wi-Fi va en PCM de 48 kHz; solo con Bluetooth, en
+  IMA-ADPCM de 16 kHz (≈ 8 KB/s), y si se pierde la Wi-Fi el teléfono pasa
+  solo a Bluetooth. GUI (tarjeta con medidor de nivel en *Cámara y micrófono*
+  y botón en el panel del teléfono), CLI (`kushare mic start|stop|status`) y
+  TUI (teclas `m` y `d`). Protocolo: `Feature.mic_*`.
+- **Webcam sin v4l2loopback**: cámara virtual de **PipeWire** (`Video/Source`,
+  sin módulo del kernel ni root) con GStreamer (`gst-plugin-pipewire` y
+  `rawvideoparse` de gst-plugins-bad) como subproceso. Motor automático
+  (v4l2loopback si está; si no, PipeWire) o elegido: GUI (selector «Motor»),
+  CLI (`kushare webcam start --backend auto|v4l2|pipewire`) y TUI (tecla `p`).
+  `kushare doctor` revisa ambos motores.
+- **Tonos DTMF durante una llamada** (menús de voz, extensiones): el teclado de
+  la página *Llamadas* manda tonos mientras hay una llamada en curso (botón
+  «Teclado» en el panel), `kushare dtmf <disp> <dígitos>` y la TUI (cifras en
+  la pestaña Llamadas). Van por Bluetooth manos libres (`AT+VTS` con la API
+  `org.pipewire.Telephony` de PipeWire) y, si no se puede, como sonido por el
+  audio de la llamada cuando se oye en el PC. Límite conocido: Android corta
+  los tonos de Bluetooth a ~5 ms y algunos menús (p. ej. buzones en VoLTE) no
+  los reconocen.
+- Código de audio compartido PC/teléfono en `kushare-core::audio` (IMA-ADPCM,
+  remuestreo, tonos DTMF) con tests.
+
 ## [0.7.0] - 2026-11-13
 
 ### Añadido

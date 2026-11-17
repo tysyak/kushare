@@ -2,6 +2,8 @@
 //! lógica de red, criptografía ni UI, solo las estructuras de datos que
 //! esos módulos intercambian entre sí.
 
+pub mod audio;
+
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;

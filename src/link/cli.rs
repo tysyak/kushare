@@ -114,6 +114,8 @@ pub enum LinkCommand {
         #[arg(value_enum)]
         action: CallVerb,
     },
+    /// Tonos DTMF en la llamada en curso (menús de voz, extensiones): «1», «123#».
+    Dtmf { device: String, digits: String },
     /// Oír en el PC la música y las llamadas del teléfono (Bluetooth A2DP + HFP).
     PhoneAudio { device: String, state: Toggle },
     /// Lista las fotos del teléfono (más recientes primero) o descarga una.
@@ -163,7 +165,12 @@ pub enum LinkCommand {
         #[arg(long)]
         dismiss: Option<String>,
     },
-    /// El teléfono como webcam del PC (cámara virtual v4l2loopback).
+    /// El teléfono como micrófono del PC (fuente «Micrófono de <teléfono>»).
+    Mic {
+        #[command(subcommand)]
+        action: MicAction,
+    },
+    /// El teléfono como webcam del PC (cámara virtual v4l2loopback o PipeWire).
     Webcam {
         #[command(subcommand)]
         action: WebcamAction,
@@ -212,6 +219,23 @@ pub enum WebcamAction {
         device: String,
         #[arg(long)]
         camera: Option<String>,
+        /// Dónde crear la cámara virtual: auto (v4l2loopback si está; si no,
+        /// PipeWire), v4l2 o pipewire (sin módulo del kernel ni root).
+        #[arg(long, default_value = "auto")]
+        backend: String,
+    },
+    Stop,
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MicAction {
+    /// Empieza: aparece la entrada «Micrófono de <teléfono>» (`kushare_mic`).
+    Start {
+        device: String,
+        /// Usarla como entrada predeterminada mientras esté en marcha.
+        #[arg(long)]
+        default: bool,
     },
     Stop,
     Status,
@@ -522,6 +546,14 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
             daemon.call_command(&device, &verb(action)).await?;
             println!("Hecho.");
         }
+        LinkCommand::Dtmf { device, digits } => {
+            let via = match daemon.dtmf(&device, &digits).await?.as_str() {
+                "phone" => "el teléfono",
+                "bluetooth" => "Bluetooth manos libres",
+                _ => "el audio de la llamada",
+            };
+            println!("Tonos enviados: {digits} (por {via})");
+        }
         LinkCommand::PhoneAudio { device, state } => {
             let on = matches!(state, Toggle::On);
             let profiles = daemon.phone_audio(&device, on).await?;
@@ -650,7 +682,11 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                     println!("  {id:>3}  {label}");
                 }
             }
-            WebcamAction::Start { device, camera } => {
+            WebcamAction::Start {
+                device,
+                camera,
+                backend,
+            } => {
                 let camera = match camera {
                     Some(q) => {
                         let cameras = daemon.cameras(&device).await?;
@@ -658,7 +694,7 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                     }
                     None => String::new(),
                 };
-                let path = daemon.webcam_start(&device, &camera).await?;
+                let path = daemon.webcam_start(&device, &camera, &backend).await?;
                 println!(
                     "Webcam en {path}: elígela en la app (navegador, OBS, videollamada…). \
                      `kushare webcam stop` la para."
@@ -680,6 +716,36 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                         &camera
                     };
                     println!("Webcam {state} · {path} · cámara {camera} · {fps} fps");
+                    if !error.is_empty() {
+                        println!("Error del teléfono: {error}");
+                    }
+                }
+            }
+        },
+        LinkCommand::Mic { action } => match action {
+            MicAction::Start { device, default } => {
+                let codec = daemon.mic_start(&device, default).await?;
+                println!(
+                    "Micrófono del teléfono en «{}» ({codec}). `kushare mic stop` lo para.",
+                    super::mic::SOURCE_NAME
+                );
+                if default {
+                    println!("Es la entrada predeterminada hasta que lo pares.");
+                }
+            }
+            MicAction::Stop => {
+                daemon.mic_stop().await?;
+                println!("Micrófono parado.");
+            }
+            MicAction::Status => {
+                let (active, peer, codec, level, error, default) = daemon.mic_status().await?;
+                if peer.is_empty() {
+                    println!("El micrófono no está en marcha.");
+                } else {
+                    let state = if active { "activo" } else { "arrancando" };
+                    let bars = "█".repeat((level as usize * 20).div_ceil(1000).min(20));
+                    let default = if default { " · predeterminado" } else { "" };
+                    println!("Micrófono {state} · {codec}{default} · nivel {bars:<20}");
                     if !error.is_empty() {
                         println!("Error del teléfono: {error}");
                     }

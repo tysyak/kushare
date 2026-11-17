@@ -16,6 +16,8 @@ pub struct CallsState {
     pub loading: bool,
     pub error: Option<String>,
     pub input: String,
+    /// Tonos DTMF mandados en la llamada en curso.
+    pub tones: String,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +31,8 @@ pub enum Msg {
     /// Llamar a este número (vacío = lo escrito en el teclado).
     Dial(String),
     Dialed(Result<(), String>),
+    /// Respuesta a un tono DTMF.
+    ToneSent(Result<(), String>),
 }
 
 /// Teclas del marcador: (tecla, letras).
@@ -94,6 +98,7 @@ impl App {
             return Task::none();
         };
         let phone = self.phone_peers().first().map(|p| p.id.clone());
+        let call_peer = self.active_call_peer();
         let s = &mut self.calls;
         match msg {
             Msg::Load => {
@@ -149,7 +154,23 @@ impl App {
                 Task::none()
             }
             Msg::Key(k) => {
+                // En llamada, las teclas son tonos DTMF hacia la llamada.
+                if let Some(peer) = call_peer {
+                    s.tones.push(k);
+                    let digit = k.to_string();
+                    return Task::perform(
+                        async move { d.dtmf(&peer, &digit).await.map(|_| ()).map_err(err_text) },
+                        |r| Message::Calls(Msg::ToneSent(r)),
+                    );
+                }
+                s.tones.clear();
                 s.input.push(k);
+                Task::none()
+            }
+            Msg::ToneSent(result) => {
+                if let Err(e) = result {
+                    self.toast = Some(e);
+                }
                 Task::none()
             }
             Msg::Backspace => {
@@ -221,27 +242,53 @@ impl App {
     }
 
     /// Teclado, botón de llamar y contactos que coinciden con lo escrito.
+    /// Teléfono con una llamada en curso (o marcando): sus teclas son tonos.
+    pub(crate) fn active_call_peer(&self) -> Option<String> {
+        let p = self.phone_peers().first()?.id.clone();
+        let (_, _, call, ..) = self.snapshot.states.get(&p)?;
+        matches!(call.0.as_str(), "active" | "dialing" | "offhook").then_some(p)
+    }
+
     fn dial_pad(&self, c: Colors) -> Element<'_, Message> {
         let s = &self.calls;
-        let display = row![
-            text_input(t("gui.calls.type"), &s.input)
-                .on_input(|v| Message::Calls(Msg::Input(v)))
-                .on_submit(Message::Calls(Msg::Dial(String::new())))
-                .size(26)
-                .padding(10)
-                .width(Length::Fill),
-            button(Icon::Backspace.view(22.0, c.on_surface_variant))
-                .padding(10)
-                .style(style::button(c, ButtonKind::Text))
-                .on_press_maybe((!s.input.is_empty()).then_some(Message::Calls(Msg::Backspace))),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
+        let in_call = self.active_call_peer().is_some();
+        let display: Element<'_, Message> = if in_call {
+            column![
+                text(t("gui.calls.dtmf_title")).size(20).font(BOLD),
+                text(if s.tones.is_empty() {
+                    t("gui.calls.dtmf_hint").to_string()
+                } else {
+                    s.tones.clone()
+                })
+                .size(if s.tones.is_empty() { 13 } else { 26 })
+                .color(c.on_surface_variant),
+            ]
+            .spacing(4)
+            .into()
+        } else {
+            row![
+                text_input(t("gui.calls.type"), &s.input)
+                    .on_input(|v| Message::Calls(Msg::Input(v)))
+                    .on_submit(Message::Calls(Msg::Dial(String::new())))
+                    .size(26)
+                    .padding(10)
+                    .width(Length::Fill),
+                button(Icon::Backspace.view(22.0, c.on_surface_variant))
+                    .padding(10)
+                    .style(style::button(c, ButtonKind::Text))
+                    .on_press_maybe(
+                        (!s.input.is_empty()).then_some(Message::Calls(Msg::Backspace))
+                    ),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into()
+        };
         let mut pad = column![display].spacing(10);
 
         // Contactos que coinciden (por número, nombre o teclas), arriba del
         // teclado para verlos mientras se escribe.
-        if !s.input.is_empty() {
+        if !in_call && !s.input.is_empty() {
             let found: Vec<&ContactRow> = s
                 .contacts
                 .iter()
@@ -300,7 +347,8 @@ impl App {
             .width(Length::Fill)
             .style(style::button(c, ButtonKind::Filled))
             .on_press_maybe(
-                (!number.is_empty()).then_some(Message::Calls(Msg::Dial(String::new()))),
+                (!in_call && !number.is_empty())
+                    .then_some(Message::Calls(Msg::Dial(String::new()))),
             ),
         );
         container(pad)

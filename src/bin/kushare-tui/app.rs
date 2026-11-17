@@ -5,8 +5,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures_util::StreamExt;
 use kushare_dbus::{
-    CallLogRow, CameraRow, ClipRow, DaemonProxy, PeerRow, PeerStateReply, PhoneNotificationRow,
-    QrRow, SmsRow, SmsThreadRow, WebcamRow,
+    CallLogRow, CameraRow, ClipRow, DaemonProxy, MicRow, PeerRow, PeerStateReply,
+    PhoneNotificationRow, QrRow, SmsRow, SmsThreadRow, WebcamRow,
 };
 use kushare_i18n::{t, tf};
 use std::collections::HashMap;
@@ -104,7 +104,7 @@ pub enum Ev {
     ClipboardChanged,
     QrChanged,
     Cameras(Result<Vec<CameraRow>, String>),
-    Webcam(WebcamRow),
+    Webcam(WebcamRow, MicRow),
     Qr(Vec<QrRow>),
     Snapshot {
         name: String,
@@ -136,6 +136,13 @@ pub struct App {
     pub clipboard: Vec<ClipRow>,
     pub cameras: Vec<CameraRow>,
     pub webcam: WebcamRow,
+    /// Motor de la webcam: "auto", "v4l2" o "pipewire" (tecla p).
+    pub backend: &'static str,
+    pub mic: MicRow,
+    /// Micrófono como entrada predeterminada (tecla d).
+    pub mic_default: bool,
+    /// Tonos DTMF mandados en la llamada en curso.
+    pub tones: String,
     pub qr: Vec<QrRow>,
     /// Selección de cada lista (por pestaña).
     pub selected: HashMap<&'static str, usize>,
@@ -175,6 +182,10 @@ impl App {
             clipboard: Vec::new(),
             cameras: Vec::new(),
             webcam: Default::default(),
+            backend: "auto",
+            mic: Default::default(),
+            mic_default: false,
+            tones: String::new(),
             qr: Vec::new(),
             selected: HashMap::new(),
             input: None,
@@ -293,7 +304,18 @@ impl App {
     }
 
     fn load_webcam(&self) {
-        self.spawn(|d| async move { Ev::Webcam(d.webcam_status().await.unwrap_or_default()) });
+        self.spawn(|d| async move {
+            Ev::Webcam(
+                d.webcam_status().await.unwrap_or_default(),
+                d.mic_status().await.unwrap_or_default(),
+            )
+        });
+    }
+
+    /// ¿Hay una llamada en curso en el teléfono? (sus teclas son tonos DTMF)
+    pub fn in_call(&self) -> bool {
+        self.phone_state()
+            .is_some_and(|st| matches!(st.2.0.as_str(), "active" | "dialing" | "offhook"))
     }
 
     fn load_qr(&self) {
@@ -324,8 +346,13 @@ impl App {
         {
             self.toast = None;
         }
+        if !self.tones.is_empty() && !self.in_call() {
+            self.tones.clear();
+        }
         // fps de la webcam mientras se ve su pestaña o está en marcha.
-        if self.connected && (self.tab == Tab::Camera || !self.webcam.1.is_empty()) {
+        if self.connected
+            && (self.tab == Tab::Camera || !self.webcam.1.is_empty() || !self.mic.1.is_empty())
+        {
             self.load_webcam();
         }
     }
@@ -364,7 +391,10 @@ impl App {
                     Err(e) => self.toast(e),
                 }
             }
-            Ev::Webcam(st) => self.webcam = st,
+            Ev::Webcam(st, mic) => {
+                self.webcam = st;
+                self.mic = mic;
+            }
             Ev::Qr(list) => {
                 self.loading = false;
                 self.qr = list;
@@ -451,6 +481,18 @@ impl App {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
+            return;
+        }
+        // En Llamadas y con una llamada en curso, las cifras son tonos DTMF.
+        if self.tab == Tab::Calls
+            && self.in_call()
+            && let KeyCode::Char(c @ ('0'..='9' | '*' | '#')) = key.code
+        {
+            self.tones.push(c);
+            let digit = c.to_string();
+            self.command(String::new(), move |d, peer| async move {
+                d.dtmf(&peer, &digit).await.map(|_| ())
+            });
             return;
         }
         match key.code {
@@ -652,6 +694,47 @@ impl App {
                 _ => {}
             },
             Tab::Camera => {
+                match code {
+                    KeyCode::Char('p') if self.webcam.1.is_empty() => {
+                        self.backend = match self.backend {
+                            "auto" => "v4l2",
+                            "v4l2" => "pipewire",
+                            _ => "auto",
+                        };
+                    }
+                    KeyCode::Char('d') if self.mic.1.is_empty() => {
+                        self.mic_default = !self.mic_default
+                    }
+                    KeyCode::Char('m') => {
+                        if self.mic.1.is_empty() {
+                            let Some(peer) = self.phone().map(|p| p.0.clone()) else {
+                                return;
+                            };
+                            let default = self.mic_default;
+                            self.spawn(move |d| async move {
+                                Ev::Done(
+                                    d.mic_start(&peer, default)
+                                        .await
+                                        .map(|codec| {
+                                            tf("gui.camera.mic_started", &[("codec", &codec)])
+                                        })
+                                        .map_err(err_text),
+                                )
+                            });
+                        } else {
+                            self.spawn(|d| async move {
+                                Ev::Done(
+                                    d.mic_stop()
+                                        .await
+                                        .map(|_| t("gui.camera.mic_stopped").to_string())
+                                        .map_err(err_text),
+                                )
+                            });
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
                 if code == KeyCode::Enter {
                     if self.webcam.1.is_empty() {
                         let camera = self
@@ -662,9 +745,10 @@ impl App {
                         let Some(peer) = self.phone().map(|p| p.0.clone()) else {
                             return;
                         };
+                        let backend = self.backend;
                         self.spawn(move |d| async move {
                             Ev::Done(
-                                d.webcam_start(&peer, &camera)
+                                d.webcam_start(&peer, &camera, backend)
                                     .await
                                     .map(|dev| tf("gui.camera.started", &[("device", &dev)]))
                                     .map_err(err_text),

@@ -116,7 +116,7 @@
       "calls": "Llamadas",
       "notifications": "Notificaciones",
       "clipboard": "Portapapeles",
-      "camera": "Cámara"
+      "camera": "Cámara y micrófono"
     },
     "pairing": {
       "hint": "Comprueba que el otro dispositivo muestra el mismo código",
@@ -262,7 +262,9 @@
       "kind_missed": "Perdida",
       "kind_rejected": "Rechazada",
       "kind_blocked": "Bloqueada",
-      "kind_voicemail": "Buzón de voz"
+      "kind_voicemail": "Buzón de voz",
+      "dtmf_title": "Teclado de la llamada",
+      "dtmf_hint": "Las teclas se mandan como tonos a la llamada (menús de voz, extensiones)."
     },
     "clip": {
       "subtitle": "Copia en un lado y pega en el otro",
@@ -358,13 +360,14 @@
       "find_stop": "Dejar de sonar",
       "find_started": "El teléfono está sonando: silencíalo en su pantalla.",
       "scan_qr": "Escanear QR",
-      "webcam": "Webcam"
+      "webcam": "Webcam",
+      "mic": "Micrófono"
     },
     "camera": {
-      "subtitle": "El teléfono como webcam y como escáner de QR",
+      "subtitle": "El teléfono como webcam, micrófono y escáner de QR",
       "none_detail": "Conecta tu teléfono para usar su cámara como webcam del PC.",
       "webcam": "Webcam del PC",
-      "webcam_detail": "Elige la cámara (frontal, traseras, teleobjetivo, visión nocturna…) y aparecerá como una webcam más en el navegador, OBS o las videollamadas. Necesita la misma Wi-Fi y el módulo v4l2loopback.",
+      "webcam_detail": "Elige la cámara (frontal, traseras, teleobjetivo, visión nocturna…) y aparecerá como una webcam más en el navegador, OBS o las videollamadas. Necesita la misma Wi-Fi y v4l2loopback o PipeWire (gst-plugin-pipewire).",
       "off": "Parada",
       "starting": "Arrancando en el teléfono…",
       "on": "Activa en {device} · {fps} fps",
@@ -385,7 +388,20 @@
       "kind_phone": "Teléfono",
       "kind_email": "Correo",
       "kind_contact": "Contacto",
-      "kind_text": "Texto"
+      "kind_text": "Texto",
+      "backend": "Motor",
+      "backend_auto": "Automático",
+      "backend_v4l2": "v4l2loopback",
+      "backend_pipewire": "PipeWire",
+      "mic": "Micrófono del PC",
+      "mic_detail": "La entrada «Micrófono de <teléfono>» aparece en las apps del PC. Por Wi-Fi va en calidad completa (48 kHz); solo con Bluetooth, a 16 kHz.",
+      "mic_off": "Parado",
+      "mic_starting": "Arrancando en el teléfono…",
+      "mic_on": "Activo · {codec}",
+      "mic_start": "Usar como micrófono",
+      "mic_started": "Micrófono del teléfono listo ({codec}).",
+      "mic_stopped": "Micrófono parado.",
+      "mic_default": "Usarlo como entrada predeterminada"
     }
   },
   "tray": {
@@ -444,8 +460,10 @@
     "keys_notifs": "x descartar · X todas · Enter acción · w responder",
     "keys_messages": "Enter abrir · w escribir · Esc volver",
     "keys_short": "Tab pestañas · ↑↓ mover · f buscar teléfono · Espacio ⏯ · q salir",
-    "keys_camera": "↑↓ elegir cámara · Enter: usar como webcam / parar",
+    "keys_camera": "↑↓ elegir cámara · Enter: webcam sí/no · p motor · m micrófono sí/no · d micrófono predeterminado",
     "cameras": "Cámaras del teléfono",
-    "keys_qr": "s escanear · Enter abrir/copiar · c copiar · g guardar · x borrar"
+    "keys_qr": "s escanear · Enter abrir/copiar · c copiar · g guardar · x borrar",
+    "mic": "Micrófono",
+    "keys_dtmf": "En llamada: 0–9 * # mandan tonos"
   }
 }

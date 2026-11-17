@@ -317,6 +317,42 @@ pub async fn run_doctor() -> anyhow::Result<()> {
         }
     }
 
+    // --- Webcam y micrófono ------------------------------------------------------
+    r.section("Webcam y micrófono del teléfono");
+    let v4l2 = crate::link::webcam::find_device();
+    let pipewire = crate::link::webcam::pipewire_available();
+    match &v4l2 {
+        Some(dev) => r.line(
+            Level::Ok,
+            format!("cámara virtual v4l2loopback: {}", dev.display()),
+        ),
+        None => r.line(Level::Info, "sin v4l2loopback (opcional)"),
+    }
+    if pipewire {
+        r.line(
+            Level::Ok,
+            "cámara virtual de PipeWire disponible (GStreamer + pipewiresink)",
+        );
+    } else {
+        r.line(Level::Info, "sin GStreamer con pipewiresink (opcional)");
+    }
+    if v4l2.is_none() && !pipewire {
+        r.line(Level::Warn, "no se puede usar el teléfono como webcam");
+        r.fix("instala gst-plugin-pipewire y gst-plugins-bad (sin root), o v4l2loopback-dkms");
+    }
+    if which("pactl") {
+        r.line(
+            Level::Ok,
+            "pactl disponible: el teléfono puede ser micrófono del PC",
+        );
+    } else {
+        r.line(
+            Level::Warn,
+            "falta pactl: no se puede usar el teléfono como micrófono",
+        );
+        r.fix("instala libpulse (pactl) con pipewire-pulse");
+    }
+
     r.lines.push(String::new());
     r.lines.push(if r.problems == 0 {
         "Todo en orden.".to_string()

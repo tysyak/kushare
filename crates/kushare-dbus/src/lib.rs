@@ -89,6 +89,8 @@ pub type CameraRow = (String, String, String);
 /// Estado de la webcam: (activa, teléfono, cámara, dispositivo `/dev/videoN`,
 /// fotogramas por segundo, error).
 pub type WebcamRow = (bool, String, String, String, u32, String);
+/// Micrófono: (activo, teléfono, códec, nivel 0–1000, error, es el predeterminado).
+pub type MicRow = (bool, String, String, u32, String, bool);
 
 /// Código QR leído: (texto, formato, fecha en ms, tipo
 /// "url"|"wifi"|"phone"|"email"|"contact"|"text", teléfono).
@@ -165,10 +167,19 @@ pub trait Daemon {
     fn find_phone(&self, peer: &str, ring: bool) -> zbus::Result<()>;
     /// Cámaras del teléfono.
     fn cameras(&self, peer: &str) -> zbus::Result<Vec<CameraRow>>;
-    /// Usa la cámara del teléfono como webcam; devuelve `/dev/videoN`.
-    fn webcam_start(&self, peer: &str, camera: &str) -> zbus::Result<String>;
+    /// Usa la cámara del teléfono como webcam; devuelve `/dev/videoN` o
+    /// «PipeWire: …». `backend`: ""|auto, v4l2 o pipewire.
+    fn webcam_start(&self, peer: &str, camera: &str, backend: &str) -> zbus::Result<String>;
     fn webcam_stop(&self) -> zbus::Result<()>;
     fn webcam_status(&self) -> zbus::Result<WebcamRow>;
+    /// Usa el micrófono del teléfono como fuente de audio del PC; devuelve
+    /// el códec. `make_default`: ponerla como entrada predeterminada.
+    fn mic_start(&self, peer: &str, make_default: bool) -> zbus::Result<String>;
+    fn mic_stop(&self) -> zbus::Result<()>;
+    fn mic_status(&self) -> zbus::Result<MicRow>;
+    /// Tonos DTMF en la llamada en curso ("0-9*#ABCD"). Devuelve por dónde
+    /// fueron: "phone", "bluetooth" (HFP) o "audio".
+    fn dtmf(&self, peer: &str, digits: &str) -> zbus::Result<String>;
     /// Abre el escáner de QR en el teléfono.
     fn qr_scan(&self, peer: &str) -> zbus::Result<()>;
     /// Códigos leídos, más reciente primero.

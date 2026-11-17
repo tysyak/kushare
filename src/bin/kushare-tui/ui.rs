@@ -499,12 +499,21 @@ fn draw_calls(frame: &mut Frame, area: Rect, app: &App) {
     if !app.calls.is_empty() {
         state.select(Some(app.sel("calls")));
     }
-    let title = format!(
-        "{} · Enter {} · d {}",
-        t("gui.calls.recent"),
-        t("gui.calls.call"),
-        t("tui.dial")
-    );
+    let title = if app.in_call() {
+        format!(
+            "{} · {} {}",
+            t("gui.calls.recent"),
+            t("tui.keys_dtmf"),
+            app.tones
+        )
+    } else {
+        format!(
+            "{} · Enter {} · d {}",
+            t("gui.calls.recent"),
+            t("gui.calls.call"),
+            t("tui.dial")
+        )
+    };
     frame.render_stateful_widget(
         List::new(items)
             .block(block(&title))
@@ -595,7 +604,12 @@ fn draw_send(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_camera(frame: &mut Frame, area: Rect, app: &App) {
-    let [status, list] = Layout::vertical([Constraint::Length(4), Constraint::Min(3)]).areas(area);
+    let [status, mic, list] = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Length(4),
+        Constraint::Min(3),
+    ])
+    .areas(area);
     let (active, peer, _, device, fps, error) = &app.webcam;
     let line = if peer.is_empty() {
         t("gui.camera.off").to_string()
@@ -614,10 +628,56 @@ fn draw_camera(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(line, style),
+            Line::from(format!(
+                "{}: {}",
+                t("gui.camera.backend"),
+                match app.backend {
+                    "v4l2" => t("gui.camera.backend_v4l2"),
+                    "pipewire" => t("gui.camera.backend_pipewire"),
+                    _ => t("gui.camera.backend_auto"),
+                }
+            )),
             Line::from(t("tui.keys_camera").to_string()).fg(DIM),
         ])
+        .wrap(Wrap { trim: false })
         .block(block(t("gui.camera.webcam"))),
         status,
+    );
+    // Micrófono: estado y nivel.
+    let (m_active, m_peer, codec, level, m_error, m_default) = &app.mic;
+    let m_line = if m_peer.is_empty() {
+        t("gui.camera.mic_off").to_string()
+    } else if !m_error.is_empty() {
+        tf("gui.camera.error", &[("error", m_error)])
+    } else if *m_active {
+        tf("gui.camera.mic_on", &[("codec", codec)])
+    } else {
+        t("gui.camera.mic_starting").to_string()
+    };
+    let bars = "█".repeat(((*level as f32 / 1000.0).sqrt() * 30.0) as usize);
+    let default = if *m_default || app.mic_default {
+        format!("[x] {}", t("gui.camera.mic_default"))
+    } else {
+        format!("[ ] {}", t("gui.camera.mic_default"))
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                m_line,
+                if *m_active {
+                    Style::default().fg(ACCENT).bold()
+                } else {
+                    Style::default()
+                },
+            ),
+            Line::from(vec![
+                Span::styled(bars, Style::default().fg(ACCENT)),
+                Span::raw("  "),
+                Span::raw(default),
+            ]),
+        ])
+        .block(block(t("tui.mic"))),
+        mic,
     );
     let items: Vec<ListItem> = app
         .cameras

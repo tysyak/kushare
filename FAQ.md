@@ -258,3 +258,32 @@ Comprueba que esté activado (`kushare setting`) y que tu escritorio atienda
 `loginctl lock-session` (en Hyprland, `lock_cmd` en `hypridle.conf`). Solo
 cuenta el **Bluetooth**: si el teléfono sigue conectado por Wi-Fi no se
 considera cerca ni lejos; se bloquea tras ~30 s sin su Bluetooth.
+
+## La webcam del teléfono no aparece en mis apps
+
+kushare crea la cámara virtual con **v4l2loopback** si está cargado y, si no,
+con **PipeWire** (sin root). `kushare doctor` dice cuál tienes.
+
+- PipeWire: instala `gst-plugin-pipewire` y `gst-plugins-bad` (Arch),
+  `gstreamer1.0-pipewire` y `gstreamer1.0-plugins-bad` (Debian/Ubuntu) o
+  `pipewire-gstreamer` y `gstreamer1-plugins-bad-free` (Fedora). La ven Firefox,
+  Chromium, OBS y GNOME; **no** Zoom, Teams ni Discord (solo leen `/dev/video*`).
+- v4l2loopback: `sudo modprobe v4l2loopback exclusive_caps=1` (paquete
+  `v4l2loopback-dkms`). La ven todas las apps.
+- Para forzar uno: `kushare webcam start <disp> --backend pipewire|v4l2`.
+
+## El micrófono del teléfono no aparece o suena entrecortado
+
+Necesita `pactl` (pipewire-pulse o PulseAudio): la entrada se llama
+«Micrófono de <teléfono>» (`kushare_mic`). La primera vez el teléfono pide el
+permiso de micrófono en su pantalla. Por Bluetooth va a 16 kHz (calidad de
+llamada); con el teléfono y el PC en la misma Wi-Fi, a 48 kHz.
+
+## Mando tonos (DTMF) y el menú de voz no reacciona
+
+Android no deja a otras apps entrar en una llamada (salvo a la de teléfono), así
+que kushare manda los tonos por **Bluetooth manos libres**: el teléfono los
+genera como si pulsaras su teclado, pero Android los corta a ~5 ms y algunos
+menús (p. ej. buzones en VoLTE) no los reconocen. Si el manos libres no está
+conectado y la llamada se oye en el PC (*Escuchar aquí*), van como sonido. Si
+no los reconoce, márcalos en el teléfono.

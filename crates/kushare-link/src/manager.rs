@@ -1966,6 +1966,7 @@ pub fn is_heavy(feature: &pb::Feature) -> bool {
                 | F::Wallpaper(_)
                 | F::ContactPhotos(_)
                 | F::WebcamFrame(_)
+                | F::MicAudio(_)
         )
     )
 }
@@ -2033,6 +2034,9 @@ mod tests {
         assert!(!is_heavy(&f(F::ContactPhotosRequest(Default::default()))));
         assert!(is_heavy(&f(F::WebcamFrame(Default::default()))));
         assert!(!is_heavy(&f(F::WebcamAck(Default::default()))));
+        assert!(is_heavy(&f(F::MicAudio(Default::default()))));
+        assert!(!is_heavy(&f(F::MicStart(Default::default()))));
+        assert!(!is_heavy(&f(F::Dtmf(Default::default()))));
     }
 
     #[test]

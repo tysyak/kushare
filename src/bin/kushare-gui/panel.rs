@@ -276,22 +276,24 @@ impl App {
         // Accesos a la cámara del teléfono: escanear un QR y la webcam.
         let webcam_on = !self.camera.webcam.1.is_empty();
         let quick = |icon: Icon, label: &'static str, on: bool, msg: Message| {
+            // Icono encima del texto: caben tres en el ancho del panel.
             button(
-                row![
+                column![
                     icon.view(
-                        16.0,
+                        18.0,
                         if on {
                             c.on_primary
                         } else {
                             c.on_secondary_container
                         }
                     ),
-                    text(label).size(13).font(SEMIBOLD),
+                    text(label).size(12).font(SEMIBOLD),
                 ]
-                .spacing(6)
-                .align_y(Alignment::Center),
+                .spacing(2)
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
             )
-            .padding(Padding::from([7, 10]))
+            .padding(Padding::from([8, 4]))
             .width(Length::Fill)
             .style(style::button(
                 c,
@@ -319,6 +321,16 @@ impl App {
                         Message::Camera(camera::Msg::Stop)
                     } else {
                         Message::Navigate(Screen::Camera)
+                    }
+                ),
+                quick(
+                    Icon::Mic,
+                    t("gui.panel.mic"),
+                    self.mic_on(),
+                    if self.mic_on() {
+                        Message::Camera(camera::Msg::MicStop)
+                    } else {
+                        Message::Camera(camera::Msg::MicStart)
                     }
                 ),
             ]
@@ -356,12 +368,20 @@ impl App {
                         "reject",
                     ));
             } else {
-                buttons = buttons.push(action(
-                    Icon::CallEnd,
-                    ButtonKind::Filled,
-                    c.on_primary,
-                    "hangup",
-                ));
+                // Teclado de tonos (DTMF): la página Llamadas lo usa en llamada.
+                buttons = buttons
+                    .push(
+                        button(Icon::Dialpad.view(20.0, c.on_secondary_container))
+                            .padding(8)
+                            .style(style::button(c, ButtonKind::Tonal))
+                            .on_press(Message::Navigate(Screen::Calls)),
+                    )
+                    .push(action(
+                        Icon::CallEnd,
+                        ButtonKind::Filled,
+                        c.on_primary,
+                        "hangup",
+                    ));
             }
             col = col.push(
                 container(
