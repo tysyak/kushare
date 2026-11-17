@@ -6,6 +6,8 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.8.0] - 2026-11-16
+
 ### Añadido
 - **El teléfono como micrófono del PC**: aparece la entrada «Micrófono de
   <teléfono>» (`kushare_mic`, con `module-pipe-source` de pipewire-pulse) que
