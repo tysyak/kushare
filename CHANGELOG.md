@@ -6,6 +6,16 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.8.1] - 2026-11-16
+
+### Añadido
+- **Barra de llamada en curso** arriba en todas las páginas de la GUI: quién
+  llama (foto o iniciales), estado y tiempo de llamada («En llamada · 3:25»),
+  silenciar el micrófono, teclado de tonos y **Colgar**; si está sonando,
+  *Contestar* y *Rechazar*. Sustituye a la franja de llamada del panel del
+  teléfono. En la TUI, la misma barra en todas las pestañas con `H` (colgar o
+  rechazar), `A` (contestar) y `M` (silenciar) desde cualquier pestaña.
+
 ## [0.8.0] - 2026-11-16
 
 ### Añadido
