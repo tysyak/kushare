@@ -337,80 +337,130 @@ impl App {
             .spacing(6),
         );
 
-        // Llamada en curso: quién y los botones para atender o colgar.
-        if let Some((_, _, call, ..)) = state
-            && call.0 != "idle"
-        {
-            let who = if call.2.is_empty() { &call.1 } else { &call.2 };
-            let peer = p.id.clone();
-            let action = |icon: Icon, kind: ButtonKind, fg: Color, action: &'static str| {
-                button(icon.view(20.0, fg))
-                    .padding(8)
-                    .style(style::button(c, kind))
-                    .on_press(Message::CallCommand {
-                        peer: peer.clone(),
-                        action,
-                    })
-            };
-            let mut buttons = row![].spacing(6);
-            if call.0 == "ringing" {
-                buttons = buttons
-                    .push(action(
-                        Icon::Phone,
-                        ButtonKind::Filled,
-                        c.on_primary,
-                        "answer",
-                    ))
-                    .push(action(
-                        Icon::CallEnd,
-                        ButtonKind::Tonal,
-                        c.on_secondary_container,
-                        "reject",
-                    ));
-            } else {
-                // Teclado de tonos (DTMF): la página Llamadas lo usa en llamada.
-                buttons = buttons
-                    .push(
-                        button(Icon::Dialpad.view(20.0, c.on_secondary_container))
-                            .padding(8)
-                            .style(style::button(c, ButtonKind::Tonal))
-                            .on_press(Message::Navigate(Screen::Calls)),
-                    )
-                    .push(action(
-                        Icon::CallEnd,
-                        ButtonKind::Filled,
-                        c.on_primary,
-                        "hangup",
-                    ));
-            }
-            col = col.push(
-                container(
-                    row![
-                        avatar(c, who, "", 36.0),
-                        column![
-                            text(who.clone()).size(14).font(BOLD),
-                            text(match call.0.as_str() {
-                                "ringing" => t("gui.calls.incoming"),
-                                "dialing" => t("gui.calls.dialing"),
-                                _ => t("gui.calls.active"),
-                            })
-                            .size(12),
-                        ]
-                        .width(Length::Fill),
-                        buttons,
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
-                )
-                .padding(10)
-                .style(style::card(
-                    c.tertiary_container,
-                    c.on_tertiary_container,
-                    Shape::List,
-                )),
-            );
-        }
         card(c, col.into())
+    }
+
+    /// Teléfono con una llamada (entrante, marcando o activa) y su estado.
+    pub(crate) fn phone_call(&self) -> Option<(String, &kushare_dbus::CallRow)> {
+        let p = self.phone_peers().first()?.id.clone();
+        let (_, _, call, ..) = self.snapshot.states.get(&p)?;
+        (call.0 != "idle" && !call.0.is_empty()).then_some((p, call))
+    }
+
+    /// Barra de llamada en curso, arriba en todas las páginas: quién, estado
+    /// y tiempo, silenciar, teclado de tonos y colgar (o contestar/rechazar).
+    pub(crate) fn call_bar(&self, c: Colors) -> Option<Element<'_, Message>> {
+        let (peer, call) = self.phone_call()?;
+        let (phase, number, name, muted) = call;
+        let who = if name.is_empty() { number } else { name };
+        let status = match phase.as_str() {
+            "ringing" => t("gui.calls.incoming").to_string(),
+            "dialing" => t("gui.calls.dialing").to_string(),
+            _ => match self.call_since {
+                Some(since) => {
+                    let s = since.elapsed().as_secs();
+                    format!("{} · {}:{:02}", t("gui.calls.active"), s / 60, s % 60)
+                }
+                None => t("gui.calls.active").to_string(),
+            },
+        };
+        let fg = c.on_tertiary_container;
+        let cmd = |action: &'static str| Message::CallCommand {
+            peer: peer.clone(),
+            action,
+        };
+        let round = |icon: Icon, kind: ButtonKind, color: Color, msg: Message| {
+            button(icon.view(20.0, color))
+                .padding(10)
+                .style(style::button(c, kind))
+                .on_press(msg)
+        };
+        let mut buttons = row![].spacing(8).align_y(Alignment::Center);
+        if phase == "ringing" {
+            buttons = buttons
+                .push(
+                    button(labeled(Icon::CallEnd, t("gui.phone.reject"), c.on_primary))
+                        .padding(Padding::from([10, 18]))
+                        .style(style::button(
+                            c,
+                            ButtonKind::Card {
+                                bg: c.error,
+                                fg: c.on_primary,
+                                shape: Shape::List,
+                            },
+                        ))
+                        .on_press(cmd("reject")),
+                )
+                .push(
+                    button(labeled(Icon::Phone, t("gui.phone.answer"), c.on_primary))
+                        .padding(Padding::from([10, 18]))
+                        .style(style::button(c, ButtonKind::Filled))
+                        .on_press(cmd("answer")),
+                );
+        } else {
+            buttons = buttons
+                .push(round(
+                    if *muted { Icon::MicOff } else { Icon::Mic },
+                    if *muted {
+                        ButtonKind::Filled
+                    } else {
+                        ButtonKind::Tonal
+                    },
+                    if *muted {
+                        c.on_primary
+                    } else {
+                        c.on_secondary_container
+                    },
+                    cmd(if *muted { "unmute" } else { "mute" }),
+                ))
+                .push(round(
+                    Icon::Dialpad,
+                    if self.screen == Screen::Calls {
+                        ButtonKind::Filled
+                    } else {
+                        ButtonKind::Tonal
+                    },
+                    if self.screen == Screen::Calls {
+                        c.on_primary
+                    } else {
+                        c.on_secondary_container
+                    },
+                    Message::Navigate(Screen::Calls),
+                ))
+                .push(
+                    button(labeled(Icon::CallEnd, t("gui.phone.hangup"), c.on_primary))
+                        .padding(Padding::from([10, 18]))
+                        .style(style::button(
+                            c,
+                            ButtonKind::Card {
+                                bg: c.error,
+                                fg: c.on_primary,
+                                shape: Shape::List,
+                            },
+                        ))
+                        .on_press(cmd("hangup")),
+                );
+        }
+        Some(
+            container(
+                row![
+                    avatar(c, who, "", 44.0),
+                    column![
+                        text(who.clone()).size(17).font(BOLD).color(fg),
+                        text(status).size(13).color(fg),
+                    ]
+                    .spacing(2)
+                    .width(Length::Fill),
+                    buttons,
+                ]
+                .spacing(14)
+                .align_y(Alignment::Center),
+            )
+            .padding(Padding::from([10, 16]))
+            .width(Length::Fill)
+            .style(style::card(c.tertiary_container, fg, Shape::Hero))
+            .into(),
+        )
     }
 
     /// Reproductor activo (o el último en pausa) con su carátula, controles

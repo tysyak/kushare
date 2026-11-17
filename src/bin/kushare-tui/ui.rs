@@ -20,13 +20,21 @@ const PANEL_MIN_WIDTH: u16 = 100;
 const PANEL_WIDTH: u16 = 40;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [tabs, body, footer] = Layout::vertical([
+    let call = app
+        .phone_state()
+        .map(|st| &st.2)
+        .filter(|c| !c.0.is_empty() && c.0 != "idle");
+    let [tabs, bar, body, footer] = Layout::vertical([
         Constraint::Length(3),
+        Constraint::Length(if call.is_some() { 3 } else { 0 }),
         Constraint::Min(5),
         Constraint::Length(1),
     ])
     .areas(frame.area());
     draw_tabs(frame, tabs, app);
+    if let Some(call) = call {
+        draw_call_bar(frame, bar, app, call);
+    }
     if body.width >= PANEL_MIN_WIDTH {
         let [panel, page] =
             Layout::horizontal([Constraint::Length(PANEL_WIDTH), Constraint::Min(40)]).areas(body);
@@ -36,6 +44,51 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_page(frame, body, app);
     }
     draw_footer(frame, footer, app);
+}
+
+/// Barra de llamada en curso, en todas las pestañas.
+fn draw_call_bar(frame: &mut Frame, area: Rect, app: &App, call: &kushare_dbus::CallRow) {
+    let (phase, number, name, muted) = call;
+    let who = if name.is_empty() { number } else { name };
+    let status = match phase.as_str() {
+        "ringing" => t("gui.calls.incoming").to_string(),
+        "dialing" => t("gui.calls.dialing").to_string(),
+        _ => match app.call_since {
+            Some(since) => {
+                let s = since.elapsed().as_secs();
+                format!("{} · {}:{:02}", t("gui.calls.active"), s / 60, s % 60)
+            }
+            None => t("gui.calls.active").to_string(),
+        },
+    };
+    let keys = if phase == "ringing" {
+        format!("A {} · H {}", t("gui.phone.answer"), t("gui.phone.reject"))
+    } else {
+        format!(
+            "H {} · M {} · 4 → {}",
+            t("gui.phone.hangup"),
+            if *muted {
+                t("gui.phone.unmute")
+            } else {
+                t("gui.phone.mute")
+            },
+            t("gui.calls.dtmf_title")
+        )
+    };
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" ☎ {who} "),
+            Style::default().fg(Color::Black).bg(ACCENT).bold(),
+        ),
+        Span::raw("  "),
+        Span::styled(status, Style::default().fg(ACCENT).bold()),
+        Span::raw("   "),
+        Span::styled(keys, Style::default().fg(DIM)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line).block(block(t("gui.calls.active"))),
+        area,
+    );
 }
 
 fn block(title: &str) -> Block<'_> {

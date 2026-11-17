@@ -199,6 +199,8 @@ struct App {
     app_filter: Option<AppFilter>,
     send_file: Option<PathBuf>,
     toast: Option<String>,
+    /// Desde cuándo hay una llamada activa (para el contador de la barra).
+    call_since: Option<std::time::Instant>,
     angle: f32,
     /// Informe de `kushare doctor` (None: no se ha pedido; Some(""): en curso).
     doctor: Option<String>,
@@ -410,6 +412,7 @@ impl App {
             app_filter: None,
             send_file: None,
             toast: None,
+            call_since: None,
             angle: 0.0,
             doctor: None,
             gallery: Gallery::default(),
@@ -532,7 +535,7 @@ impl App {
             .states
             .values()
             .any(|st| st.3.iter().any(|p| p.5 == "playing" && p.10.2 > 0));
-        if playing {
+        if playing || self.call_since.is_some() {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Clock));
         }
         if self.viewer.is_some() {
@@ -702,6 +705,15 @@ impl App {
             }
             Message::Snapshot(Ok(snapshot)) => {
                 self.snapshot = snapshot;
+                // Contador de la barra de llamada: empieza al contestar.
+                let active = self
+                    .phone_call()
+                    .is_some_and(|(_, call)| call.0 == "active");
+                match (active, self.call_since) {
+                    (true, None) => self.call_since = Some(std::time::Instant::now()),
+                    (false, Some(_)) => self.call_since = None,
+                    _ => {}
+                }
                 // El panel muestra las notificaciones del teléfono conectado:
                 // cargarlas en cuanto lo hay (o si cambió de teléfono).
                 let phone = self.phone_peers().first().map(|p| p.id.clone());
@@ -1389,8 +1401,12 @@ impl App {
         } else {
             scrollable(inner).height(Length::Fill).into()
         };
-        // Sin panel, el estado del teléfono va en una franja encima.
+        // Llamada en curso: barra fija arriba en todas las páginas.
         let mut body = column![];
+        if let Some(bar) = self.call_bar(c) {
+            body = body.push(container(bar).padding(Padding::new(pad).bottom(0.0).top(12.0)));
+        }
+        // Sin panel, el estado del teléfono va en una franja encima.
         if !lay.panel && screen != Screen::Phone && !self.phone_peers().is_empty() {
             body = body.push(
                 container(self.status_strip(c)).padding(Padding::new(pad).bottom(0.0).top(12.0)),

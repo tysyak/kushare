@@ -143,6 +143,8 @@ pub struct App {
     pub mic_default: bool,
     /// Tonos DTMF mandados en la llamada en curso.
     pub tones: String,
+    /// Desde cuándo hay una llamada activa (contador de la barra).
+    pub call_since: Option<Instant>,
     pub qr: Vec<QrRow>,
     /// Selección de cada lista (por pestaña).
     pub selected: HashMap<&'static str, usize>,
@@ -186,6 +188,7 @@ impl App {
             mic: Default::default(),
             mic_default: false,
             tones: String::new(),
+            call_since: None,
             qr: Vec::new(),
             selected: HashMap::new(),
             input: None,
@@ -349,6 +352,12 @@ impl App {
         if !self.tones.is_empty() && !self.in_call() {
             self.tones.clear();
         }
+        let active = self.phone_state().is_some_and(|st| st.2.0 == "active");
+        match (active, self.call_since) {
+            (true, None) => self.call_since = Some(Instant::now()),
+            (false, Some(_)) => self.call_since = None,
+            _ => {}
+        }
         // fps de la webcam mientras se ve su pestaña o está en marcha.
         if self.connected
             && (self.tab == Tab::Camera || !self.webcam.1.is_empty() || !self.mic.1.is_empty())
@@ -494,6 +503,33 @@ impl App {
                 d.dtmf(&peer, &digit).await.map(|_| ())
             });
             return;
+        }
+        // Con una llamada, desde cualquier pestaña: H colgar/rechazar,
+        // A contestar, M silenciar el micro (la barra de arriba lo recuerda).
+        if let Some(phase) = self.phone_state().map(|st| st.2.0.clone())
+            && !phase.is_empty()
+            && phase != "idle"
+        {
+            match key.code {
+                KeyCode::Char('H') => {
+                    self.call_cmd(if phase == "ringing" {
+                        "reject"
+                    } else {
+                        "hangup"
+                    });
+                    return;
+                }
+                KeyCode::Char('A') if phase == "ringing" => {
+                    self.call_cmd("answer");
+                    return;
+                }
+                KeyCode::Char('M') => {
+                    let muted = self.phone_state().is_some_and(|st| st.2.3);
+                    self.call_cmd(if muted { "unmute" } else { "mute" });
+                    return;
+                }
+                _ => {}
+            }
         }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
