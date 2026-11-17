@@ -6,6 +6,8 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.8.3] - 2026-11-17
+
 ### Cambiado
 - Menos batería en el modo Bluetooth: la lista de reproductores ya no se reenvía cuando solo avanza la posición
   (el receptor la extrapola; los saltos, pausas y cambios de canción sí se mandan) y, al conectar, se manda con
