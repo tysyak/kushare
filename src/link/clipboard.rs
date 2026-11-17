@@ -118,6 +118,22 @@ impl Clipboard {
         if let Clip::Text(text) = self.read() {
             self.state.lock().expect("mutex envenenado").last = Some(text);
         }
+        // Wayland con data-control: por eventos, sin despertar cada segundo
+        // (antes se leía el portapapeles entero cada segundo, despertando
+        // también a la app dueña). Si no hay data-control, se sondea.
+        if self.backend() == Backend::Wayland {
+            let result = watch_wayland(|| {
+                let settings = self.settings.get();
+                if (settings.clipboard_sync || settings.clipboard_history)
+                    && let Clip::Text(text) = self.read()
+                {
+                    self.on_local(text);
+                }
+            });
+            if let Err(err) = result {
+                tracing::info!(%err, "portapapeles sin eventos de Wayland: se sondea cada segundo");
+            }
+        }
         loop {
             std::thread::sleep(POLL);
             let settings = self.settings.get();
@@ -344,6 +360,111 @@ enum WaylandError {
     /// El compositor no implementa data-control.
     Unsupported,
     Other,
+}
+
+/// Espera cambios de la selección con `zwlr_data_control_v1` y llama a
+/// `on_change` en cada uno (también una vez al empezar). Solo vuelve si
+/// falla: el compositor no tiene el protocolo o se cerró la conexión.
+fn watch_wayland(mut on_change: impl FnMut()) -> anyhow::Result<()> {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_registry, wl_seat};
+    use wayland_client::{Connection, Dispatch, QueueHandle, event_created_child};
+    use wayland_protocols_wlr::data_control::v1::client::{
+        zwlr_data_control_device_v1::{self, ZwlrDataControlDeviceV1 as Device},
+        zwlr_data_control_manager_v1::ZwlrDataControlManagerV1 as Manager,
+        zwlr_data_control_offer_v1::ZwlrDataControlOfferV1 as Offer,
+    };
+
+    struct Watch {
+        changed: bool,
+    }
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Watch {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    impl Dispatch<wl_seat::WlSeat, ()> for Watch {
+        fn event(
+            _: &mut Self,
+            _: &wl_seat::WlSeat,
+            _: wl_seat::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    impl Dispatch<Manager, ()> for Watch {
+        fn event(
+            _: &mut Self,
+            _: &Manager,
+            _: <Manager as wayland_client::Proxy>::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    impl Dispatch<Offer, ()> for Watch {
+        fn event(
+            _: &mut Self,
+            _: &Offer,
+            _: <Offer as wayland_client::Proxy>::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    impl Dispatch<Device, ()> for Watch {
+        fn event(
+            state: &mut Self,
+            _: &Device,
+            event: zwlr_data_control_device_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            match event {
+                // Nueva selección: avisar (el contenido lo lee `read_wayland`).
+                zwlr_data_control_device_v1::Event::Selection { id } => {
+                    if let Some(offer) = id {
+                        offer.destroy();
+                    }
+                    state.changed = true;
+                }
+                zwlr_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => {
+                    offer.destroy()
+                }
+                _ => {}
+            }
+        }
+        event_created_child!(Watch, Device, [
+            zwlr_data_control_device_v1::EVT_DATA_OFFER_OPCODE => (Offer, ()),
+        ]);
+    }
+
+    let conn = Connection::connect_to_env()?;
+    let (globals, mut queue) = registry_queue_init::<Watch>(&conn)?;
+    let qh = queue.handle();
+    let manager: Manager = globals
+        .bind(&qh, 1..=2, ())
+        .map_err(|_| anyhow::anyhow!("el compositor no tiene zwlr_data_control"))?;
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=8, ())?;
+    let _device = manager.get_data_device(&seat, &qh, ());
+    let mut state = Watch { changed: false };
+    loop {
+        queue.blocking_dispatch(&mut state)?;
+        if std::mem::take(&mut state.changed) {
+            on_change();
+        }
+    }
 }
 
 fn read_wayland() -> Result<Clip, WaylandError> {

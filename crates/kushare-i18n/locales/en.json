@@ -402,6 +402,12 @@
       "mic_started": "Phone microphone ready ({codec}).",
       "mic_stopped": "Microphone stopped.",
       "mic_default": "Use it as the default input"
+    },
+    "reply": {
+      "window_title": "Reply · {title}",
+      "placeholder": "Type your reply…",
+      "hint": "Ctrl+Enter to send · Esc to cancel",
+      "send": "Send"
     }
   },
   "tray": {

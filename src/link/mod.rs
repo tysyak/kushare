@@ -1425,11 +1425,23 @@ fn is_notification_bridge(app_id: &str, app_name: &str) -> bool {
         .any(|b| id == *b || name == *b || id.starts_with("org.kde.kdeconnect"))
 }
 
-/// Pide el texto de una respuesta con zenity (o kdialog). `None` si se
-/// canceló o no hay ninguno instalado.
+/// Pide el texto de una respuesta en la ventana de kushare (`kushare-gui
+/// --reply`), o con zenity o kdialog. `None` si se canceló o no hay ninguno.
 async fn ask_reply(title: &str, text: &str) -> Option<String> {
     let prompt = format!("{title}\n{text}");
-    let attempts: [(&str, Vec<String>); 2] = [
+    // Primero la ventana de kushare (cuadro de varias líneas); si no está,
+    // zenity o kdialog.
+    let gui = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("kushare-gui")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| "kushare-gui".into());
+    let gui = gui.to_string_lossy().into_owned();
+    let attempts: [(&str, Vec<String>); 3] = [
+        (
+            gui.as_str(),
+            vec!["--reply".into(), title.to_string(), text.to_string()],
+        ),
         (
             "zenity",
             vec![

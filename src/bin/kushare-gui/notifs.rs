@@ -67,6 +67,9 @@ pub enum Msg {
     DismissAll,
     Action(String, String),
     StartReply(String, String),
+    /// Resultado de la ventana de respuesta: (key, acción, texto o `None`
+    /// si se canceló). `Err` = no se pudo abrir: se responde aquí mismo.
+    ReplyWindow(String, String, Result<Option<String>, ()>),
     ReplyText(String),
     SendReply,
     CancelReply,
@@ -193,9 +196,52 @@ impl App {
                 })
             }
             Msg::StartReply(key, action) => {
-                s.reply = Some((key, action, String::new()));
-                Task::none()
+                // La ventana de respuesta (cuadro de varias líneas); el
+                // campo pequeño de la tarjeta queda de respaldo.
+                let Some((_, _, app, title, body, ..)) = s.list.iter().find(|n| n.0 == key) else {
+                    return Task::none();
+                };
+                let heading = if app.is_empty() {
+                    title.clone()
+                } else {
+                    format!("{title} · {app}")
+                };
+                let body = body.clone();
+                let (tx, rx) = iced::futures::channel::oneshot::channel();
+                std::thread::spawn(move || {
+                    let result = std::env::current_exe()
+                        .and_then(|exe| {
+                            std::process::Command::new(exe)
+                                .args(["--reply", &heading, &body])
+                                .output()
+                        })
+                        .map(|out| {
+                            out.status
+                                .success()
+                                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                                .filter(|text| !text.is_empty())
+                        })
+                        .map_err(|_| ());
+                    let _ = tx.send(result);
+                });
+                Task::perform(async move { rx.await.unwrap_or(Err(())) }, move |r| {
+                    Message::Notifs(Msg::ReplyWindow(key.clone(), action.clone(), r))
+                })
             }
+            Msg::ReplyWindow(key, action, result) => match result {
+                Ok(Some(text)) => {
+                    let peer = s.peer.clone();
+                    self.call(t("gui.notifs.replied"), move |d| async move {
+                        d.phone_notification_reply(&peer, &key, &action, &text)
+                            .await
+                    })
+                }
+                Ok(None) => Task::none(),
+                Err(()) => {
+                    s.reply = Some((key, action, String::new()));
+                    Task::none()
+                }
+            },
             Msg::ReplyText(v) => {
                 if let Some(r) = &mut s.reply {
                     r.2 = v;

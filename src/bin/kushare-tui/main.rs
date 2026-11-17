@@ -34,7 +34,7 @@ fn log_file_path() -> PathBuf {
     std::env::temp_dir().join("kushare-tui.log")
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Ok(file) = std::fs::File::create(log_file_path()) {

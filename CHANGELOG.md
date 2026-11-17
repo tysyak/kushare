@@ -6,6 +6,34 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+### Añadido
+- **Ventana propia para responder** a una notificación del teléfono
+  (`kushare-gui --reply`): el mensaje y un cuadro de texto de varias líneas,
+  Enviar (Ctrl+Enter) y Cancelar (Esc), con el tema de kushare. Se usa antes que
+  zenity/kdialog. Su `app_id` es `org.kushare.reply` (para dejarla flotando en
+  Hyprland y otros).
+
+### Rendimiento
+- **GUI**: con un teléfono conectado redibujaba a 25 fps para girar el icono de
+  «Conectado» (≈2,6 % de CPU y ~400 despertares/s con la ventana quieta). Ahora
+  solo anima lo pasajero (buscar, emparejar, fotos nuevas, webcam/micrófono):
+  0 % y ~12 despertares/s.
+- **Portapapeles por eventos** en Wayland (`zwlr_data_control`): antes leía el
+  portapapeles entero cada segundo (despertando también a la app dueña); ahora
+  no hace nada hasta que algo cambia. X11 y compositores sin data-control
+  siguen sondeando.
+- El daemon usa 4 hilos de trabajo en lugar de uno por núcleo (25 → 13 hilos);
+  la TUI, uno.
+- **Límites de caché** para miniaturas (64 MB), iconos, carátulas y fotos de
+  contacto (32 MB cada una), además de las fotos (400 MB); se recorta al
+  arrancar y tras cada precarga.
+
+### Interno
+- `link/features.rs` (2 900 líneas) partido en `features/{mod,hardware,
+  phone_data,photos,local_audio,phone_audio}.rs`, y las vistas de la GUI en
+  `home`, `phone`, `gallery`, `settings` y `dialogs`. Sin cambios de
+  comportamiento.
+
 ## [0.8.1] - 2026-11-16
 
 ### Añadido

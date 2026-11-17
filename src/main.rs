@@ -135,7 +135,10 @@ fn main() -> anyhow::Result<()> {
     // plataformas; con el backend `ksni` de `tray-icon` (ver
     // `kushare_tray::tray`) esto ya no exige un runtime GTK, así que basta
     // con un runtime tokio normal de varios hilos.
+    // Es casi todo E/S y lo pesado (webcam, micrófono, portapapeles) va en
+    // hilos propios: 4 hilos bastan (por defecto, uno por núcleo).
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
         .enable_all()
         .build()?;
 

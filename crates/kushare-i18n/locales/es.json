@@ -402,6 +402,12 @@
       "mic_started": "Micrófono del teléfono listo ({codec}).",
       "mic_stopped": "Micrófono parado.",
       "mic_default": "Usarlo como entrada predeterminada"
+    },
+    "reply": {
+      "window_title": "Responder · {title}",
+      "placeholder": "Escribe tu respuesta…",
+      "hint": "Ctrl+Enter para enviar · Esc para cancelar",
+      "send": "Enviar"
     }
   },
   "tray": {

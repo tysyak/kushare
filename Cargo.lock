@@ -2874,6 +2874,8 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "ureq",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "wl-clipboard-rs",
  "zbus",
  "zune-jpeg 0.4.21",

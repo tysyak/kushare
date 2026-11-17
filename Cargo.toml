@@ -69,6 +69,9 @@ kushare-i18n = { path = "crates/kushare-i18n" }
 toml = "0.9"
 serde = { workspace = true, features = ["derive"] }
 wl-clipboard-rs = "0.9"
+# Vigilar el portapapeles por eventos (las mismas versiones que usa wl-clipboard-rs).
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 serde_json = "1"
 arboard = { version = "3", default-features = false }
 ureq = "3"
