@@ -124,7 +124,7 @@ pub fn cleanup_stale() {
 }
 
 impl MicSink {
-    /// Crea la fuente «Micrófono de <description>». Con `make_default`,
+    /// Crea la fuente «Micrófono de `<description>`». Con `make_default`,
     /// pasa a ser la predeterminada hasta que se cierre.
     pub fn open(description: &str, make_default: bool) -> anyhow::Result<Self> {
         cleanup_stale();

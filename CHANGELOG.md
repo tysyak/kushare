@@ -6,6 +6,15 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+### Cambiado
+- Menos batería en el modo Bluetooth: la lista de reproductores ya no se reenvía cuando solo avanza la posición
+  (el receptor la extrapola; los saltos, pausas y cambios de canción sí se mandan) y, al conectar, se manda con
+  la posición puesta al día.
+- Keepalive: cada lado omite su ping si acaba de recibir tráfico, así que casi solo uno de los dos los manda.
+- Binarios con LTO y una sola unidad de código: un 20–26 % más pequeños (daemon 20→15 MB, GUI 26→21 MB,
+  TUI 5,8→4,3 MB).
+- Documentación de `cargo doc` sin avisos.
+
 ## [0.8.2] - 2026-11-16
 
 ### Añadido

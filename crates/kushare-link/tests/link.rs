@@ -492,6 +492,26 @@ async fn frozen_peer_is_dropped_by_keepalive() {
     }
 }
 
+/// Sin tráfico, los pings (que cada lado omite si acaba de recibir algo)
+/// bastan para que ninguno de los dos dé el enlace por muerto.
+#[tokio::test]
+async fn idle_link_survives_on_keepalive_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b, _proxy) = paired(dir.path()).await;
+
+    // Cuatro veces el `idle_timeout` de `fast_config`.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    for n in [&mut a, &mut b] {
+        assert!(n.mgr.peers()[0].connected);
+        while let Ok(event) = n.events.try_recv() {
+            assert!(
+                !matches!(event, LinkEvent::PeerDisconnected { .. }),
+                "el enlace no debe cerrarse por inactividad"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn duplicate_links_resolve_to_a_single_working_one() {
     let dir = tempfile::tempdir().unwrap();

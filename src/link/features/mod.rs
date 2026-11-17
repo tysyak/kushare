@@ -101,7 +101,8 @@ pub struct PeerState {
 #[derive(Default)]
 struct LocalState {
     battery: Option<pb::BatteryStatus>,
-    players: Option<pb::MediaPlayers>,
+    /// Con el momento en que se mandó (para extrapolar la posición).
+    players: Option<(pb::MediaPlayers, Instant)>,
     outputs: Option<pb::AudioOutputs>,
 }
 
@@ -320,7 +321,10 @@ impl Features {
             let local = self.local.lock().expect("mutex envenenado");
             let msgs = [
                 local.battery.map(F::Battery),
-                local.players.clone().map(F::MediaPlayers),
+                local
+                    .players
+                    .as_ref()
+                    .map(|(p, at)| F::MediaPlayers(kushare_link::media::advanced(p, at.elapsed()))),
                 local.outputs.clone().map(F::AudioOutputs),
             ];
             for kind in msgs.into_iter().flatten() {
@@ -382,7 +386,16 @@ impl Features {
             let mut local = self.local.lock().expect("mutex envenenado");
             let slot_changed = match &kind {
                 F::Battery(b) => replace_if_changed(&mut local.battery, b),
-                F::MediaPlayers(p) => replace_if_changed(&mut local.players, p),
+                F::MediaPlayers(p) => {
+                    // Si solo avanzó la posición, el peer ya la calcula.
+                    let same = local.players.as_ref().is_some_and(|(old, at)| {
+                        kushare_link::media::same_players(old, p, at.elapsed())
+                    });
+                    if !same {
+                        local.players = Some((p.clone(), Instant::now()));
+                    }
+                    !same
+                }
                 F::AudioOutputs(o) => replace_if_changed(&mut local.outputs, o),
                 _ => true,
             };

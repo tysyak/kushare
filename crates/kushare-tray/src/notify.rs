@@ -45,8 +45,8 @@ trait Notifications {
     fn notification_replied(&self, id: u32, text: String) -> zbus::Result<()>;
 }
 
-/// Clave de acción que kushare usa para "Responder" (ver
-/// [`MirrorNotification::reply_action`]).
+/// Clave de acción que kushare usa para "Responder" (se usa con
+/// [`MirrorNotification::inline_reply_placeholder`]).
 pub const INLINE_REPLY_ACTION: &str = "inline-reply";
 
 /// Una notificación a mostrar con todas las opciones que usa kushare.

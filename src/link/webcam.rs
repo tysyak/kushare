@@ -147,7 +147,7 @@ pub fn choose(wanted: Option<Backend>, v4l2: bool, pipewire: bool) -> anyhow::Re
 /// fotogramas nuevos se descartan (el teléfono ya limita los pendientes).
 pub struct Sink {
     tx: mpsc::SyncSender<Frame>,
-    /// `/dev/videoN` o «PipeWire: <nombre>».
+    /// `/dev/videoN` o «PipeWire: `<nombre>`».
     pub device: String,
     pub width: u32,
     pub height: u32,

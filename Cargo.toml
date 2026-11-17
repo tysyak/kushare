@@ -121,3 +121,9 @@ assets = [
     { source = "packaging/common/kushare.svg", dest = "/usr/share/icons/hicolor/scalable/apps/kushare.svg", mode = "644" },
 ]
 requires = { "dbus-libs" = "*", "bluez-libs" = "*", "libwayland-client" = "*", "libxkbcommon" = "*" }
+
+# Binario más pequeño y algo más rápido: optimización entre crates (LTO) y
+# una sola unidad de código. Compila más lento, solo afecta a --release.
+[profile.release]
+lto = true
+codegen-units = 1

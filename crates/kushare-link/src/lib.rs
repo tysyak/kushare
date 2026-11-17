@@ -15,6 +15,7 @@
 
 pub mod identity;
 pub mod manager;
+pub mod media;
 pub mod pairing;
 pub mod store;
 

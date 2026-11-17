@@ -929,8 +929,14 @@ impl LinkManager {
                             tracing::warn!(%peer_id, "enlace inactivo demasiado tiempo; se cierra");
                             break false;
                         }
-                        nonce = nonce.wrapping_add(1);
-                        let _ = outbound.try_send(frame(Kind::Ping(pb::Ping { nonce })));
+                        // Si acaba de llegar algo (el ping del otro lado o
+                        // cualquier mensaje), el enlace está vivo: no hace
+                        // falta despertar la radio con otro ping. Así, con
+                        // los dos lados en marcha, casi solo uno los manda.
+                        if last_seen.elapsed() >= ping_interval / 2 {
+                            nonce = nonce.wrapping_add(1);
+                            let _ = outbound.try_send(frame(Kind::Ping(pb::Ping { nonce })));
+                        }
                     }
                 }
             };

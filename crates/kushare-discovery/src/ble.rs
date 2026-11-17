@@ -50,7 +50,7 @@
 //!   identificador binario, una subestructura tipo-longitud-valor con el
 //!   nombre del dispositivo, y una dirección Bluetooth clásica.
 //!
-//! [`extract_google_device_name`] implementa la heurística mínima para
+//! `extract_google_device_name` implementa la heurística mínima para
 //! extraer ese nombre (busca el patrón `[0x09][len][UTF-8 de `len`
 //! bytes]` en cualquier posición del payload) — no es un parser completo
 //! del formato de Google, que sigue sin documentarse en detalle más allá
@@ -120,7 +120,7 @@ pub enum BleSighting {
     },
     /// Un dispositivo Android real con Quick Share/Nearby Share visible
     /// (detectado por [`GOOGLE_NEARBY_SERVICE_UUID`]). `name` solo se
-    /// rellena si la heurística de [`extract_google_device_name`]
+    /// rellena si la heurística de `extract_google_device_name`
     /// reconoce el patrón del nombre en el payload.
     AndroidQuickShare {
         name: Option<String>,

@@ -124,7 +124,7 @@ message NotificationAction {
 
 message Notification {
   // Identificador estable en el emisor (StatusBarNotification.key en
-  // Android; "<id D-Bus>" en escritorio). Repetir la key actualiza.
+  // Android; `<id D-Bus>` en escritorio). Repetir la key actualiza.
   string key = 1;
   // Paquete en Android; `app_name` D-Bus (o desktop-entry) en escritorio.
   string app_id = 2;
@@ -497,7 +497,7 @@ message CallLogEntry {
   int64 date_ms = 3;
   uint32 duration_s = 4;
   CallType type = 5;
-  // Foto del contacto: "<contactId>-<photoId>" (cambia si cambia la foto);
+  // Foto del contacto: `<contactId>-<photoId>` (cambia si cambia la foto);
   // vacía si no tiene. Se pide aparte con `ContactPhotosRequest`.
   string photo_key = 6;
 }
