@@ -4,6 +4,22 @@ Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para L
 
 ¿Problemas? Ejecuta `kushare doctor` y mira el [FAQ](./FAQ.md) (firewall, redes que aíslan dispositivos, KDE Connect, arranque automático…). Cambios por versión en el [CHANGELOG](./CHANGELOG.md).
 
+## Capturas
+
+![Inicio con el panel del teléfono: estado, lo que suena, timbre, accesos rápidos y notificaciones](docs/capturas/pc-inicio.png)
+
+| | |
+|---|---|
+| ![Página Teléfono: fondo de pantalla, batería, timbre, multimedia y audio](docs/capturas/pc-telefono.png) | ![Llamadas: recientes y teclado (también con letras)](docs/capturas/pc-llamadas.png) |
+| ![Mensajes (SMS) del teléfono](docs/capturas/pc-mensajes.png) | ![Fotos del teléfono](docs/capturas/pc-fotos.png) |
+| ![Cámara y micrófono: el teléfono como webcam (v4l2loopback o PipeWire), micrófono y escáner de QR](docs/capturas/pc-camara-microfono.png) | ![TUI en la terminal](docs/capturas/tui-camera.png) |
+
+Con la app [`kushare-android`](https://github.com/tysyak/kushare-android):
+
+![App de Android: inicio, menú y dispositivos](docs/capturas/android-inicio-menu-dispositivos.png)
+
+<sub>Los datos personales de las capturas (números, mensajes, contactos y fotos) están difuminados.</sub>
+
 ## Instalar
 
 Los paquetes (Arch `.pkg.tar.zst`, Debian/Ubuntu `.deb`, Fedora `.rpm`) están en los [releases](https://github.com/tysyak/kushare/releases) e instalan:
