@@ -12,9 +12,15 @@ fmt:
 clippy:
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 
-# Mirror de Arch para el contenedor (el de la imagen a veces es muy lento y
-# pacman aborta por timeout). Se puede cambiar: make package-arch ARCH_MIRROR=...
-ARCH_MIRROR ?= https://geo.mirror.pkgbuild.com
+# Mirrors de Arch para el contenedor: por defecto, los 5 más rápidos de la
+# mirrorlist del host (packaging/arch/mirrors-rapidos.sh, unos 4 s). Para
+# forzar uno: make package-arch ARCH_MIRROR=https://...
+ARCH_MIRROR ?=
+ARCH_FALLBACK = https://geo.mirror.pkgbuild.com
+# Caché de pacman del host: se monta en solo lectura para no volver a bajar
+# lo que el PC ya tiene (base-devel, rust…). Los crates de cargo quedan en
+# el volumen de podman `kushare-arch-cargo` entre una release y otra.
+PACMAN_HOST_CACHE ?= /var/cache/pacman/pkg
 
 # Arch Linux: corre makepkg dentro de un contenedor archlinux:latest vía
 # podman, para no instalar toolchains/paquetes de sistema en el host.
@@ -26,13 +32,21 @@ ARCH_MIRROR ?= https://geo.mirror.pkgbuild.com
 # .pkg.tar.zst. Así tampoco hace falta chown sobre el repo montado (con
 # podman rootless eso deja archivos del host con el dueño de un subuid).
 package-arch:
-	podman run --rm -v "$(CURDIR)":/build:Z docker.io/library/archlinux:latest \
-	  bash -euc "echo 'Server = $(ARCH_MIRROR)/\$$repo/os/\$$arch' > /etc/pacman.d/mirrorlist && \
-	    pacman -Syu --noconfirm --needed --disable-download-timeout base-devel git rust dbus bluez wayland libxkbcommon && \
-	    useradd -m builder && \
+	@if [ -n "$(ARCH_MIRROR)" ]; then echo 'Server = $(ARCH_MIRROR)/$$repo/os/$$arch'; \
+	  else packaging/arch/mirrors-rapidos.sh /etc/pacman.d/mirrorlist $(ARCH_FALLBACK); fi > target/arch-mirrorlist
+	podman run --rm -v "$(CURDIR)":/build:Z \
+	  $$([ -d "$(PACMAN_HOST_CACHE)" ] && echo -v "$(PACMAN_HOST_CACHE)":/var/cache/pacman/host:ro) \
+	  -v kushare-arch-cargo:/cargo \
+	  docker.io/library/archlinux:latest \
+	  bash -euc "cp /build/target/arch-mirrorlist /etc/pacman.d/mirrorlist && \
+	    sed -i 's/^#\?ParallelDownloads.*/ParallelDownloads = 10/' /etc/pacman.conf && \
+	    pacman -Syu --noconfirm --needed --disable-download-timeout \
+	      --cachedir /var/cache/pacman/pkg --cachedir /var/cache/pacman/host \
+	      base-devel git rust dbus bluez wayland libxkbcommon && \
+	    useradd -m builder && chown builder /cargo && \
 	    install -d -o builder /tmp/makepkg && \
 	    install -o builder -m 644 /build/PKGBUILD /tmp/makepkg/PKGBUILD && \
-	    su builder -c 'cd /tmp/makepkg && makepkg -f --noconfirm --skipchecksums' && \
+	    su builder -c 'cd /tmp/makepkg && CARGO_HOME=/cargo makepkg -f --noconfirm --skipchecksums' && \
 	    cp /tmp/makepkg/*.pkg.tar.zst /build/"
 
 # Debian/.deb y Fedora/.rpm: se construyen dentro de contenedores propios
