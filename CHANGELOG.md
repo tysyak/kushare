@@ -6,6 +6,8 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+## [0.8.4] - 2026-11-19
+
 ### Añadido
 - El teléfono puede cambiar el **volumen** y el silencio de la salida de audio del PC (`pactl`). Las salidas de audio llevan ahora su volumen y si están silenciadas, y hay una orden nueva `SetAudioVolume` en el protocolo (compatible con versiones anteriores).
 

@@ -2841,7 +2841,7 @@ dependencies = [
 
 [[package]]
 name = "kushare"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2883,7 +2883,7 @@ dependencies = [
 
 [[package]]
 name = "kushare-core"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "directories",
  "serde",
@@ -2891,7 +2891,7 @@ dependencies = [
 
 [[package]]
 name = "kushare-crypto"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "getrandom 0.4.3",
  "hkdf",
@@ -2906,14 +2906,14 @@ dependencies = [
 
 [[package]]
 name = "kushare-dbus"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "zbus",
 ]
 
 [[package]]
 name = "kushare-discovery"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -2928,14 +2928,14 @@ dependencies = [
 
 [[package]]
 name = "kushare-i18n"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "kushare-link"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "ed25519-dalek",
@@ -2953,7 +2953,7 @@ dependencies = [
 
 [[package]]
 name = "kushare-proto"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "prost",
  "prost-build",
@@ -2963,7 +2963,7 @@ dependencies = [
 
 [[package]]
 name = "kushare-transfer"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "bluer",
@@ -2980,7 +2980,7 @@ dependencies = [
 
 [[package]]
 name = "kushare-tray"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "freedesktop-icons",
