@@ -31,12 +31,20 @@ PACMAN_HOST_CACHE ?= /var/cache/pacman/pkg
 # (/tmp/makepkg, desechable) y al final se copia de vuelta únicamente el
 # .pkg.tar.zst. Así tampoco hace falta chown sobre el repo montado (con
 # podman rootless eso deja archivos del host con el dueño de un subuid).
+# Certificados de confianza del host, montados (solo lectura) en los
+# contenedores: así funcionan también en redes con proxy HTTPS cuyo
+# certificado raíz se añadió al sistema (las descargas de pacman, crates.io
+# y GitHub pasan por él). Vacío = no se monta nada.
+HOST_CA ?= $(firstword $(wildcard /etc/ca-certificates/extracted/tls-ca-bundle.pem /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt))
+ca_mount = $(if $(HOST_CA),-v "$(HOST_CA)":$(1):ro)
+
 package-arch:
 	@if [ -n "$(ARCH_MIRROR)" ]; then echo 'Server = $(ARCH_MIRROR)/$$repo/os/$$arch'; \
 	  else packaging/arch/mirrors-rapidos.sh /etc/pacman.d/mirrorlist $(ARCH_FALLBACK); fi > target/arch-mirrorlist
 	podman run --rm -v "$(CURDIR)":/build:Z \
 	  $$([ -d "$(PACMAN_HOST_CACHE)" ] && echo -v "$(PACMAN_HOST_CACHE)":/var/cache/pacman/host:ro) \
 	  -v kushare-arch-cargo:/cargo \
+	  $(call ca_mount,/etc/ca-certificates/extracted/tls-ca-bundle.pem) \
 	  docker.io/library/archlinux:latest \
 	  bash -euc "cp /build/target/arch-mirrorlist /etc/pacman.d/mirrorlist && \
 	    sed -i 's/^#\?ParallelDownloads.*/ParallelDownloads = 10/' /etc/pacman.conf && \
@@ -53,7 +61,8 @@ package-arch:
 # con cargo-deb / cargo-generate-rpm (ver packaging/debian, packaging/rpm).
 package-deb:
 	podman build -t kushare-deb-builder -f packaging/debian/Containerfile .
-	podman run --rm -v "$(CURDIR)":/src:Z kushare-deb-builder
+	podman run --rm -v "$(CURDIR)":/src:Z \
+	  $(call ca_mount,/etc/ssl/certs/ca-certificates.crt) kushare-deb-builder
 
 package-deb-inner:
 	# target/release se limpia primero: si el árbol del host ya tiene un
@@ -66,7 +75,8 @@ package-deb-inner:
 
 package-rpm:
 	podman build -t kushare-rpm-builder -f packaging/rpm/Containerfile .
-	podman run --rm -v "$(CURDIR)":/src:Z kushare-rpm-builder
+	podman run --rm -v "$(CURDIR)":/src:Z \
+	  $(call ca_mount,/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem) kushare-rpm-builder
 
 package-rpm-inner:
 	rm -rf target/release
