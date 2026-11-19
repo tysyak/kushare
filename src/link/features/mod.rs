@@ -235,6 +235,7 @@ pub struct WebcamSession {
 enum LocalCommand {
     Media(pb::MediaCommand),
     SetOutput(String),
+    SetVolume(pb::SetAudioVolume),
 }
 
 impl Features {
@@ -563,6 +564,11 @@ impl Features {
             F::SetAudioOutput(set) => {
                 drop(peers);
                 let _ = self.commands.send(LocalCommand::SetOutput(set.id));
+                return None;
+            }
+            F::SetAudioVolume(set) => {
+                drop(peers);
+                let _ = self.commands.send(LocalCommand::SetVolume(set));
                 return None;
             }
             F::PhotoData(data) => {
@@ -1203,6 +1209,17 @@ mod tests {
         let outs = parse_sinks(hdmi, "spk");
         assert_eq!(outs.len(), 1);
         assert_eq!(outs[0].id, "spk");
+        assert!(!outs[0].has_volume);
+    }
+
+    #[test]
+    fn sinks_carry_volume_and_mute() {
+        let listing = "Sink #52\n\tName: spk\n\tDescription: Altavoz\n\tMute: yes\n\tVolume: front-left: 42598 /  65% / -11.23 dB,   front-right: 42598 /  65% / -11.23 dB\n\t        balance 0.00\n\tBase Volume: 65536 / 100% / 0.00 dB\n";
+        let outs = parse_sinks(listing, "spk");
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].has_volume);
+        assert_eq!(outs[0].volume, 65);
+        assert!(outs[0].muted);
     }
 
     #[test]

@@ -220,6 +220,7 @@ message Feature {
     MicAudio mic_audio = 49;
     MicState mic_state = 50;
     Dtmf dtmf = 51;
+    SetAudioVolume set_audio_volume = 52;
   }
 }
 
@@ -284,6 +285,12 @@ message AudioOutput {
   string name = 2;
   // Es la salida que usa ahora el sistema (por defecto / activa).
   bool active = 3;
+  // Volumen en % (puede pasar de 100) y silencio. Solo valen si
+  // `has_volume`: las versiones anteriores a la 0.8.4 y el teléfono no lo
+  // mandan.
+  uint32 volume = 4;
+  bool muted = 5;
+  bool has_volume = 6;
 }
 
 message AudioOutputs {
@@ -294,6 +301,14 @@ message AudioOutputs {
 
 message SetAudioOutput {
   string id = 1;
+}
+
+// Cambia el volumen (en %, el receptor lo limita a 150) y el silencio de una
+// salida de `AudioOutputs`. `id` vacío = la salida activa.
+message SetAudioVolume {
+  string id = 1;
+  uint32 volume = 2;
+  bool muted = 3;
 }
 
 enum Ringer {

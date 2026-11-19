@@ -157,7 +157,7 @@ kushare setting [nombre on|off]        # clipboard-sync, clipboard-history, phot
 kushare update [--download]            # ¿hay versión nueva? (descarga verificada con SHA-256)
 ```
 
-Lo mismo está en la GUI (páginas *Teléfono* y *Fotos*) y en la bandeja. En sentido contrario, el teléfono ve la batería del portátil y controla sus reproductores (MPRIS) y su salida de audio (`pactl`). Una llamada entrante aparece como notificación con *Contestar*/*Rechazar*.
+Lo mismo está en la GUI (páginas *Teléfono* y *Fotos*) y en la bandeja. En sentido contrario, el teléfono ve la batería del portátil y controla sus reproductores (MPRIS), su salida de audio y su volumen (`pactl`). Una llamada entrante aparece como notificación con *Contestar*/*Rechazar*.
 
 - **Audio del teléfono en el PC**: el PC hace de manos libres (HFP) y de altavoz (A2DP) del teléfono por Bluetooth. Necesita que PipeWire/WirePlumber tenga los roles `hfp_hf` y `a2dp_sink` (vienen activados por defecto) y, en el teléfono, *Llamadas* y *Audio multimedia* activados para este PC en los ajustes de Bluetooth.
 - **Fotos**: solo del teléfono al PC. Las miniaturas se guardan en `~/.cache/kushare/thumbs/` y el teléfono no las vuelve a mandar; las originales van a `~/.cache/kushare/photos/` (máx. 400 MB). Las 6 más recientes se precargan en segundo plano, a baja prioridad, para que abrirlas sea instantáneo aunque el enlace vaya por Bluetooth (una foto de 1 MB tarda unos 25 s).

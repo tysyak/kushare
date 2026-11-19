@@ -55,6 +55,12 @@ pub(super) async fn local_task(
                     }
                     let _ = dirty_tx.send(Dirty::Audio);
                 }
+                LocalCommand::SetVolume(set) => {
+                    if let Err(err) = pactl_set_volume(&set).await {
+                        tracing::info!(?err, id = %set.id, "no se pudo cambiar el volumen");
+                    }
+                    let _ = dirty_tx.send(Dirty::Audio);
+                }
             },
             else => break,
         }
@@ -332,11 +338,23 @@ pub(super) fn parse_devices(listing: &str, default: &str, input: bool) -> Vec<pb
                 id: name.to_string(),
                 name: name.to_string(),
                 active: name == default,
+                ..Default::default()
             });
         } else if let Some(desc) = line.strip_prefix("Description: ")
             && let Some(last) = outputs.last_mut()
         {
             last.name = desc.to_string();
+        } else if let Some(mute) = line.strip_prefix("Mute: ")
+            && let Some(last) = outputs.last_mut()
+        {
+            last.muted = mute == "yes";
+        } else if let Some(volume) = line.strip_prefix("Volume: ")
+            && let Some(last) = outputs.last_mut()
+            && let Some(percent) = first_percent(volume)
+        {
+            // "front-left: 65536 /  100% / 0,00 dB,   front-right: …"
+            last.volume = percent;
+            last.has_volume = true;
         } else if let Some(sink) = line.strip_prefix("Monitor of Sink: ") {
             if input && sink != "n/a" {
                 usable = false;
@@ -356,6 +374,38 @@ pub(super) fn parse_devices(listing: &str, default: &str, input: bool) -> Vec<pb
     }
     flush(&mut outputs, usable);
     outputs
+}
+
+/// Primer porcentaje de una línea `Volume:` de `pactl list` (el del primer
+/// canal).
+fn first_percent(volume: &str) -> Option<u32> {
+    let end = volume.find('%')?;
+    let start = volume[..end]
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map_or(0, |i| i + 1);
+    volume[start..end].parse().ok()
+}
+
+/// Volumen máximo que se acepta desde el otro lado (el 150 % de pavucontrol).
+const MAX_VOLUME: u32 = 150;
+
+/// Pone el volumen y el silencio de una salida (`id` vacío = la activa).
+pub(super) async fn pactl_set_volume(set: &pb::SetAudioVolume) -> anyhow::Result<()> {
+    let sink = if set.id.is_empty() {
+        "@DEFAULT_SINK@"
+    } else {
+        set.id.as_str()
+    };
+    let volume = format!("{}%", set.volume.min(MAX_VOLUME));
+    let mute = if set.muted { "1" } else { "0" };
+    for args in [
+        ["set-sink-volume", sink, volume.as_str()],
+        ["set-sink-mute", sink, mute],
+    ] {
+        let status = pactl().args(args).status().await?;
+        anyhow::ensure!(status.success(), "pactl {} falló", args[0]);
+    }
+    Ok(())
 }
 
 /// Salidas y entradas (micrófonos) de audio del PC, para la GUI.
