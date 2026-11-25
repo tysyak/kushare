@@ -248,6 +248,15 @@ turned on.
 .BI "hotspot send " DEVICE
 Send the network to the phone over the link: it asks whether to connect, with
 no scanning.
+.TP
+.BR "usb\-internet on " \fIDEVICE\fR " | " off " | " status
+Share the PC's internet over the USB cable (advanced). The phone opens a VPN
+(asking for permission the first time) and sends its traffic through
+.B adb reverse
+to the PC, which routes it through a
+.B kshusb0
+tunnel created by NetworkManager (NAT and DNS, no root). Requires USB
+debugging enabled and the PC authorized.
 .SS This PC
 .TP
 .BR clipboard " [" \-\-clear "] [" \-\-copy " \fIN\fR]"

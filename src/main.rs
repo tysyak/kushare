@@ -526,6 +526,7 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
     }
 
     link.hotspot.stop().await;
+    link.usbnet.stop().await;
     Ok(())
 }
 

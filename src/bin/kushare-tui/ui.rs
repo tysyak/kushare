@@ -908,6 +908,27 @@ fn fmt_time(ms: i64) -> String {
     }
 }
 
+/// Línea del internet por cable USB.
+fn usb_line(app: &App) -> Line<'static> {
+    let (on, busy, rx, tx, error) = &app.usb;
+    let state = if *on {
+        tf(
+            "gui.hotspot.usb_on",
+            &[
+                ("down", &format!("{} KiB", rx / 1024)),
+                ("up", &format!("{} KiB", tx / 1024)),
+            ],
+        )
+    } else if *busy {
+        t("gui.hotspot.usb_wait").to_string()
+    } else if !error.is_empty() {
+        error.clone()
+    } else {
+        "—".to_string()
+    };
+    Line::from(format!("{}: {state}", t("gui.hotspot.usb_title")))
+}
+
 /// «Compartir internet»: estado, nombre y clave, teclas y el QR si está
 /// encendida.
 fn draw_hotspot(frame: &mut Frame, area: Rect, app: &App) {
@@ -949,6 +970,7 @@ fn draw_hotspot(frame: &mut Frame, area: Rect, app: &App) {
     lines.extend([
         Line::from(format!("{}: {ssid}", t("gui.hotspot.ssid"))),
         Line::from(format!("{}: {password}", t("gui.hotspot.password"))),
+        usb_line(app),
         Line::from(""),
         Line::from(t("tui.keys_hotspot").to_string()).fg(DIM),
     ]);

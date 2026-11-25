@@ -23,7 +23,8 @@ optdepends=('yazi: selector de archivos en kushare-tui (pantalla Enviar)'
             'xdg-desktop-portal: selector de archivos de la GUI y del tray'
             'hostapd: compartir internet con el teléfono (red Wi-Fi)'
             'iw: compartir internet con el teléfono (red Wi-Fi)'
-            'networkmanager: compartir internet con el teléfono (DHCP y NAT)')
+            'networkmanager: compartir internet con el teléfono (DHCP y NAT)'
+            'android-tools: compartir internet con el teléfono por cable USB (adb)')
 makedepends=('cargo' 'git')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/tysyak/kushare/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')

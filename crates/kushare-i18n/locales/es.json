@@ -428,7 +428,13 @@
       "scan": "Escanéalo con la cámara del teléfono para conectarte:",
       "switch": "Usar la antena del {alternative} y encender",
       "switch_detail": "Mientras la red esté encendida la Wi-Fi del PC se queda en esa antena de su misma red; al apagarla vuelve a como estaba.",
-      "switching": "Cambiando de antena (la Wi-Fi del PC se corta unos segundos)…"
+      "switching": "Cambiando de antena (la Wi-Fi del PC se corta unos segundos)…",
+      "usb_title": "Por cable USB (avanzado)",
+      "usb_detail": "El teléfono usa el internet del PC por el cable, con una VPN. Necesita la depuración USB activada y adb en el PC.",
+      "usb_on": "Conectado · ↓ {down} ↑ {up}",
+      "usb_wait": "Esperando al teléfono… (la primera vez acepta la VPN de kushare)",
+      "usb_started": "El teléfono ya usa el internet del PC por el cable.",
+      "usb_failed": "No se pudo compartir internet por USB."
     }
   },
   "tray": {
@@ -492,6 +498,6 @@
     "keys_qr": "s escanear · Enter abrir/copiar · c copiar · g guardar · x borrar",
     "mic": "Micrófono",
     "keys_dtmf": "En llamada: 0–9 * # mandan tonos",
-    "keys_hotspot": "i encender/apagar · N nombre · P clave · G clave aleatoria · E enviar al teléfono · A usar otra antena"
+    "keys_hotspot": "i encender/apagar · N nombre · P clave · G clave aleatoria · E enviar al teléfono · A usar otra antena · u internet por USB"
   }
 }

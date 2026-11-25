@@ -5,7 +5,7 @@
 
 use super::*;
 use iced::widget::{column, qr_code, text_input};
-use kushare_dbus::HotspotRow;
+use kushare_dbus::{HotspotRow, UsbNetRow};
 
 #[derive(Debug, Default)]
 pub struct HotspotState {
@@ -21,6 +21,9 @@ pub struct HotspotState {
     pub starting: bool,
     /// Texto del botón «Usar la antena del canal N…» (vacío si no hay).
     pub switch_label: String,
+    /// Internet por cable USB.
+    pub usb: UsbNetRow,
+    pub usb_starting: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +41,8 @@ pub enum Msg {
     Send,
     /// Pasar la Wi-Fi del PC a la antena compatible y encender.
     SwitchAntenna,
+    UsbLoaded(UsbNetRow),
+    UsbToggle(bool),
 }
 
 impl App {
@@ -48,7 +53,49 @@ impl App {
         let phone = self.phone_peers().first().map(|p| p.id.clone());
         let s = &mut self.hotspot;
         match msg {
-            Msg::Load => load(d),
+            Msg::Load => Task::batch([
+                load(d.clone()),
+                Task::perform(
+                    async move { d.usbnet_status().await.unwrap_or_default() },
+                    |r| Message::Hotspot(Msg::UsbLoaded(r)),
+                ),
+            ]),
+            Msg::UsbLoaded(row) => {
+                if s.usb_starting && !row.1 {
+                    s.usb_starting = false;
+                    self.toast = Some(if row.0 {
+                        t("gui.hotspot.usb_started").to_string()
+                    } else if row.4.is_empty() {
+                        t("gui.hotspot.usb_failed").to_string()
+                    } else {
+                        row.4.clone()
+                    });
+                }
+                s.usb = row;
+                Task::none()
+            }
+            Msg::UsbToggle(on) => {
+                if on {
+                    let Some(peer) = phone else {
+                        return Task::none();
+                    };
+                    s.usb_starting = true;
+                    s.usb.1 = true;
+                    self.toast = Some(t("gui.hotspot.usb_wait").to_string());
+                    Task::perform(
+                        async move { d.usbnet_start(&peer).await.map_err(err_text) },
+                        |r| match r {
+                            Ok(()) => Message::Hotspot(Msg::Load),
+                            Err(e) => Message::Hotspot(Msg::Saved(Err(e))),
+                        },
+                    )
+                } else {
+                    Task::perform(
+                        async move { d.usbnet_stop().await.map_err(err_text) },
+                        |_| Message::Hotspot(Msg::Load),
+                    )
+                }
+            }
             Msg::Loaded(row, qr) => {
                 let was_active = s.row.0;
                 if !s.dirty {
@@ -256,6 +303,38 @@ impl App {
             .spacing(6),
         );
 
+        // Por cable USB (avanzado).
+        let (usb_on, usb_busy, rx, tx, usb_error) = &s.usb;
+        let usb_status = if *usb_on {
+            tf(
+                "gui.hotspot.usb_on",
+                &[("down", &human_bytes(*rx)), ("up", &human_bytes(*tx))],
+            )
+        } else if *usb_busy || s.usb_starting {
+            t("gui.hotspot.usb_wait").to_string()
+        } else if !usb_error.is_empty() {
+            usb_error.clone()
+        } else {
+            t("gui.hotspot.usb_detail").to_string()
+        };
+        let usb_col = column![
+            self.switch_row(
+                c,
+                t("gui.hotspot.usb_title"),
+                None,
+                *usb_on || *usb_busy || s.usb_starting,
+                |on| Message::Hotspot(Msg::UsbToggle(on)),
+            ),
+            text(usb_status)
+                .size(13)
+                .color(if !*usb_on && !usb_error.is_empty() {
+                    c.error
+                } else {
+                    c.on_surface_variant
+                }),
+        ]
+        .spacing(6);
+
         if *active {
             let qr: Element<'_, Message> = match &s.qr {
                 Some(data) => container(qr_code(data).cell_size(5).style(|_| {
@@ -297,7 +376,16 @@ impl App {
                 .align_y(Alignment::Center),
             );
         }
-        col.into()
+        col.push(usb_col).into()
+    }
+}
+
+fn human_bytes(n: u64) -> String {
+    match n {
+        n if n >= 1 << 30 => format!("{:.1} GiB", n as f64 / (1u64 << 30) as f64),
+        n if n >= 1 << 20 => format!("{:.1} MiB", n as f64 / (1u64 << 20) as f64),
+        n if n >= 1 << 10 => format!("{:.0} KiB", n as f64 / 1024.0),
+        n => format!("{n} B"),
     }
 }
 

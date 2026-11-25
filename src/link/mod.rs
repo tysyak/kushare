@@ -18,6 +18,7 @@ pub mod proximity;
 pub mod qr;
 pub mod qr_text;
 pub mod settings;
+pub mod usbnet;
 pub mod webcam;
 
 use kushare_discovery::mdns::{
@@ -100,6 +101,8 @@ pub struct LinkHandle {
     pub updates: Arc<crate::update::Updates>,
     /// «Compartir internet»: punto de acceso Wi-Fi para el teléfono.
     pub hotspot: Arc<hotspot::Hotspot>,
+    /// «Compartir internet» por cable USB (VPN del teléfono + adb).
+    pub usbnet: Arc<usbnet::UsbNet>,
     receive_requests: mpsc::UnboundedSender<ReceiveRequest>,
 }
 
@@ -482,6 +485,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
         ),
         updates: Arc::new(crate::update::Updates::open(dirs.cache_dir())),
         hotspot: hotspot::Hotspot::open(dirs.config_dir(), &opts.device_name),
+        usbnet: usbnet::UsbNet::new(),
         receive_requests,
     };
 
@@ -1033,7 +1037,14 @@ impl DesktopUi {
         // el evento, para que quien lo reciba (D-Bus, tray) ya lo vea.
         let change = match &event {
             LinkEvent::Feature { device_id, feature } => {
-                self.handle.features.on_remote(device_id, feature.clone())
+                if let Some(kushare_link::pb::feature::Kind::UsbTetherState(s)) = &feature.kind {
+                    let usbnet = self.handle.usbnet.clone();
+                    let (active, error) = (s.active, s.error.clone());
+                    tokio::spawn(async move { usbnet.on_phone_state(active, error).await });
+                    None
+                } else {
+                    self.handle.features.on_remote(device_id, feature.clone())
+                }
             }
             LinkEvent::PeerConnected {
                 device_id,

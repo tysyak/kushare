@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures_util::StreamExt;
 use kushare_dbus::{
     CallLogRow, CameraRow, ClipRow, DaemonProxy, HotspotRow, MicRow, PeerRow, PeerStateReply,
-    PhoneNotificationRow, QrRow, SmsRow, SmsThreadRow, WebcamRow,
+    PhoneNotificationRow, QrRow, SmsRow, SmsThreadRow, UsbNetRow, WebcamRow,
 };
 use kushare_i18n::{t, tf};
 use std::collections::HashMap;
@@ -110,6 +110,8 @@ pub enum Ev {
     HotspotChanged,
     /// Estado del punto de acceso y texto de su QR.
     Hotspot(HotspotRow, String),
+    /// Estado del internet por USB.
+    Usb(UsbNetRow),
     Cameras(Result<Vec<CameraRow>, String>),
     Webcam(WebcamRow, MicRow),
     Qr(Vec<QrRow>),
@@ -156,6 +158,7 @@ pub struct App {
     /// «Compartir internet»: estado y QR ya dibujado (líneas Unicode).
     pub hotspot: HotspotRow,
     pub hotspot_qr: Vec<String>,
+    pub usb: UsbNetRow,
     /// Selección de cada lista (por pestaña).
     pub selected: HashMap<&'static str, usize>,
     pub input: Option<Input>,
@@ -202,6 +205,7 @@ impl App {
             qr: Vec::new(),
             hotspot: Default::default(),
             hotspot_qr: Vec::new(),
+            usb: Default::default(),
             selected: HashMap::new(),
             input: None,
             send_path,
@@ -286,6 +290,7 @@ impl App {
     }
 
     fn load_hotspot(&self) {
+        self.spawn(|d| async move { Ev::Usb(d.usbnet_status().await.unwrap_or_default()) });
         self.spawn(|d| async move {
             Ev::Hotspot(
                 d.hotspot_status().await.unwrap_or_default(),
@@ -404,7 +409,13 @@ impl App {
                 self.peers.clear();
                 self.states.clear();
             }
-            Ev::Changed => self.refresh(),
+            Ev::Changed => {
+                self.refresh();
+                // Los datos del internet por USB no llegan con señal.
+                if self.usb.0 {
+                    self.load_hotspot();
+                }
+            }
             Ev::NotificationsChanged => self.load_notifications(),
             Ev::SmsChanged(thread) => {
                 if self.tab == Tab::Messages {
@@ -419,6 +430,12 @@ impl App {
             }
             Ev::QrChanged => self.load_qr(),
             Ev::HotspotChanged => self.load_hotspot(),
+            Ev::Usb(row) => {
+                if self.usb.1 && !row.1 && !row.0 && !row.4.is_empty() {
+                    self.toast(row.4.clone());
+                }
+                self.usb = row;
+            }
             Ev::Hotspot(row, qr) => {
                 self.hotspot_qr = if row.0 {
                     crate::qr_text::qr_lines(&qr)
@@ -804,6 +821,26 @@ impl App {
                         )
                     });
                 }
+                // Internet por cable USB.
+                KeyCode::Char('u') => {
+                    let on = !(self.usb.0 || self.usb.1);
+                    if on {
+                        self.usb.1 = true;
+                        self.toast(t("gui.hotspot.usb_wait"));
+                        self.command(String::new(), |d, peer| async move {
+                            d.usbnet_start(&peer).await
+                        });
+                    } else {
+                        self.spawn(|d| async move {
+                            Ev::Done(
+                                d.usbnet_stop()
+                                    .await
+                                    .map(|_| String::new())
+                                    .map_err(err_text),
+                            )
+                        });
+                    }
+                }
                 KeyCode::Char('E') => self
                     .command(t("gui.hotspot.sent").into(), |d, peer| async move {
                         d.hotspot_send(&peer).await
@@ -1102,6 +1139,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
             Ok(mut clip),
             Ok(mut qr),
             Ok(mut hotspot),
+            Ok(mut usbnet),
             Ok(mut owner),
         ) = (
             daemon.receive_peers_changed().await,
@@ -1111,6 +1149,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
             daemon.receive_clipboard_changed().await,
             daemon.receive_qr_changed().await,
             daemon.receive_hotspot_changed().await,
+            daemon.receive_usbnet_changed().await,
             daemon.inner().receive_owner_changed().await,
         )
         else {
@@ -1141,6 +1180,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
                 Some(_) = clip.next() => Ev::ClipboardChanged,
                 Some(_) = qr.next() => Ev::QrChanged,
                 Some(_) = hotspot.next() => Ev::HotspotChanged,
+                Some(_) = usbnet.next() => Ev::HotspotChanged,
                 Some(new_owner) = owner.next() => {
                     if new_owner.is_none() {
                         break;

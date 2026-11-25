@@ -98,6 +98,10 @@ pub type MicRow = (bool, String, String, u32, String, bool);
 /// otra antena de la misma red que sí; vacío si no).
 pub type HotspotRow = (bool, bool, String, String, String, u32, String, String);
 
+/// Internet por cable USB: (activo, arrancando, bytes hacia el teléfono,
+/// bytes desde el teléfono, último error).
+pub type UsbNetRow = (bool, bool, u64, u64, String);
+
 /// Código QR leído: (texto, formato, fecha en ms, tipo
 /// "url"|"wifi"|"phone"|"email"|"contact"|"text", teléfono).
 pub type QrRow = (String, String, i64, String, String);
@@ -203,6 +207,12 @@ pub trait Daemon {
     fn hotspot_qr(&self) -> zbus::Result<String>;
     /// Manda la red al teléfono para que ofrezca conectarse.
     fn hotspot_send(&self, peer: &str) -> zbus::Result<()>;
+    /// Comparte el internet del PC con el teléfono por el cable USB (VPN en
+    /// el teléfono + `adb reverse`). En segundo plano: el resultado llega con
+    /// `usbnet_changed` y `usbnet_status`.
+    fn usbnet_start(&self, peer: &str) -> zbus::Result<()>;
+    fn usbnet_stop(&self) -> zbus::Result<()>;
+    fn usbnet_status(&self) -> zbus::Result<UsbNetRow>;
     /// Abre el escáner de QR en el teléfono.
     fn qr_scan(&self, peer: &str) -> zbus::Result<()>;
     /// Códigos leídos, más reciente primero.
@@ -310,6 +320,9 @@ pub trait Daemon {
     /// Cambió el estado o la configuración del punto de acceso.
     #[zbus(signal)]
     fn hotspot_changed(&self) -> zbus::Result<()>;
+    /// Cambió el estado del internet por USB.
+    #[zbus(signal)]
+    fn usbnet_changed(&self) -> zbus::Result<()>;
 }
 
 /// Conecta con el daemon en el bus de sesión. Falla si no está corriendo.

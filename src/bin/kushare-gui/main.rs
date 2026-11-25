@@ -569,6 +569,13 @@ impl App {
             };
             subs.push(iced::time::every(every).map(|_| Message::Camera(camera::Msg::Poll)));
         }
+        // Datos del internet por USB mientras está en marcha.
+        if (self.hotspot.usb.0 || self.hotspot.usb_starting) && self.state == DaemonState::Running {
+            subs.push(
+                iced::time::every(Duration::from_secs(2))
+                    .map(|_| Message::Hotspot(hotspot::Msg::Load)),
+            );
+        }
         // La barra de progreso de lo que suena avanza cada segundo.
         let playing = self
             .snapshot

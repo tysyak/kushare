@@ -358,30 +358,28 @@ pub async fn run_doctor() -> anyhow::Result<()> {
         use crate::link::hotspot_shared as hs;
         let mut ok = true;
         match run("iw", &["dev"]) {
-            Some(out) => {
-                match hs::base_iface(&hs::parse_iw_dev(&out)) {
-                    Some(iface) => {
-                        if let Some(c) = iface.channel
-                            && run("iw", &["phy"]).is_some_and(|p| hs::channel_no_ir(&p, c))
-                        {
-                            r.line(Level::Warn, hs::no_ir_error(c));
-                            r.fix("cambia la Wi-Fi del PC a otro punto de acceso o banda de la misma red");
-                        }
-                        let channel = iface
-                            .channel
-                            .map(|c| format!("{} · canal {c}", hs::band(c).1))
-                            .unwrap_or_else(|| "sin conectar".to_string());
-                        r.line(Level::Ok, format!("Wi-Fi {} ({channel})", iface.name));
+            Some(out) => match hs::base_iface(&hs::parse_iw_dev(&out)) {
+                Some(iface) => {
+                    if let Some(c) = iface.channel
+                        && run("iw", &["phy"]).is_some_and(|p| hs::channel_no_ir(&p, c))
+                    {
+                        r.line(Level::Warn, hs::no_ir_error(c));
+                        r.fix("al encender la red kushare ofrece pasarse a otra antena de la misma red, si la hay");
                     }
-                    None => {
-                        r.line(
-                            Level::Info,
-                            "este PC no tiene Wi-Fi: no puede compartir internet así",
-                        );
-                        ok = false;
-                    }
+                    let channel = iface
+                        .channel
+                        .map(|c| format!("{} · canal {c}", hs::band(c).1))
+                        .unwrap_or_else(|| "sin conectar".to_string());
+                    r.line(Level::Ok, format!("Wi-Fi {} ({channel})", iface.name));
                 }
-            }
+                None => {
+                    r.line(
+                        Level::Info,
+                        "este PC no tiene Wi-Fi: no puede compartir internet así",
+                    );
+                    ok = false;
+                }
+            },
             None => {
                 r.line(Level::Warn, "falta iw");
                 r.fix("instala el paquete iw");
@@ -425,6 +423,42 @@ pub async fn run_doctor() -> anyhow::Result<()> {
                 "falta nmcli: hace falta NetworkManager para dar internet a la red",
             );
             r.fix("instala y activa NetworkManager");
+        }
+        // Internet por cable USB (opcional).
+        match run("adb", &["devices"]) {
+            Some(out) => {
+                let devices: Vec<&str> = out
+                    .lines()
+                    .skip_while(|l| !l.starts_with("List of devices"))
+                    .skip(1)
+                    .filter(|l| l.contains('\t'))
+                    .collect();
+                let ready = devices.iter().filter(|l| l.ends_with("\tdevice")).count();
+                let unauthorized = devices.iter().any(|l| l.ends_with("\tunauthorized"));
+                let (level, msg) = match ready {
+                    1 => (
+                        Level::Ok,
+                        "adb ve el teléfono: se puede compartir internet por USB",
+                    ),
+                    0 if unauthorized => (
+                        Level::Info,
+                        "el teléfono no ha autorizado a este PC por adb (internet por USB)",
+                    ),
+                    0 => (
+                        Level::Info,
+                        "internet por USB: conecta el teléfono con la depuración USB activada",
+                    ),
+                    _ => (
+                        Level::Info,
+                        "hay varios dispositivos adb: para internet por USB deja solo el teléfono",
+                    ),
+                };
+                r.line(level, msg);
+            }
+            None => r.line(
+                Level::Info,
+                "sin adb (opcional): no se puede compartir internet por USB",
+            ),
         }
     }
 

@@ -260,9 +260,11 @@ impl DaemonApi {
     fn quit(&self) {
         tracing::info!("cierre pedido por D-Bus");
         let hotspot = self.link.hotspot.clone();
+        let usbnet = self.link.usbnet.clone();
         tokio::spawn(async move {
             // Dejar que la respuesta D-Bus salga antes de terminar.
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            usbnet.stop().await;
             // La red compartida: que el ayudante la desmonte y quitar el
             // puente de NetworkManager.
             hotspot.stop().await;
@@ -497,6 +499,30 @@ impl DaemonApi {
             .features
             .send_wifi_network(&id, &st.ssid, &st.password)
             .map_err(failed)
+    }
+
+    // --- Compartir internet por cable USB --------------------------------
+
+    fn usbnet_start(&self, peer: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let usbnet = self.link.usbnet.clone();
+        let features = self.link.features.clone();
+        usbnet.mark_starting();
+        tokio::spawn(async move {
+            if let Err(err) = usbnet.start(features, id).await {
+                tracing::info!(%err, "no se pudo compartir internet por USB");
+            }
+        });
+        Ok(())
+    }
+
+    async fn usbnet_stop(&self) {
+        self.link.usbnet.stop().await;
+    }
+
+    fn usbnet_status(&self) -> kushare_dbus::UsbNetRow {
+        let (st, rx, tx) = self.link.usbnet.status();
+        (st.active, st.starting, rx, tx, st.error)
     }
 
     fn qr_scan(&self, peer: &str) -> fdo::Result<()> {
@@ -989,6 +1015,9 @@ impl DaemonApi {
     async fn hotspot_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(signal)]
+    async fn usbnet_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
     async fn phone_notifications_changed(
         emitter: &SignalEmitter<'_>,
         peer_id: &str,
@@ -1027,6 +1056,7 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
     let clipboard_changes = link.features.clipboard.subscribe();
     let qr_changes = link.features.qr.subscribe();
     let hotspot_changes = link.hotspot.subscribe();
+    let usbnet_changes = link.usbnet.subscribe();
     let connection = zbus::connection::Builder::session()?
         .serve_at(OBJECT_PATH, DaemonApi { link })?
         .build()
@@ -1064,6 +1094,15 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
         tokio::spawn(async move {
             while changes.changed().await.is_ok() {
                 let _ = DaemonApi::hotspot_changed(iface.signal_emitter()).await;
+            }
+        });
+    }
+    {
+        let iface = iface.clone();
+        let mut changes = usbnet_changes;
+        tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                let _ = DaemonApi::usbnet_changed(iface.signal_emitter()).await;
             }
         });
     }

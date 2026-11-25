@@ -154,6 +154,7 @@ pub fn events() -> Subscription<Event> {
                     Ok(mut clipboard_changed),
                     Ok(mut qr_changed),
                     Ok(mut hotspot_changed),
+                    Ok(mut usbnet_changed),
                     Ok(mut owner),
                 ) = (
                     daemon.receive_pairing_requested().await,
@@ -166,6 +167,7 @@ pub fn events() -> Subscription<Event> {
                     daemon.receive_clipboard_changed().await,
                     daemon.receive_qr_changed().await,
                     daemon.receive_hotspot_changed().await,
+                    daemon.receive_usbnet_changed().await,
                     daemon.inner().receive_owner_changed().await,
                 )
                 else {
@@ -200,6 +202,7 @@ pub fn events() -> Subscription<Event> {
                         Some(_) = clipboard_changed.next() => Event::ClipboardChanged,
                         Some(_) = qr_changed.next() => Event::QrChanged,
                         Some(_) = hotspot_changed.next() => Event::HotspotChanged,
+                        Some(_) = usbnet_changed.next() => Event::HotspotChanged,
                         Some(new_owner) = owner.next() => {
                             if new_owner.is_none() {
                                 break; // el daemon se cerró

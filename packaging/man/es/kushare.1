@@ -252,6 +252,15 @@ encenderla.
 .TP
 .BI "hotspot send " DISPOSITIVO
 Manda la red al teléfono por el enlace: pregunta si conectarse, sin escanear.
+.TP
+.BR "usb\-internet on " \fIDISPOSITIVO\fR " | " off " | " status
+Comparte el internet del PC por el cable USB (avanzado). El teléfono abre una
+VPN (la primera vez pide permiso) y manda su tráfico por
+.B adb reverse
+al PC, que lo saca por un túnel
+.B kshusb0
+creado por NetworkManager (NAT y DNS, sin root). Necesita la depuración USB
+activada y el PC autorizado.
 .SS El PC
 .TP
 .BR clipboard " [" \-\-clear "] [" \-\-copy " \fIN\fR]"

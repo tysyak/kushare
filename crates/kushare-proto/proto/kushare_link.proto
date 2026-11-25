@@ -222,6 +222,9 @@ message Feature {
     Dtmf dtmf = 51;
     SetAudioVolume set_audio_volume = 52;
     WifiNetwork wifi_network = 53;
+    UsbTether usb_tether = 54;
+    UsbTetherStop usb_tether_stop = 55;
+    UsbTetherState usb_tether_state = 56;
   }
 }
 
@@ -318,6 +321,24 @@ message SetAudioVolume {
 message WifiNetwork {
   string ssid = 1;
   string password = 2;
+}
+
+// PC → teléfono: compartir el internet del PC por el cable USB. El PC hizo
+// `adb reverse tcp:<port> tcp:<port>`; el teléfono abre una VPN, se conecta a
+// 127.0.0.1:<port>, manda primero `token` y luego paquetes IP enmarcados como
+// [u16 big-endian con la longitud][paquete], en ambos sentidos.
+message UsbTether {
+  uint32 port = 1;
+  bytes token = 2;
+}
+
+// PC → teléfono: cerrar la VPN de internet por USB.
+message UsbTetherStop {}
+
+// Teléfono → PC: estado de esa VPN (`error` vacío si va bien).
+message UsbTetherState {
+  bool active = 1;
+  string error = 2;
 }
 
 enum Ringer {

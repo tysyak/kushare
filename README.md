@@ -207,6 +207,7 @@ En la GUI está en *Ajustes → Compartir internet* (con el QR y «Enviar al tel
 
 - Necesita `hostapd`, `iw` y NetworkManager. La parte con root (interfaz virtual en modo punto de acceso y `hostapd`) la hace el ayudante `/usr/lib/kushare/kushare-hotspot` con `pkexec`: la primera vez pide tu contraseña de administrador.
 - La tarjeta tiene que admitir punto de acceso a la vez que está conectada (casi todas las Intel recientes lo hacen) y ambas redes van en el **mismo canal**. Si la red del PC está en un canal en el que la tarjeta no puede emitir (por ejemplo 36–48 en muchas Intel), kushare ofrece pasar la Wi-Fi del PC a otra antena de la misma red en un canal válido mientras la red esté encendida (y la deja como estaba al apagarla).
+- **Por cable USB** (avanzado): `kushare usb-internet on <teléfono>` (o el interruptor *Por cable USB* en la GUI, `u` en la TUI). El teléfono abre una VPN y su tráfico llega por `adb reverse` a un túnel que crea NetworkManager a tu nombre: no hace falta root. Necesita la depuración USB y `adb`. Medido: ~1,3 MiB/s con servidores lejanos, más de 2 MiB/s con cercanos.
 - Con firewalld, mientras la red está encendida se abren en su zona (solo en tiempo de ejecución, sin tocar la configuración permanente) el puerto del enlace y mDNS.
 - Compartir la conexión de una red ajena (trabajo, universidad) puede ir contra sus normas: es decisión tuya.
 

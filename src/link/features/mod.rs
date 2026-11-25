@@ -649,6 +649,10 @@ impl Features {
             | F::PhotoDelete(_)
             | F::CommandResult(_)
             | F::WifiNetwork(_)
+            | F::UsbTether(_)
+            | F::UsbTetherStop(_)
+            // Lo atiende `LinkHandle::usbnet` antes de llegar aquí.
+            | F::UsbTetherState(_)
             | F::LanStatus(_) => return None,
         };
         drop(peers);
@@ -841,6 +845,21 @@ impl Features {
                 action: action.into(),
             }),
         )
+    }
+
+    /// Pide al teléfono que abra la VPN de internet por USB.
+    pub fn send_usb_tether(&self, peer_id: &str, port: u16, token: &[u8]) -> anyhow::Result<()> {
+        self.send(
+            peer_id,
+            F::UsbTether(pb::UsbTether {
+                port: port.into(),
+                token: token.to_vec(),
+            }),
+        )
+    }
+
+    pub fn send_usb_tether_stop(&self, peer_id: &str) -> anyhow::Result<()> {
+        self.send(peer_id, F::UsbTetherStop(pb::UsbTetherStop {}))
     }
 
     /// Manda al teléfono la red Wi-Fi que comparte el PC para que ofrezca

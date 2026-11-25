@@ -180,6 +180,11 @@ pub enum LinkCommand {
         #[command(subcommand)]
         action: HotspotAction,
     },
+    /// Compartir internet por el cable USB (avanzado: depuración USB y adb; VPN en el teléfono).
+    UsbInternet {
+        #[command(subcommand)]
+        action: UsbInternetAction,
+    },
     /// Escáner de QR del teléfono e historial de códigos leídos.
     Qr {
         #[command(subcommand)]
@@ -261,6 +266,16 @@ pub enum HotspotAction {
     },
     /// Manda la red al teléfono para que ofrezca conectarse (sin escanear).
     Send { device: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UsbInternetAction {
+    /// Lo enciende: el teléfono abre una VPN (la primera vez pide permiso).
+    On { device: String },
+    /// Lo apaga.
+    Off,
+    /// Estado y datos transferidos.
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -788,6 +803,7 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
             }
         },
         LinkCommand::Hotspot { action } => hotspot(&daemon, action).await?,
+        LinkCommand::UsbInternet { action } => usb_internet(&daemon, action).await?,
         LinkCommand::Qr { action } => match action {
             QrAction::Scan { device } => {
                 daemon.qr_scan(&device).await?;
@@ -1142,4 +1158,63 @@ async fn print_hotspot(daemon: &DaemonProxy<'_>, qr: bool) -> anyhow::Result<()>
         println!("\nEscanéalo con la cámara del teléfono para conectarte.");
     }
     Ok(())
+}
+
+/// `kushare usb-internet …`.
+async fn usb_internet(daemon: &DaemonProxy<'_>, action: UsbInternetAction) -> anyhow::Result<()> {
+    match action {
+        UsbInternetAction::On { device } => {
+            daemon.usbnet_start(&device).await?;
+            println!("Esperando al teléfono (la primera vez acepta la conexión VPN de kushare)…");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+            loop {
+                let (active, starting, _, _, error) = daemon.usbnet_status().await?;
+                if active {
+                    break;
+                }
+                if !starting {
+                    anyhow::bail!(if error.is_empty() {
+                        "no se pudo compartir internet por USB".into()
+                    } else {
+                        error
+                    });
+                }
+                if std::time::Instant::now() > deadline {
+                    anyhow::bail!("el teléfono no se conectó a tiempo");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+            println!(
+                "El teléfono ya usa el internet del PC por el cable. `kushare usb-internet off` lo apaga."
+            );
+        }
+        UsbInternetAction::Off => {
+            daemon.usbnet_stop().await?;
+            println!("Internet por USB apagado.");
+        }
+        UsbInternetAction::Status => {
+            let (active, starting, rx, tx, error) = daemon.usbnet_status().await?;
+            let state = if active {
+                format!("activo · ↓ {} ↑ {}", human_bytes(rx), human_bytes(tx))
+            } else if starting {
+                "esperando al teléfono".to_string()
+            } else {
+                "apagado".to_string()
+            };
+            println!("Internet por USB: {state}");
+            if !error.is_empty() {
+                println!("Último error: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn human_bytes(n: u64) -> String {
+    match n {
+        n if n >= 1 << 30 => format!("{:.1} GiB", n as f64 / (1u64 << 30) as f64),
+        n if n >= 1 << 20 => format!("{:.1} MiB", n as f64 / (1u64 << 20) as f64),
+        n if n >= 1 << 10 => format!("{:.0} KiB", n as f64 / 1024.0),
+        n => format!("{n} B"),
+    }
 }

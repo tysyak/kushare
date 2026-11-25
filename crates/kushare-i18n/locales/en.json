@@ -428,7 +428,13 @@
       "scan": "Scan it with the phone camera to connect:",
       "switch": "Use the antenna on {alternative} and turn on",
       "switch_detail": "While the network is on, the PC's Wi-Fi stays on that antenna of the same network; turning it off restores it.",
-      "switching": "Switching antenna (the PC's Wi-Fi drops for a few seconds)…"
+      "switching": "Switching antenna (the PC's Wi-Fi drops for a few seconds)…",
+      "usb_title": "Over the USB cable (advanced)",
+      "usb_detail": "The phone uses the PC's internet over the cable, through a VPN. Requires USB debugging and adb on the PC.",
+      "usb_on": "Connected · ↓ {down} ↑ {up}",
+      "usb_wait": "Waiting for the phone… (accept the kushare VPN the first time)",
+      "usb_started": "The phone is now using the PC's internet over the cable.",
+      "usb_failed": "Could not share internet over USB."
     }
   },
   "tray": {
@@ -492,6 +498,6 @@
     "keys_qr": "s scan · Enter open/copy · c copy · g save · x delete",
     "mic": "Microphone",
     "keys_dtmf": "In a call: 0–9 * # send tones",
-    "keys_hotspot": "i on/off · N name · P password · G random password · E send to phone · A use another antenna"
+    "keys_hotspot": "i on/off · N name · P password · G random password · E send to phone · A use another antenna · u internet over USB"
   }
 }

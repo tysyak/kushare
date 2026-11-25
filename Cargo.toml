@@ -91,7 +91,7 @@ extended-description = "Cliente nativo open-source del protocolo Quick Share (an
 # D-Bus vía zbus, puro Rust) y el selector de archivos usa el backend
 # xdg-desktop-portal de rfd, ninguno de los dos enlaza GTK.
 depends = "libdbus-1-3, libbluetooth3, libwayland-client0, libxkbcommon0"
-recommends = "zenity, xdg-desktop-portal, hostapd, iw, network-manager"
+recommends = "zenity, xdg-desktop-portal, hostapd, iw, network-manager, adb"
 section = "net"
 priority = "optional"
 assets = [

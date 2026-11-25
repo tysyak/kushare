@@ -288,6 +288,13 @@ Ejecuta `kushare doctor` (sección *Compartir internet*). Lo habitual:
 - **Falta `hostapd` o el ayudante**: instala `hostapd` y reinstala el paquete de kushare.
 - **El teléfono se conecta y la Wi-Fi del PC se cae**: el teléfono usa la misma MAC que el PC (pasa si clonaste la MAC del teléfono en el PC para una red con registro). kushare rechaza a ese cliente; en el teléfono pon *Privacidad → MAC aleatoria* para esa red.
 
+## El internet por cable USB no arranca
+
+- **«no hay ningún teléfono por USB»** o **«no ha autorizado a este PC»**: activa la depuración USB en el teléfono y acepta la huella del PC (`adb devices` tiene que decir `device`).
+- **«el teléfono no se conectó (¿aceptaste la VPN?)»**: la primera vez Android pide permiso para la VPN de kushare; si no ves el aviso, da a kushare permiso de mostrarse sobre otras apps o abre la notificación «Internet del PC por el cable».
+- Si ya tienes otra VPN activa en el teléfono, Android solo deja una: apágala.
+- Todo el tráfico del teléfono (salvo el de la propia app de kushare) pasa por el PC: navegación, apps y también `ping`.
+
 ## Mando tonos (DTMF) y el menú de voz no reacciona
 
 Android no deja a otras apps entrar en una llamada (salvo a la de teléfono), así
