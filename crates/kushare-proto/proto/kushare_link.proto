@@ -221,6 +221,7 @@ message Feature {
     MicState mic_state = 50;
     Dtmf dtmf = 51;
     SetAudioVolume set_audio_volume = 52;
+    WifiNetwork wifi_network = 53;
   }
 }
 
@@ -309,6 +310,14 @@ message SetAudioVolume {
   string id = 1;
   uint32 volume = 2;
   bool muted = 3;
+}
+
+// --- Compartir internet (0.8.5) ---
+// PC → teléfono: red Wi-Fi (WPA2) que el PC está compartiendo, para que el
+// teléfono ofrezca conectarse sin escanear el QR.
+message WifiNetwork {
+  string ssid = 1;
+  string password = 2;
 }
 
 enum Ringer {

@@ -5,7 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures_util::StreamExt;
 use kushare_dbus::{
-    CallLogRow, CameraRow, ClipRow, DaemonProxy, MicRow, PeerRow, PeerStateReply,
+    CallLogRow, CameraRow, ClipRow, DaemonProxy, HotspotRow, MicRow, PeerRow, PeerStateReply,
     PhoneNotificationRow, QrRow, SmsRow, SmsThreadRow, WebcamRow,
 };
 use kushare_i18n::{t, tf};
@@ -85,6 +85,10 @@ pub enum InputKind {
     Reply(String, String),
     /// Ruta del archivo a mandar.
     SendPath,
+    /// Nombre de la red de «Compartir internet».
+    HotspotSsid,
+    /// Clave de esa red.
+    HotspotPassword,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +107,9 @@ pub enum Ev {
     SmsChanged(String),
     ClipboardChanged,
     QrChanged,
+    HotspotChanged,
+    /// Estado del punto de acceso y texto de su QR.
+    Hotspot(HotspotRow, String),
     Cameras(Result<Vec<CameraRow>, String>),
     Webcam(WebcamRow, MicRow),
     Qr(Vec<QrRow>),
@@ -146,6 +153,9 @@ pub struct App {
     /// Desde cuándo hay una llamada activa (contador de la barra).
     pub call_since: Option<Instant>,
     pub qr: Vec<QrRow>,
+    /// «Compartir internet»: estado y QR ya dibujado (líneas Unicode).
+    pub hotspot: HotspotRow,
+    pub hotspot_qr: Vec<String>,
     /// Selección de cada lista (por pestaña).
     pub selected: HashMap<&'static str, usize>,
     pub input: Option<Input>,
@@ -190,6 +200,8 @@ impl App {
             tones: String::new(),
             call_since: None,
             qr: Vec::new(),
+            hotspot: Default::default(),
+            hotspot_qr: Vec::new(),
             selected: HashMap::new(),
             input: None,
             send_path,
@@ -273,8 +285,20 @@ impl App {
         });
     }
 
+    fn load_hotspot(&self) {
+        self.spawn(|d| async move {
+            Ev::Hotspot(
+                d.hotspot_status().await.unwrap_or_default(),
+                d.hotspot_qr().await.unwrap_or_default(),
+            )
+        });
+    }
+
     /// Carga lo que necesita la pestaña abierta.
     fn load_tab(&mut self) {
+        if self.tab == Tab::Devices {
+            self.load_hotspot();
+        }
         let Some(peer) = self.phone().map(|p| p.0.clone()) else {
             return;
         };
@@ -372,6 +396,7 @@ impl App {
                 self.daemon = Some(d);
                 self.connected = true;
                 self.refresh();
+                self.load_hotspot();
             }
             Ev::Disconnected => {
                 self.connected = false;
@@ -393,6 +418,18 @@ impl App {
                 }
             }
             Ev::QrChanged => self.load_qr(),
+            Ev::HotspotChanged => self.load_hotspot(),
+            Ev::Hotspot(row, qr) => {
+                self.hotspot_qr = if row.0 {
+                    crate::qr_text::qr_lines(&qr)
+                } else {
+                    Vec::new()
+                };
+                if self.hotspot.1 && !row.1 && !row.0 && !row.6.is_empty() {
+                    self.toast(row.6.clone());
+                }
+                self.hotspot = row;
+            }
             Ev::Cameras(r) => {
                 self.loading = false;
                 match r {
@@ -717,13 +754,62 @@ impl App {
                     });
                 }
             }
-            Tab::Devices => {
-                if code == KeyCode::Char('s') {
-                    self.spawn(|d| async move {
-                        Ev::Done(d.scan(10).await.map(|_| String::new()).map_err(err_text))
+            Tab::Devices => match code {
+                KeyCode::Char('s') => self.spawn(|d| async move {
+                    Ev::Done(d.scan(10).await.map(|_| String::new()).map_err(err_text))
+                }),
+                // «Compartir internet».
+                KeyCode::Char('i') => {
+                    let on = !(self.hotspot.0 || self.hotspot.1);
+                    if on {
+                        self.hotspot.1 = true;
+                        self.toast(t("gui.hotspot.starting"));
+                    }
+                    self.spawn(move |d| async move {
+                        let r = if on {
+                            d.hotspot_start().await
+                        } else {
+                            d.hotspot_stop().await
+                        };
+                        Ev::Done(r.map(|_| String::new()).map_err(err_text))
                     });
                 }
-            }
+                KeyCode::Char('N') if !self.hotspot.0 => self.start_input(InputKind::HotspotSsid),
+                KeyCode::Char('P') if !self.hotspot.0 => {
+                    self.start_input(InputKind::HotspotPassword)
+                }
+                KeyCode::Char('G') if !self.hotspot.0 => {
+                    let ssid = self.hotspot.2.clone();
+                    self.spawn(move |d| async move {
+                        let r = async {
+                            let pass = d.hotspot_random_password().await?;
+                            d.hotspot_set_config(&ssid, &pass).await
+                        }
+                        .await;
+                        Ev::Done(
+                            r.map(|_| t("gui.hotspot.saved").to_string())
+                                .map_err(err_text),
+                        )
+                    });
+                }
+                KeyCode::Char('A') if !self.hotspot.0 && !self.hotspot.7.is_empty() => {
+                    self.hotspot.1 = true;
+                    self.toast(t("gui.hotspot.switching"));
+                    self.spawn(|d| async move {
+                        Ev::Done(
+                            d.hotspot_switch_antenna()
+                                .await
+                                .map(|_| String::new())
+                                .map_err(err_text),
+                        )
+                    });
+                }
+                KeyCode::Char('E') => self
+                    .command(t("gui.hotspot.sent").into(), |d, peer| async move {
+                        d.hotspot_send(&peer).await
+                    }),
+                _ => {}
+            },
             Tab::Send => match code {
                 KeyCode::Char('e') => self.start_input(InputKind::SendPath),
                 KeyCode::Enter => self.send_file(),
@@ -901,6 +987,8 @@ impl App {
 
     fn start_input(&mut self, kind: InputKind) {
         let text = match &kind {
+            InputKind::HotspotSsid => self.hotspot.2.clone(),
+            InputKind::HotspotPassword => self.hotspot.3.clone(),
             InputKind::SendPath => self
                 .send_path
                 .as_ref()
@@ -936,6 +1024,21 @@ impl App {
     fn submit(&mut self, kind: InputKind, text: String) {
         match kind {
             InputKind::Dial => self.dial(text),
+            InputKind::HotspotSsid | InputKind::HotspotPassword => {
+                let (ssid, pass) = if kind == InputKind::HotspotSsid {
+                    (text, self.hotspot.3.clone())
+                } else {
+                    (self.hotspot.2.clone(), text)
+                };
+                self.spawn(move |d| async move {
+                    Ev::Done(
+                        d.hotspot_set_config(&ssid, &pass)
+                            .await
+                            .map(|_| t("gui.hotspot.saved").to_string())
+                            .map_err(err_text),
+                    )
+                });
+            }
             InputKind::Sms => {
                 let Some(address) = self
                     .conversation
@@ -998,6 +1101,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
             Ok(mut notifs),
             Ok(mut clip),
             Ok(mut qr),
+            Ok(mut hotspot),
             Ok(mut owner),
         ) = (
             daemon.receive_peers_changed().await,
@@ -1006,6 +1110,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
             daemon.receive_phone_notifications_changed().await,
             daemon.receive_clipboard_changed().await,
             daemon.receive_qr_changed().await,
+            daemon.receive_hotspot_changed().await,
             daemon.inner().receive_owner_changed().await,
         )
         else {
@@ -1035,6 +1140,7 @@ pub async fn daemon_events(tx: mpsc::UnboundedSender<Ev>) {
                 Some(_) = notifs.next() => Ev::NotificationsChanged,
                 Some(_) = clip.next() => Ev::ClipboardChanged,
                 Some(_) = qr.next() => Ev::QrChanged,
+                Some(_) = hotspot.next() => Ev::HotspotChanged,
                 Some(new_owner) = owner.next() => {
                     if new_owner.is_none() {
                         break;

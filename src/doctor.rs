@@ -353,6 +353,81 @@ pub async fn run_doctor() -> anyhow::Result<()> {
         r.fix("instala libpulse (pactl) con pipewire-pulse");
     }
 
+    r.section("Compartir internet (red Wi-Fi para el teléfono)");
+    {
+        use crate::link::hotspot_shared as hs;
+        let mut ok = true;
+        match run("iw", &["dev"]) {
+            Some(out) => {
+                match hs::base_iface(&hs::parse_iw_dev(&out)) {
+                    Some(iface) => {
+                        if let Some(c) = iface.channel
+                            && run("iw", &["phy"]).is_some_and(|p| hs::channel_no_ir(&p, c))
+                        {
+                            r.line(Level::Warn, hs::no_ir_error(c));
+                            r.fix("cambia la Wi-Fi del PC a otro punto de acceso o banda de la misma red");
+                        }
+                        let channel = iface
+                            .channel
+                            .map(|c| format!("{} · canal {c}", hs::band(c).1))
+                            .unwrap_or_else(|| "sin conectar".to_string());
+                        r.line(Level::Ok, format!("Wi-Fi {} ({channel})", iface.name));
+                    }
+                    None => {
+                        r.line(
+                            Level::Info,
+                            "este PC no tiene Wi-Fi: no puede compartir internet así",
+                        );
+                        ok = false;
+                    }
+                }
+            }
+            None => {
+                r.line(Level::Warn, "falta iw");
+                r.fix("instala el paquete iw");
+                ok = false;
+            }
+        }
+        if ok {
+            if run("iw", &["list"]).is_some_and(|l| hs::supports_concurrent_ap(&l)) {
+                r.line(
+                    Level::Ok,
+                    "la tarjeta puede ser punto de acceso sin desconectarse",
+                );
+            } else {
+                r.line(
+                    Level::Warn,
+                    "la tarjeta no anuncia punto de acceso + cliente a la vez: puede no funcionar",
+                );
+            }
+        }
+        if which("hostapd") || std::path::Path::new("/usr/sbin/hostapd").is_file() {
+            r.line(Level::Ok, "hostapd instalado");
+        } else {
+            r.line(Level::Warn, "falta hostapd: no se puede compartir internet");
+            r.fix("instala el paquete hostapd");
+        }
+        if std::path::Path::new(hs::HELPER_PATH).is_file()
+            && std::path::Path::new("/usr/share/polkit-1/actions/org.kushare.hotspot.policy")
+                .is_file()
+        {
+            r.line(Level::Ok, "ayudante y regla de polkit instalados");
+        } else {
+            r.line(
+                Level::Warn,
+                format!("falta {} o su regla de polkit", hs::HELPER_PATH),
+            );
+            r.fix("reinstala el paquete de kushare");
+        }
+        if !which("nmcli") {
+            r.line(
+                Level::Warn,
+                "falta nmcli: hace falta NetworkManager para dar internet a la red",
+            );
+            r.fix("instala y activa NetworkManager");
+        }
+    }
+
     r.lines.push(String::new());
     r.lines.push(if r.problems == 0 {
         "Todo en orden.".to_string()

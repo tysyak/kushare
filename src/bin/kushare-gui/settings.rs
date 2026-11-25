@@ -356,6 +356,11 @@ impl App {
                 .padding(22)
                 .width(Length::Fill)
                 .style(style::card(c.container_high, c.on_surface, Shape::List)),
+            self.section(c, t("gui.hotspot.section")),
+            container(self.hotspot_card(c))
+                .padding(22)
+                .width(Length::Fill)
+                .style(style::card(c.container_high, c.on_surface, Shape::List)),
             self.section(c, t("gui.update.title")),
             container(self.update_card(c))
                 .padding(20)

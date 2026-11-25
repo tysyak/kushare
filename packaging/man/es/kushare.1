@@ -229,6 +229,29 @@ es el que usan las demás;
 solo abre webs http/https;
 .B forget \-\-all
 borra todo.
+.SS Compartir internet
+.TP
+.BR "hotspot on" " [" \-\-switch\-antenna "] | " off " | " status " | " qr
+El PC crea una red Wi-Fi propia y comparte su internet con el teléfono.
+.B on
+la enciende (puede pedir la contraseña de administrador con polkit) y
+muestra el QR para conectarse con la cámara;
+.B qr
+lo vuelve a mostrar. La tarjeta Wi-Fi sigue conectada a su red: el punto de
+acceso va en el mismo canal (los canales «no IR», como el 36–48 en muchas
+tarjetas, no sirven; ver
+.BR "kushare doctor" ).
+Si la red del PC tiene otra antena en un canal válido, ofrece pasarse a ella
+(o lo hace sin preguntar con
+.BR \-\-switch\-antenna )
+mientras la red esté encendida; al apagarla, todo vuelve a como estaba.
+.TP
+.BR "hotspot config" " [" \-\-ssid " \fINOMBRE\fR] [" \-\-password " \fICLAVE\fR | " \-\-random ]
+Nombre de la red y clave WPA2 (8–63 caracteres ASCII); se aplican al
+encenderla.
+.TP
+.BI "hotspot send " DISPOSITIVO
+Manda la red al teléfono por el enlace: pregunta si conectarse, sin escanear.
 .SS El PC
 .TP
 .BR clipboard " [" \-\-clear "] [" \-\-copy " \fIN\fR]"
@@ -274,6 +297,13 @@ la descarga y la verifica con
 .TP
 .I ~/.local/share/kushare/
 Historial del portapapeles y de QR.
+.TP
+.I ~/.config/kushare/hotspot.toml
+Nombre y clave de la red de «Compartir internet» (solo legible por el
+usuario).
+.TP
+.IR /usr/lib/kushare/kushare\-hotspot ", " /usr/share/polkit\-1/actions/org.kushare.hotspot.policy
+Ayudante root del punto de acceso (iw + hostapd) y su regla de polkit.
 .TP
 .I ~/.cache/kushare/
 Miniaturas, fotos, carátulas, iconos, fotos de contacto y fondos del teléfono.

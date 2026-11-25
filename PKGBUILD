@@ -20,7 +20,10 @@ depends=('dbus' 'bluez' 'wayland' 'libxkbcommon')
 optdepends=('yazi: selector de archivos en kushare-tui (pantalla Enviar)'
             'zenity: responder notificaciones del teléfono si el servidor no tiene inline-reply'
             'kdialog: alternativa a zenity'
-            'xdg-desktop-portal: selector de archivos de la GUI y del tray')
+            'xdg-desktop-portal: selector de archivos de la GUI y del tray'
+            'hostapd: compartir internet con el teléfono (red Wi-Fi)'
+            'iw: compartir internet con el teléfono (red Wi-Fi)'
+            'networkmanager: compartir internet con el teléfono (DHCP y NAT)')
 makedepends=('cargo' 'git')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/tysyak/kushare/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
@@ -51,6 +54,10 @@ package() {
   install -Dm755 "target/release/kushare" "$pkgdir/usr/bin/kushare"
   install -Dm755 "target/release/kushare-tui" "$pkgdir/usr/bin/kushare-tui"
   install -Dm755 "target/release/kushare-gui" "$pkgdir/usr/bin/kushare-gui"
+  # «Compartir internet»: ayudante root que lanza el daemon con pkexec (solo
+  # esa ruta, ver la regla de polkit).
+  install -Dm755 "target/release/kushare-hotspot" "$pkgdir/usr/lib/kushare/kushare-hotspot"
+  install -Dm644 "packaging/common/org.kushare.hotspot.policy" "$pkgdir/usr/share/polkit-1/actions/org.kushare.hotspot.policy"
   # Lanzador del menú (abre la GUI) y autoarranque del daemon al iniciar sesión.
   install -Dm644 "packaging/common/kushare.desktop" "$pkgdir/usr/share/applications/kushare.desktop"
   install -Dm644 "packaging/common/kushare-autostart.desktop" "$pkgdir/etc/xdg/autostart/kushare.desktop"

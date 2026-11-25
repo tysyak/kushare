@@ -226,6 +226,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hotspot_qr_roundtrips() {
+        let qr = super::super::hotspot_shared::wifi_qr("mi;red, \"casa\"", "cla:ve\\1;");
+        assert_eq!(
+            QrKind::of(&qr),
+            QrKind::Wifi {
+                ssid: "mi;red, \"casa\"".into(),
+                password: "cla:ve\\1;".into(),
+                security: "WPA".into(),
+            }
+        );
+    }
+
+    #[test]
     fn kinds_are_detected() {
         assert_eq!(QrKind::of("https://kushare.org/x"), QrKind::Url);
         assert_eq!(QrKind::of("HTTP://A.B"), QrKind::Url);

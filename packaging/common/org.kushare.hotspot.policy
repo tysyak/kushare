@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- «Compartir internet» de kushare: el daemon (usuario) lanza con pkexec el
+     ayudante que crea el punto de acceso Wi-Fi (interfaz virtual + hostapd).
+     Solo esa ruta; pide la contraseña de administrador y la recuerda un rato. -->
+<policyconfig>
+  <vendor>kushare</vendor>
+  <vendor_url>https://github.com/tysyak/kushare</vendor_url>
+  <action id="org.kushare.hotspot">
+    <description>Share this computer's internet over Wi-Fi</description>
+    <description xml:lang="es">Compartir el internet de este equipo por Wi-Fi</description>
+    <message>kushare needs permission to create a Wi-Fi network for your phone</message>
+    <message xml:lang="es">kushare necesita permiso para crear una red Wi-Fi para tu teléfono</message>
+    <icon_name>kushare</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/kushare/kushare-hotspot</annotate>
+  </action>
+</policyconfig>

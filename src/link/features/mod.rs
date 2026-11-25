@@ -648,6 +648,7 @@ impl Features {
             | F::Wallpaper(_)
             | F::PhotoDelete(_)
             | F::CommandResult(_)
+            | F::WifiNetwork(_)
             | F::LanStatus(_) => return None,
         };
         drop(peers);
@@ -838,6 +839,23 @@ impl Features {
             F::MediaCommand(pb::MediaCommand {
                 player_id: player_id.to_string(),
                 action: action.into(),
+            }),
+        )
+    }
+
+    /// Manda al teléfono la red Wi-Fi que comparte el PC para que ofrezca
+    /// conectarse.
+    pub fn send_wifi_network(
+        &self,
+        peer_id: &str,
+        ssid: &str,
+        password: &str,
+    ) -> anyhow::Result<()> {
+        self.send(
+            peer_id,
+            F::WifiNetwork(pb::WifiNetwork {
+                ssid: ssid.to_string(),
+                password: password.to_string(),
             }),
         )
     }

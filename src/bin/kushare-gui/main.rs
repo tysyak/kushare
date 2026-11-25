@@ -12,6 +12,7 @@ mod daemon;
 mod dialogs;
 mod gallery;
 mod home;
+mod hotspot;
 mod icons;
 mod layout;
 mod notifs;
@@ -241,6 +242,7 @@ struct App {
     notifs: notifs::NotifState,
     clip: clip::ClipState,
     camera: camera::CameraState,
+    hotspot: hotspot::HotspotState,
     viewer: Option<viewer::Viewer>,
     /// Ajustes del daemon: (nombre, activado).
     daemon_settings: Vec<(String, bool)>,
@@ -390,6 +392,7 @@ enum Message {
     Notifs(notifs::Msg),
     Clip(clip::Msg),
     Camera(camera::Msg),
+    Hotspot(hotspot::Msg),
     Viewer(viewer::Msg),
     /// Abrir *Mensajes* con un SMS nuevo (o la conversación) para este número.
     OpenSmsTo(String),
@@ -452,6 +455,7 @@ impl App {
             notifs: Default::default(),
             clip: Default::default(),
             camera: Default::default(),
+            hotspot: Default::default(),
             viewer: None,
             daemon_settings: Vec::new(),
             update: UpdateStatus::default(),
@@ -710,6 +714,9 @@ impl App {
                 Task::done(Message::Notifs(notifs::Msg::Changed(peer)))
             }
             Message::Daemon(Event::QrChanged) => Task::done(Message::Camera(camera::Msg::Load)),
+            Message::Daemon(Event::HotspotChanged) => {
+                Task::done(Message::Hotspot(hotspot::Msg::Load))
+            }
             Message::Daemon(Event::ClipboardChanged) => {
                 if self.screen == Screen::Clipboard {
                     Task::done(Message::Clip(clip::Msg::Load))
@@ -828,6 +835,7 @@ impl App {
                     Screen::Settings => {
                         return Task::batch([
                             self.load_settings(),
+                            Task::done(Message::Hotspot(hotspot::Msg::Load)),
                             Task::done(Message::CheckUpdate(false)),
                         ]);
                     }
@@ -1221,6 +1229,7 @@ impl App {
             Message::Notifs(m) => self.notifs_update(m),
             Message::Clip(m) => self.clip_update(m),
             Message::Camera(m) => self.camera_update(m),
+            Message::Hotspot(m) => self.hotspot_update(m),
             Message::Viewer(m) => self.viewer_update(m),
             Message::Key(key) => {
                 use iced::keyboard::{Key, key::Named};

@@ -8,9 +8,15 @@ pub mod cli;
 pub mod clipboard;
 pub mod dbus;
 pub mod features;
+pub mod hotspot;
+// Compartido con el ayudante root (src/bin/kushare-hotspot): parte de lo
+// que hay ahí solo lo usa él.
+#[allow(dead_code)]
+pub mod hotspot_shared;
 pub mod mic;
 pub mod proximity;
 pub mod qr;
+pub mod qr_text;
 pub mod settings;
 pub mod webcam;
 
@@ -92,6 +98,8 @@ pub struct LinkHandle {
     /// Batería, multimedia, audio, timbre, llamadas y fotos.
     pub features: Arc<features::Features>,
     pub updates: Arc<crate::update::Updates>,
+    /// «Compartir internet»: punto de acceso Wi-Fi para el teléfono.
+    pub hotspot: Arc<hotspot::Hotspot>,
     receive_requests: mpsc::UnboundedSender<ReceiveRequest>,
 }
 
@@ -473,6 +481,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
             Arc::new(settings::SettingsStore::open(dirs.config_dir())),
         ),
         updates: Arc::new(crate::update::Updates::open(dirs.cache_dir())),
+        hotspot: hotspot::Hotspot::open(dirs.config_dir(), &opts.device_name),
         receive_requests,
     };
 

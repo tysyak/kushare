@@ -92,6 +92,12 @@ pub type WebcamRow = (bool, String, String, String, u32, String);
 /// Micrófono: (activo, teléfono, códec, nivel 0–1000, error, es el predeterminado).
 pub type MicRow = (bool, String, String, u32, String, bool);
 
+/// Punto de acceso «Compartir internet»: (activo, arrancando, nombre de la
+/// red, clave, «banda · canal», clientes conectados, último error, antena
+/// alternativa — «canal 157 · señal 45» si el canal actual no sirve y hay
+/// otra antena de la misma red que sí; vacío si no).
+pub type HotspotRow = (bool, bool, String, String, String, u32, String, String);
+
 /// Código QR leído: (texto, formato, fecha en ms, tipo
 /// "url"|"wifi"|"phone"|"email"|"contact"|"text", teléfono).
 pub type QrRow = (String, String, i64, String, String);
@@ -180,6 +186,23 @@ pub trait Daemon {
     /// Tonos DTMF en la llamada en curso ("0-9*#ABCD"). Devuelve por dónde
     /// fueron: "phone", "bluetooth" (HFP) o "audio".
     fn dtmf(&self, peer: &str, digits: &str) -> zbus::Result<String>;
+    /// Estado del punto de acceso Wi-Fi («Compartir internet»).
+    fn hotspot_status(&self) -> zbus::Result<HotspotRow>;
+    /// Lo enciende en segundo plano (puede pedir la contraseña de
+    /// administrador por polkit): el resultado llega con `hotspot_changed`
+    /// y `hotspot_status` (activo o error).
+    fn hotspot_start(&self) -> zbus::Result<()>;
+    fn hotspot_stop(&self) -> zbus::Result<()>;
+    /// Pasa la Wi-Fi del PC a la antena alternativa (mientras la red esté
+    /// encendida) y la enciende, en segundo plano como `hotspot_start`.
+    fn hotspot_switch_antenna(&self) -> zbus::Result<()>;
+    /// Nombre de la red (vacío = el de por defecto) y clave WPA2 (8–63).
+    fn hotspot_set_config(&self, ssid: &str, password: &str) -> zbus::Result<()>;
+    fn hotspot_random_password(&self) -> zbus::Result<String>;
+    /// Texto del QR para conectarse (`WIFI:T:WPA;S:…;P:…;;`).
+    fn hotspot_qr(&self) -> zbus::Result<String>;
+    /// Manda la red al teléfono para que ofrezca conectarse.
+    fn hotspot_send(&self, peer: &str) -> zbus::Result<()>;
     /// Abre el escáner de QR en el teléfono.
     fn qr_scan(&self, peer: &str) -> zbus::Result<()>;
     /// Códigos leídos, más reciente primero.
@@ -284,6 +307,9 @@ pub trait Daemon {
     /// Cambió el historial de códigos QR.
     #[zbus(signal)]
     fn qr_changed(&self) -> zbus::Result<()>;
+    /// Cambió el estado o la configuración del punto de acceso.
+    #[zbus(signal)]
+    fn hotspot_changed(&self) -> zbus::Result<()>;
 }
 
 /// Conecta con el daemon en el bus de sesión. Falla si no está corriendo.

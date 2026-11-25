@@ -6,6 +6,8 @@
 //! del teléfono a la izquierda: estado, lo que suena y sus notificaciones.
 
 mod app;
+#[path = "../../link/qr_text.rs"]
+mod qr_text;
 mod ui;
 
 use app::{App, Ev};

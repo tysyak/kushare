@@ -603,6 +603,15 @@ fn draw_clipboard(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_devices(frame: &mut Frame, area: Rect, app: &App) {
+    // Arriba los dispositivos; abajo «Compartir internet» (más alto con el QR).
+    let hotspot_h = if app.hotspot_qr.is_empty() {
+        7
+    } else {
+        (app.hotspot_qr.len() as u16 + 2).max(9)
+    };
+    let [area, hotspot_area] =
+        Layout::vertical([Constraint::Min(4), Constraint::Length(hotspot_h)]).areas(area);
+    draw_hotspot(frame, hotspot_area, app);
     let items: Vec<ListItem> = app
         .peers
         .iter()
@@ -807,6 +816,8 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             InputKind::Dial => t("tui.input_dial"),
             InputKind::Reply(..) => t("tui.input_reply"),
             InputKind::SendPath => t("tui.input_path"),
+            InputKind::HotspotSsid => t("gui.hotspot.ssid"),
+            InputKind::HotspotPassword => t("gui.hotspot.password"),
         };
         Line::from(vec![
             Span::styled(
@@ -895,6 +906,70 @@ fn fmt_time(ms: i64) -> String {
             tm.tm_min
         )
     }
+}
+
+/// «Compartir internet»: estado, nombre y clave, teclas y el QR si está
+/// encendida.
+fn draw_hotspot(frame: &mut Frame, area: Rect, app: &App) {
+    let (active, starting, ssid, password, band, clients, error, alternative) = &app.hotspot;
+    let status = if *active {
+        Span::styled(
+            format!(
+                "● {}",
+                tf(
+                    "gui.hotspot.on",
+                    &[("band", band), ("clients", &clients.to_string())]
+                )
+            ),
+            Style::default().fg(ACCENT),
+        )
+    } else if *starting {
+        Span::styled(
+            format!("◌ {}", t("gui.hotspot.starting")),
+            Style::default().fg(ACCENT),
+        )
+    } else if !error.is_empty() {
+        Span::styled(format!("○ {error}"), Style::default().fg(Color::Red))
+    } else {
+        Span::styled(
+            format!("○ {}", t("gui.hotspot.detail")),
+            Style::default().fg(DIM),
+        )
+    };
+    let mut lines = vec![Line::from(status)];
+    if !*active && !*starting && !alternative.is_empty() {
+        lines.push(
+            Line::from(format!(
+                "A: {}",
+                tf("gui.hotspot.switch", &[("alternative", alternative)])
+            ))
+            .fg(ACCENT),
+        );
+    }
+    lines.extend([
+        Line::from(format!("{}: {ssid}", t("gui.hotspot.ssid"))),
+        Line::from(format!("{}: {password}", t("gui.hotspot.password"))),
+        Line::from(""),
+        Line::from(t("tui.keys_hotspot").to_string()).fg(DIM),
+    ]);
+    let block = block(t("gui.hotspot.section"));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.hotspot_qr.is_empty() {
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+        return;
+    }
+    // El QR, en negro sobre blanco (la cámara no lee uno invertido).
+    let qr_w = app.hotspot_qr[0].chars().count() as u16;
+    let [text_area, qr_area] =
+        Layout::horizontal([Constraint::Min(20), Constraint::Length(qr_w)]).areas(inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), text_area);
+    let qr: Vec<Line> = app
+        .hotspot_qr
+        .iter()
+        .map(|l| Line::from(l.as_str()).style(Style::default().fg(Color::Black).bg(Color::White)))
+        .collect();
+    frame.render_widget(Paragraph::new(qr), qr_area);
 }
 
 #[cfg(test)]

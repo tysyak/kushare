@@ -192,6 +192,23 @@ la sesión con `loginctl lock-session` (lo atienden hypridle, GNOME, KDE…).
 - **Bajo consumo**: no hay escaneo continuo; el keepalive por Bluetooth es de 4 min (la propia pila Bluetooth detecta si el otro dispositivo se aleja).
 - **Convivencia con KDE Connect / GSConnect**: sus notificaciones no se reenvían (son las del propio teléfono, o ecos), y kushare nunca reenvía una notificación que lleve la firma de uno de sus espejos. Usar ambos a la vez provocaba un bucle infinito antes de estas dos protecciones; aun así, si los dos sincronizan notificaciones verás cada una duplicada.
 
+## Compartir internet (red Wi-Fi para el teléfono)
+
+El PC puede crear su propia red Wi-Fi y compartir su internet con el teléfono **sin desconectarse de su red**:
+
+```sh
+kushare hotspot config --ssid MiRed --random   # nombre y clave (o --password …)
+kushare hotspot on                             # la enciende y muestra el QR
+kushare hotspot send <teléfono>                # o se la manda por el enlace, sin escanear
+kushare hotspot off
+```
+
+En la GUI está en *Ajustes → Compartir internet* (con el QR y «Enviar al teléfono») y en la TUI en *Dispositivos* (`i`, `N`, `P`, `G`, `E`).
+
+- Necesita `hostapd`, `iw` y NetworkManager. La parte con root (interfaz virtual en modo punto de acceso y `hostapd`) la hace el ayudante `/usr/lib/kushare/kushare-hotspot` con `pkexec`: la primera vez pide tu contraseña de administrador.
+- La tarjeta tiene que admitir punto de acceso a la vez que está conectada (casi todas las Intel recientes lo hacen) y ambas redes van en el **mismo canal**. Si la red del PC está en un canal en el que la tarjeta no puede emitir (por ejemplo 36–48 en muchas Intel), kushare ofrece pasar la Wi-Fi del PC a otra antena de la misma red en un canal válido mientras la red esté encendida (y la deja como estaba al apagarla).
+- Compartir la conexión de una red ajena (trabajo, universidad) puede ir contra sus normas: es decisión tuya.
+
 ## Traducir
 
 Los textos de la GUI, la bandeja y los avisos del daemon están en

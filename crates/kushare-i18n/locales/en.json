@@ -408,6 +408,27 @@
       "placeholder": "Type your reply…",
       "hint": "Ctrl+Enter to send · Esc to cancel",
       "send": "Send"
+    },
+    "hotspot": {
+      "section": "Share internet",
+      "title": "Wi-Fi network for the phone",
+      "detail": "The PC creates its own Wi-Fi network with its internet. It may ask for the administrator password.",
+      "on": "On · {band} · {clients} connected",
+      "starting": "Turning on… (type your administrator password if asked)",
+      "ssid": "Network name",
+      "password": "Password (8–63 characters)",
+      "show": "Show",
+      "hide": "Hide",
+      "generate": "Generate password",
+      "save": "Save",
+      "saved": "Network saved.",
+      "started": "Network on: scan the QR code or send it to the phone.",
+      "sent": "Network sent: the phone will ask whether to connect.",
+      "send": "Send to phone",
+      "scan": "Scan it with the phone camera to connect:",
+      "switch": "Use the antenna on {alternative} and turn on",
+      "switch_detail": "While the network is on, the PC's Wi-Fi stays on that antenna of the same network; turning it off restores it.",
+      "switching": "Switching antenna (the PC's Wi-Fi drops for a few seconds)…"
     }
   },
   "tray": {
@@ -470,6 +491,7 @@
     "cameras": "Phone cameras",
     "keys_qr": "s scan · Enter open/copy · c copy · g save · x delete",
     "mic": "Microphone",
-    "keys_dtmf": "In a call: 0–9 * # send tones"
+    "keys_dtmf": "In a call: 0–9 * # send tones",
+    "keys_hotspot": "i on/off · N name · P password · G random password · E send to phone · A use another antenna"
   }
 }

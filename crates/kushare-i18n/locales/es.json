@@ -408,6 +408,27 @@
       "placeholder": "Escribe tu respuesta…",
       "hint": "Ctrl+Enter para enviar · Esc para cancelar",
       "send": "Enviar"
+    },
+    "hotspot": {
+      "section": "Compartir internet",
+      "title": "Red Wi-Fi para el teléfono",
+      "detail": "El PC crea una red Wi-Fi propia con su internet. Puede pedir la contraseña de administrador.",
+      "on": "Encendida · {band} · {clients} conectado(s)",
+      "starting": "Encendiendo… (si aparece, escribe tu contraseña de administrador)",
+      "ssid": "Nombre de la red",
+      "password": "Clave (8–63 caracteres)",
+      "show": "Mostrar",
+      "hide": "Ocultar",
+      "generate": "Generar clave",
+      "save": "Guardar",
+      "saved": "Red guardada.",
+      "started": "Red encendida: escanea el QR o envíala al teléfono.",
+      "sent": "Red enviada: el teléfono te preguntará si quieres conectarte.",
+      "send": "Enviar al teléfono",
+      "scan": "Escanéalo con la cámara del teléfono para conectarte:",
+      "switch": "Usar la antena del {alternative} y encender",
+      "switch_detail": "Mientras la red esté encendida la Wi-Fi del PC se queda en esa antena de su misma red; al apagarla vuelve a como estaba.",
+      "switching": "Cambiando de antena (la Wi-Fi del PC se corta unos segundos)…"
     }
   },
   "tray": {
@@ -470,6 +491,7 @@
     "cameras": "Cámaras del teléfono",
     "keys_qr": "s escanear · Enter abrir/copiar · c copiar · g guardar · x borrar",
     "mic": "Micrófono",
-    "keys_dtmf": "En llamada: 0–9 * # mandan tonos"
+    "keys_dtmf": "En llamada: 0–9 * # mandan tonos",
+    "keys_hotspot": "i encender/apagar · N nombre · P clave · G clave aleatoria · E enviar al teléfono · A usar otra antena"
   }
 }

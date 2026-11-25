@@ -375,9 +375,20 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
 
     let mut visible = true;
     let my_device_name = settings.device_name.clone();
+    // `systemctl --user stop`/Ctrl+C: salir ordenadamente (apagar la red
+    // compartida y quitar su puente de NetworkManager).
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     loop {
         tokio::select! {
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM: cerrando");
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Ctrl+C: cerrando");
+                break;
+            }
             Some(event) = events_rx.recv() => {
                 let _ = tray.set_tooltip(&tooltip_for_event(&event));
                 if let Some(notifier) = &notifier
@@ -514,6 +525,7 @@ async fn run(settings: Settings, link_port: u16) -> anyhow::Result<()> {
         }
     }
 
+    link.hotspot.stop().await;
     Ok(())
 }
 

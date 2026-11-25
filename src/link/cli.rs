@@ -175,6 +175,11 @@ pub enum LinkCommand {
         #[command(subcommand)]
         action: WebcamAction,
     },
+    /// Compartir internet: el PC crea una red Wi-Fi para el teléfono (QR para conectarse).
+    Hotspot {
+        #[command(subcommand)]
+        action: HotspotAction,
+    },
     /// Escáner de QR del teléfono e historial de códigos leídos.
     Qr {
         #[command(subcommand)]
@@ -226,6 +231,36 @@ pub enum WebcamAction {
     },
     Stop,
     Status,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HotspotAction {
+    /// Enciende la red (puede pedir la contraseña de administrador) y muestra el QR.
+    On {
+        /// Si el canal de la Wi-Fi del PC no sirve, pasarse sin preguntar a
+        /// otra antena compatible de la misma red (mientras esté encendida).
+        #[arg(long)]
+        switch_antenna: bool,
+    },
+    /// Apaga la red.
+    Off,
+    /// Estado: nombre, banda, clientes conectados.
+    Status,
+    /// Muestra el QR para conectarse con la cámara del teléfono.
+    Qr,
+    /// Cambia el nombre de la red y la clave (se aplican al encenderla).
+    Config {
+        #[arg(long)]
+        ssid: Option<String>,
+        /// Clave WPA2 (8–63 caracteres ASCII).
+        #[arg(long, conflicts_with = "random")]
+        password: Option<String>,
+        /// Genera una clave aleatoria.
+        #[arg(long)]
+        random: bool,
+    },
+    /// Manda la red al teléfono para que ofrezca conectarse (sin escanear).
+    Send { device: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -752,6 +787,7 @@ pub async fn run(command: LinkCommand) -> anyhow::Result<()> {
                 }
             }
         },
+        LinkCommand::Hotspot { action } => hotspot(&daemon, action).await?,
         LinkCommand::Qr { action } => match action {
             QrAction::Scan { device } => {
                 daemon.qr_scan(&device).await?;
@@ -977,4 +1013,133 @@ async fn ask(question: &str) -> bool {
     })
     .await
     .unwrap_or(false)
+}
+
+/// `kushare hotspot …`.
+async fn hotspot(daemon: &DaemonProxy<'_>, action: HotspotAction) -> anyhow::Result<()> {
+    match action {
+        HotspotAction::On { switch_antenna } => {
+            daemon.hotspot_start().await?;
+            println!("Encendiendo la red (si lo pide, escribe tu contraseña de administrador)…");
+            if let Err(err) = wait_hotspot(daemon).await {
+                let alternative = daemon.hotspot_status().await?.7;
+                if alternative.is_empty() {
+                    return Err(err);
+                }
+                println!("{err}");
+                let yes = switch_antenna
+                    || {
+                        print!(
+                            "¿Pasar la Wi-Fi del PC a otra antena de la misma red ({alternative}) mientras la red esté encendida? [s/N] "
+                        );
+                        std::io::stdout().flush()?;
+                        let mut answer = String::new();
+                        std::io::stdin().read_line(&mut answer)?;
+                        matches!(answer.trim(), "s" | "S" | "si" | "sí" | "y")
+                    };
+                if !yes {
+                    anyhow::bail!("red sin encender");
+                }
+                println!("Cambiando de antena (la Wi-Fi del PC se corta unos segundos)…");
+                daemon.hotspot_switch_antenna().await?;
+                wait_hotspot(daemon).await?;
+            }
+            print_hotspot(daemon, true).await?;
+            println!(
+                "`kushare hotspot send <teléfono>` le manda la red sin escanear; `kushare hotspot off` la apaga."
+            );
+        }
+        HotspotAction::Off => {
+            daemon.hotspot_stop().await?;
+            println!("Red apagada.");
+        }
+        HotspotAction::Status => print_hotspot(daemon, false).await?,
+        HotspotAction::Qr => print_hotspot(daemon, true).await?,
+        HotspotAction::Config {
+            ssid,
+            password,
+            random,
+        } => {
+            let (_, _, cur_ssid, cur_password, ..) = daemon.hotspot_status().await?;
+            let password = if random {
+                daemon.hotspot_random_password().await?
+            } else {
+                password.unwrap_or(cur_password)
+            };
+            let ssid = ssid.unwrap_or(cur_ssid);
+            daemon.hotspot_set_config(&ssid, &password).await?;
+            print_hotspot(daemon, false).await?;
+            if daemon.hotspot_status().await?.0 {
+                println!("Los cambios se aplican la próxima vez que enciendas la red.");
+            }
+        }
+        HotspotAction::Send { device } => {
+            if !daemon.hotspot_status().await?.0 {
+                println!("Ojo: la red está apagada (`kushare hotspot on`).");
+            }
+            daemon.hotspot_send(&device).await?;
+            println!("Red enviada: el teléfono te preguntará si quieres conectarte.");
+        }
+    }
+    Ok(())
+}
+
+/// Espera a que la red termine de encenderse (el daemon lo hace en segundo
+/// plano: polkit tarda lo que tarde el usuario).
+async fn wait_hotspot(daemon: &DaemonProxy<'_>) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    loop {
+        let (active, starting, .., error, _) = daemon.hotspot_status().await?;
+        if active {
+            return Ok(());
+        }
+        if !starting {
+            anyhow::bail!(if error.is_empty() {
+                "no se pudo encender la red".into()
+            } else {
+                error
+            });
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("la red no se encendió a tiempo");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+}
+
+async fn print_hotspot(daemon: &DaemonProxy<'_>, qr: bool) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let (active, starting, ssid, password, band, clients, error, alternative) =
+        daemon.hotspot_status().await?;
+    let state = if active {
+        format!("encendida · {band} · {clients} conectado(s)")
+    } else if starting {
+        "encendiéndose".to_string()
+    } else {
+        "apagada".to_string()
+    };
+    println!("Red «{ssid}» ({state})\nClave: {password}");
+    if !error.is_empty() {
+        println!("Último error: {error}");
+    }
+    if !active && !alternative.is_empty() {
+        println!(
+            "Hay otra antena de tu red que sí sirve ({alternative}): `kushare hotspot on --switch-antenna`."
+        );
+    }
+    if qr {
+        let text = daemon.hotspot_qr().await?;
+        // Negro sobre blanco: la cámara no lee un QR invertido.
+        let color = std::io::stdout().is_terminal();
+        println!();
+        for line in super::qr_text::qr_lines(&text) {
+            if color {
+                println!("  \x1b[30;107m{line}\x1b[0m");
+            } else {
+                println!("  {line}");
+            }
+        }
+        println!("\nEscanéalo con la cámara del teléfono para conectarte.");
+    }
+    Ok(())
 }

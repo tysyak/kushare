@@ -259,9 +259,13 @@ impl DaemonApi {
     /// Cierra el daemon (como "Salir" en el tray).
     fn quit(&self) {
         tracing::info!("cierre pedido por D-Bus");
-        tokio::spawn(async {
+        let hotspot = self.link.hotspot.clone();
+        tokio::spawn(async move {
             // Dejar que la respuesta D-Bus salga antes de terminar.
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // La red compartida: que el ayudante la desmonte y quitar el
+            // puente de NetworkManager.
+            hotspot.stop().await;
             std::process::exit(0);
         });
     }
@@ -422,6 +426,77 @@ impl DaemonApi {
 
     fn webcam_status(&self) -> kushare_dbus::WebcamRow {
         self.link.features.webcam_status()
+    }
+
+    // --- Compartir internet (punto de acceso Wi-Fi) ----------------------
+
+    fn hotspot_status(&self) -> kushare_dbus::HotspotRow {
+        let st = self.link.hotspot.status();
+        (
+            st.active,
+            st.starting,
+            st.ssid,
+            st.password,
+            st.band,
+            st.clients,
+            st.error,
+            st.alternative,
+        )
+    }
+
+    /// Enciende el punto de acceso en segundo plano: polkit puede tardar lo
+    /// que tarde el usuario en escribir la contraseña, más que el tiempo de
+    /// espera de D-Bus. El resultado se ve en `hotspot_status`.
+    fn hotspot_start(&self) {
+        let hotspot = self.link.hotspot.clone();
+        hotspot.mark_starting();
+        tokio::spawn(async move {
+            if let Err(err) = hotspot.start().await {
+                tracing::info!(%err, "no se pudo encender el punto de acceso");
+            }
+        });
+    }
+
+    /// Fija la antena alternativa de la red del PC y enciende la red.
+    fn hotspot_switch_antenna(&self) {
+        let hotspot = self.link.hotspot.clone();
+        hotspot.mark_starting();
+        tokio::spawn(async move {
+            if let Err(err) = hotspot.switch_antenna_and_start().await {
+                tracing::info!(%err, "no se pudo cambiar de antena");
+            }
+        });
+    }
+
+    async fn hotspot_stop(&self) {
+        self.link.hotspot.stop().await;
+    }
+
+    /// Nombre de la red (vacío = el de por defecto) y clave WPA2.
+    fn hotspot_set_config(&self, ssid: &str, password: &str) -> fdo::Result<()> {
+        self.link
+            .hotspot
+            .set_config(ssid, password)
+            .map_err(|e| fdo::Error::InvalidArgs(e.to_string()))
+    }
+
+    fn hotspot_random_password(&self) -> String {
+        super::hotspot_shared::random_password(12)
+    }
+
+    /// Texto del QR (`WIFI:T:WPA;S:…;P:…;;`).
+    fn hotspot_qr(&self) -> String {
+        self.link.hotspot.qr()
+    }
+
+    /// Manda la red al teléfono para que ofrezca conectarse.
+    fn hotspot_send(&self, peer: &str) -> fdo::Result<()> {
+        let id = self.link.resolve(peer).map_err(failed)?;
+        let st = self.link.hotspot.status();
+        self.link
+            .features
+            .send_wifi_network(&id, &st.ssid, &st.password)
+            .map_err(failed)
     }
 
     fn qr_scan(&self, peer: &str) -> fdo::Result<()> {
@@ -909,6 +984,10 @@ impl DaemonApi {
     #[zbus(signal)]
     async fn qr_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
+    /// Cambió el estado o la configuración del punto de acceso.
+    #[zbus(signal)]
+    async fn hotspot_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
     #[zbus(signal)]
     async fn phone_notifications_changed(
         emitter: &SignalEmitter<'_>,
@@ -947,6 +1026,7 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
     let mut events = link.events.subscribe();
     let clipboard_changes = link.features.clipboard.subscribe();
     let qr_changes = link.features.qr.subscribe();
+    let hotspot_changes = link.hotspot.subscribe();
     let connection = zbus::connection::Builder::session()?
         .serve_at(OBJECT_PATH, DaemonApi { link })?
         .build()
@@ -975,6 +1055,15 @@ pub async fn serve(link: LinkHandle) -> anyhow::Result<zbus::Connection> {
         tokio::spawn(async move {
             while changes.changed().await.is_ok() {
                 let _ = DaemonApi::qr_changed(iface.signal_emitter()).await;
+            }
+        });
+    }
+    {
+        let iface = iface.clone();
+        let mut changes = hotspot_changes;
+        tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                let _ = DaemonApi::hotspot_changed(iface.signal_emitter()).await;
             }
         });
     }
