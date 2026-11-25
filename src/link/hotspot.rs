@@ -89,6 +89,8 @@ pub struct Hotspot {
     status: Mutex<Status>,
     session: tokio::sync::Mutex<Option<Session>>,
     changed: watch::Sender<u64>,
+    /// Puerto real del enlace (se abre en el cortafuegos del puente).
+    link_port: std::sync::atomic::AtomicU16,
 }
 
 impl Hotspot {
@@ -118,6 +120,7 @@ impl Hotspot {
             }),
             session: tokio::sync::Mutex::new(None),
             changed: watch::channel(0).0,
+            link_port: std::sync::atomic::AtomicU16::new(0),
         });
         if let Err(err) = this.save(&config) {
             tracing::warn!(?err, "no se pudo guardar hotspot.toml");
@@ -128,6 +131,13 @@ impl Hotspot {
             restore.unpin().await;
         });
         this
+    }
+
+    /// El puerto TCP en el que escucha el enlace (se conoce después de abrir
+    /// el `Hotspot`).
+    pub fn set_link_port(&self, port: u16) {
+        self.link_port
+            .store(port, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn subscribe(&self) -> watch::Receiver<u64> {
@@ -386,6 +396,7 @@ impl Hotspot {
             base_iface: base,
             ssid: st.ssid,
             password: st.password,
+            link_port: self.link_port.load(std::sync::atomic::Ordering::Relaxed),
         };
         config.validate().map_err(anyhow::Error::msg)?;
         let mut child = Command::new("pkexec")

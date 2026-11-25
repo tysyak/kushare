@@ -84,6 +84,55 @@ struct Tools {
     hostapd: PathBuf,
     /// Para que NetworkManager no se adueñe de la interfaz del AP.
     nmcli: Option<PathBuf>,
+    /// Si firewalld está activo: abrir el enlace de kushare en el puente.
+    firewall_cmd: Option<PathBuf>,
+}
+
+/// Lo que se abrió en firewalld (para quitarlo al apagar).
+struct Firewall {
+    zone: String,
+    rules: Vec<String>,
+}
+
+/// Abre en firewalld, solo en tiempo de ejecución, el puerto del enlace y
+/// mDNS en la zona del puente (NetworkManager lo pone en `nm-shared`, que
+/// solo deja pasar DHCP, DNS y SSH). No toca la configuración permanente.
+fn open_firewall(tools: &Tools, port: u16) -> Option<Firewall> {
+    let fw = tools.firewall_cmd.as_ref()?;
+    if port == 0 || run(fw, &["--state"]).is_err() {
+        return None;
+    }
+    let zone = run(fw, &[&format!("--get-zone-of-interface={BRIDGE}")])
+        .ok()?
+        .trim()
+        .to_string();
+    if zone.is_empty()
+        || !zone
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    let mut rules = Vec::new();
+    for rule in [
+        format!("--add-port={port}/tcp"),
+        "--add-service=mdns".to_string(),
+    ] {
+        if run(fw, &[&format!("--zone={zone}"), &rule]).is_ok() {
+            rules.push(rule);
+        }
+    }
+    Some(Firewall { zone, rules })
+}
+
+fn close_firewall(tools: &Tools, fw: Option<Firewall>) {
+    let (Some(cmd), Some(fw)) = (&tools.firewall_cmd, fw) else {
+        return;
+    };
+    for rule in fw.rules {
+        let rule = rule.replacen("--add-", "--remove-", 1);
+        let _ = run(cmd, &[&format!("--zone={}", fw.zone), &rule]);
+    }
 }
 
 /// Canal actual de la Wi-Fi del PC (o el de reserva si no está conectada).
@@ -280,6 +329,7 @@ fn main() {
             ip: tool("ip")?,
             hostapd: tool("hostapd")?,
             nmcli: tool("nmcli").ok(),
+            firewall_cmd: tool("firewall-cmd").ok(),
         })
     })() {
         Ok(t) => t,
@@ -315,6 +365,7 @@ fn main() {
         });
     }
 
+    let firewall = open_firewall(&tools, cfg.link_port);
     let mut child: Option<Child> = None;
     let mut channel = current_channel(&tools, &cfg.base_iface);
     let mut generation = 0u32;
@@ -331,6 +382,7 @@ fn main() {
     if let Err(err) = start(channel, generation, &mut child) {
         say(&format!("error {err}"));
         cleanup(&tools, &mut child);
+        close_firewall(&tools, firewall);
         std::process::exit(1);
     }
 
@@ -385,4 +437,5 @@ fn main() {
         }
     }
     cleanup(&tools, &mut child);
+    close_firewall(&tools, firewall);
 }

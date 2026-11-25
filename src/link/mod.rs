@@ -501,6 +501,7 @@ pub async fn start(opts: LinkOptions) -> anyhow::Result<LinkHandle> {
     let port = listener.local_addr()?.port();
     manager.set_tcp_port(port);
     *handle.link_port.lock().expect("mutex envenenado") = port;
+    handle.hotspot.set_link_port(port);
     tracing::info!(port, "enlace escuchando por TCP");
     {
         let manager = manager.clone();

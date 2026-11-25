@@ -21,6 +21,11 @@ pub struct HelperConfig {
     pub base_iface: String,
     pub ssid: String,
     pub password: String,
+    /// Puerto TCP del enlace de kushare, para abrirlo en firewalld (solo en
+    /// tiempo de ejecución) en la zona del puente: así el teléfono también
+    /// puede conectarse al PC por esta red. 0 = no tocar el cortafuegos.
+    #[serde(default)]
+    pub link_port: u16,
 }
 
 impl HelperConfig {
