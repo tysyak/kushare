@@ -1,0 +1,346 @@
+'\" t
+.\" kushare manual page (English; installed as the default page). The Spanish
+.\" one is ../es/kushare.1: keep both in sync. When adding a CLI command, add it
+.\" to both: the test `man_page_lists_every_command` (src/main.rs) checks it.
+.TH KUSHARE 1 "2026-11-25" "kushare" "User Commands"
+.SH NAME
+kushare \- files, notifications and your phone between a Linux PC and Android
+.SH SYNOPSIS
+.B kushare
+.RB [ \-\-device\-name
+.IR NAME ]
+.RB [ \-\-port
+.IR PORT ]
+.RB [ \-\-link\-port
+.IR PORT ]
+.br
+.B kushare
+.I COMMAND
+.RI [ ARGUMENTS ...]
+.SH DESCRIPTION
+.B kushare
+is a Quick Share (formerly Nearby Share) client for Linux with a
+.B persistent link
+to the
+.B kushare\-android
+app, in the style of KDE Connect or Phone Link:
+notifications synced both ways, battery, media, calls, SMS, photos, clipboard,
+and the phone as a webcam, microphone or QR scanner for the PC.
+.PP
+Without a
+.I COMMAND
+it starts the
+.BR daemon :
+tray icon, file reception over TCP and Bluetooth RFCOMM, mDNS announcement,
+the link with paired devices and the
+.B org.kushare.Daemon
+D-Bus API on the session bus. It is normally started by the desktop session
+.RI ( /etc/xdg/autostart/kushare.desktop )
+or by the systemd user service
+.RB ( "systemctl \-\-user enable \-\-now kushare" ).
+Only one daemon can run per session.
+.PP
+The other commands are D-Bus clients of the daemon (except
+.BR send ,
+which works on its own, and
+.BR send\-bt ,
+which uses the daemon if it is running). Wherever a
+.I DEVICE
+is expected, its id, an id prefix or its name are accepted, as shown by
+.BR "kushare devices" .
+.PP
+Control traffic always goes over Bluetooth; Wi-Fi is opened only for heavy
+transfers (photos, SMS, webcam) and closes by itself.
+.SH OPTIONS
+.TP
+.BI \-\-device\-name " NAME"
+Name of this computer as others will see it. Defaults to one derived from the
+hostname. Also accepted after any command.
+.TP
+.BI \-\-port " PORT"
+TCP port for receiving files over Quick Share. 0 (the default) lets the system
+pick a free one. Daemon only.
+.TP
+.BI \-\-link\-port " PORT"
+TCP port of the persistent link (default 47816, fixed so it can be opened in
+the firewall). If it is taken, another free one is used.
+.TP
+.BR \-h ", " \-\-help
+Show help (also
+.BI "kushare help" " COMMAND"
+or
+.IB COMMAND " \-\-help"
+for each command).
+.TP
+.BR \-V ", " \-\-version
+Show the version.
+.SH COMMANDS
+.SS Files
+.TP
+.BI "send " "FILE ADDRESS"
+Send a file straight to
+.IR host:port ,
+without the daemon or discovery. Useful for testing.
+.TP
+.BI "send\-bt " "FILE MAC"
+Send a file over Bluetooth RFCOMM to an already bonded device
+.RB ( "bluetoothctl pair" ),
+with no IP network. If the daemon is running it does the transfer (BlueZ only
+allows one registration of the profile per computer).
+.SS Devices and pairing
+.TP
+.B devices
+List paired devices (with their connection state) and those found in the last
+scan.
+.TP
+.BR scan " [" \fISECONDS\fR ]
+Look for kushare devices on the network (15 s by default). There is no
+continuous scanning, to save battery.
+.TP
+.BR pair " [" \-\-yes "] " \fIDEVICE\fR
+Pair with a device visible on the network (id, prefix or name) or over
+Bluetooth (MAC of an already bonded device). Both sides show the same PIN;
+.B \-\-yes
+accepts it here without asking.
+.TP
+.BI "unpair " DEVICE
+Forget a paired device, on both sides.
+.TP
+.B quit
+Stop the running daemon.
+.TP
+.B doctor
+Diagnose common problems (port, firewall, mDNS, Bluetooth, notifications,
+audio) and explain how to fix them.
+.SS Notifications
+.TP
+.BI "notif on" \fR|\fPoff " DEVICE" \fR\ [\fPin\fR|\fPout\fR|\fPboth\fR]\fP
+Turn notifications with a device on or off:
+.B in
+receives its notifications here,
+.B out
+sends this computer's to it,
+.B both
+(the default) does both.
+.TP
+.BI "apps " DEVICE
+Known apps and which ones are blocked.
+.TP
+.BI "block " "DEVICE DIRECTION APP"
+.PD 0
+.TP
+.BI "unblock " "DEVICE DIRECTION APP"
+.PD
+Block or unblock an app's notifications in one direction
+.RB ( in ", " out " or " both ).
+.TP
+.BR phone\-notifs " [" \-\-dismiss " \fIKEY\fR] \fIDEVICE\fR"
+Notifications currently on the phone;
+.B \-\-dismiss
+dismisses one.
+.SS Phone
+.TP
+.BI "status " DEVICE
+Battery, ringer, call, media players and audio outputs.
+.TP
+.BI "media " "DEVICE ACTION" \fR\ [\fPPLAYER\fR]\fP
+Control its media players.
+.I ACTION
+is
+.BR play\-pause ", " play ", " pause ", " next ", " previous " or " stop .
+Without a player it acts on all of them
+.RB ( "kushare media phone pause"
+= pause everything).
+.TP
+.BI "audio " DEVICE \fR\ [\fPOUTPUT\fR]\fP
+List its audio outputs or choose one (id or part of the name). Android does not
+let an app switch the output of other apps: from the PC it is read-only.
+.TP
+.BR find " [" \-\-stop "] \fIDEVICE\fR"
+Ring the phone to find it, even when it is on silent.
+.TP
+.BI "ringer " DEVICE " normal" \fR|\fPvibrate\fR|\fPsilent
+Change the ringer mode.
+.TP
+.BI "call " "DEVICE ACTION"
+Control the ongoing call:
+.BR answer ", " reject ", " hangup ", " mute " or " unmute .
+.TP
+.BI "dtmf " "DEVICE DIGITS"
+DTMF tones in the ongoing call (voice menus, extensions):
+.RB \(lq 1 \(rq,
+.RB \(lq 123# \(rq.
+.TP
+.BI "dial " "DEVICE NUMBER"
+Call from the phone. Letters are accepted
+.RB ( 1\-800\-FLOWERS ).
+.TP
+.BI "phone\-audio " DEVICE " on" \fR|\fPoff
+Hear the phone's music and calls on the PC (Bluetooth A2DP and HFP).
+.TP
+.BI "calls " DEVICE
+Call log
+.RB ( \-\-limit ,
+20 by default).
+.TP
+.BI "contacts " DEVICE \fR\ [\fPSEARCH\fR]\fP
+Search the contacts.
+.TP
+.BI "sms " DEVICE
+SMS conversations.
+.BI \-\-thread " ID"
+shows its messages;
+.BI \-\-to " NUMBER TEXT"
+sends an SMS;
+.B \-\-limit
+how many (20).
+.TP
+.BI "photos " DEVICE
+Photos on the phone, newest first
+.RB ( \-\-offset ", " \-\-limit ).
+.BI \-\-download " ID"
+downloads the original to the downloads folder;
+.BI \-\-delete " ID"
+moves it to the phone's trash (it may ask for confirmation there).
+.SS The phone as a PC peripheral
+.TP
+.BR "mic start" \fR|\fPstop\fR|\fPstatus
+The phone as a microphone: an input named after the phone appears
+.RB ( kushare_mic ).
+Requires
+.BR pactl .
+.TP
+.BR "webcam cameras" \fR|\fPstart\fR|\fPstop\fR|\fPstatus
+The phone as a webcam (v4l2loopback or PipeWire).
+.B start \-\-camera
+accepts the id or part of the label, as listed by
+.BR cameras .
+.TP
+.BR "qr scan" \fR|\fPlist\fR|\fPopen\fR|\fPcopy\fR|\fPsave\fR|\fPforget
+The phone's QR scanner and the history of scanned codes. The number shown by
+.B list
+is the one the others take;
+.B open
+only opens http/https web pages;
+.B forget \-\-all
+clears everything.
+.SS This PC
+.TP
+.BR clipboard " [" \-\-clear "] [" \-\-copy " \fIN\fR]"
+Shared clipboard history.
+.TP
+.BR setting " [\fINAME\fR " on \fR|\fP off ]
+Daemon settings; without arguments it lists them:
+.TS
+tab(@);
+lB l.
+clipboard\-sync@share the clipboard with the phone
+clipboard\-history@keep a clipboard history
+photo\-prefetch@preload thumbnails (Wi-Fi only)
+update\-check@check for new versions at startup
+receive\-confirm@ask before accepting a file
+photo\-notify@notify about new photos with a thumbnail
+hybrid@Wi-Fi on demand for heavy transfers
+dynamic\-lock@lock the session when the phone goes away
+.TE
+.TP
+.BR pc\-audio " [" \-\-output " \fIOUTPUT\fR] [" \-\-input " \fIINPUT\fR]"
+Audio outputs and inputs of this PC; with an option, choose the default one
+(id or part of the name).
+.TP
+.BR update " [" \-\-download ]
+Check GitHub for a new version;
+.B \-\-download
+downloads it and verifies it against
+.BR SHA256SUMS .
+.SH FILES
+.TP
+.I ~/.config/kushare/
+.B identity.key
+(this computer's Ed25519 identity; do not share),
+.B peers.toml
+(paired devices and filters),
+.B daemon.toml
+(settings),
+.B gui.toml
+(interface),
+.B language
+(chosen language).
+.TP
+.I ~/.local/share/kushare/
+Clipboard and QR history.
+.TP
+.I ~/.cache/kushare/
+Thumbnails, photos, cover art, icons, contact photos and phone wallpapers.
+Safe to delete; it has a size limit.
+.TP
+.I /usr/lib/systemd/user/kushare.service
+User service (not enabled automatically).
+.TP
+.IR ~/.local/share/kushare/locales/ ", " /usr/share/kushare/locales/
+Extra translations
+.RI ( language .json,
+a translated copy of
+.BR es.json );
+Spanish and English are built into the binary.
+.SH ENVIRONMENT
+.TP
+.B KUSHARE_LANG
+Interface language
+.RB ( es ", " en );
+takes precedence over the one chosen in the GUI and over
+.BR LC_ALL ", " LC_MESSAGES " and " LANG .
+.TP
+.B KUSHARE_LOCALE_DIR
+Alternative translations directory.
+.TP
+.B RUST_LOG
+Daemon log level (e.g.
+.BR info,kushare=debug ).
+.SH EXAMPLES
+Pair the phone over Bluetooth and show its status:
+.PP
+.RS
+.nf
+bluetoothctl pair AA:BB:CC:DD:EE:FF
+kushare pair AA:BB:CC:DD:EE:FF
+kushare status phone
+.fi
+.RE
+.PP
+Pause everything playing on the phone and silence it:
+.PP
+.RS
+.nf
+kushare media phone pause
+kushare ringer phone silent
+.fi
+.RE
+.PP
+Use the front camera as a webcam and download the latest photo:
+.PP
+.RS
+.nf
+kushare webcam start \-\-camera front
+kushare photos phone \-\-limit 1
+kushare photos phone \-\-download ID
+.fi
+.RE
+.SH SECURITY
+Only paired devices (PIN on both sides and Ed25519 keys) can use the link;
+everything is encrypted. Files received over Quick Share are only accepted
+after asking. More details in
+.IR /usr/share/doc/kushare/SECURITY.md .
+.SH SEE ALSO
+.BR kushare\-gui (1),
+.BR kushare\-tui (1),
+.BR bluetoothctl (1),
+.BR pactl (1).
+.PP
+.I /usr/share/doc/kushare/README.md
+and
+.I FAQ.md
+(common problems);
+https://github.com/tysyak/kushare
+.SH AUTHOR
+Cristian Romero Andrade. Licensed under the GPLv3 or later.

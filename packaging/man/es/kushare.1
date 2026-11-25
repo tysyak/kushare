@@ -1,0 +1,351 @@
+'\" t
+.\" Página de manual de kushare en español (se instala en man/es). La inglesa,
+.\" que es la predeterminada, es ../en/kushare.1: mantener las dos iguales. Al
+.\" añadir una orden a la CLI, añadirla a ambas: el test
+.\" `man_page_lists_every_command` (src/main.rs) lo comprueba.
+.TH KUSHARE 1 "2026-11-25" "kushare" "Órdenes de usuario"
+.SH NOMBRE
+kushare \- archivos, notificaciones y teléfono entre tu PC Linux y Android
+.SH SINOPSIS
+.B kushare
+.RB [ \-\-device\-name
+.IR NOMBRE ]
+.RB [ \-\-port
+.IR PUERTO ]
+.RB [ \-\-link\-port
+.IR PUERTO ]
+.br
+.B kushare
+.I ORDEN
+.RI [ ARGUMENTOS ...]
+.SH DESCRIPCIÓN
+.B kushare
+es un cliente de Quick Share (antes Nearby Share) para Linux con un
+.B enlace persistente
+con la app
+.B kushare\-android
+al estilo de KDE Connect o Enlace Móvil:
+notificaciones sincronizadas en ambas direcciones, batería, multimedia,
+llamadas, SMS, fotos, portapapeles, y el teléfono como webcam, micrófono o
+escáner de QR del PC.
+.PP
+Sin
+.I ORDEN
+arranca el
+.BR daemon :
+icono en la bandeja, recepción de archivos por TCP y Bluetooth RFCOMM,
+anuncio por mDNS, enlace con los dispositivos emparejados y la API D-Bus
+.B org.kushare.Daemon
+en el bus de sesión. Normalmente lo arranca la sesión gráfica
+.RI ( /etc/xdg/autostart/kushare.desktop )
+o el servicio de usuario de systemd
+.RB ( "systemctl \-\-user enable \-\-now kushare" ).
+Solo puede haber un daemon por sesión.
+.PP
+Las demás órdenes son un cliente del daemon por D-Bus (salvo
+.BR send ,
+que trabaja sola, y
+.BR send\-bt ,
+que la usa si está en marcha). Donde se pide un
+.IR DISPOSITIVO ,
+vale su id, un prefijo del id o su nombre, tal como los muestra
+.BR "kushare devices" .
+.PP
+El control va siempre por Bluetooth; la Wi-Fi se abre solo para lo pesado
+(fotos, SMS, webcam) y se cierra sola.
+.SH OPCIONES
+.TP
+.BI \-\-device\-name " NOMBRE"
+Nombre de este equipo tal como lo verán los demás. Por defecto se deriva del
+nombre del host. Vale también después de cualquier orden.
+.TP
+.BI \-\-port " PUERTO"
+Puerto TCP para recibir archivos por Quick Share. 0 (por defecto) deja que el
+sistema elija uno libre. Solo para el daemon.
+.TP
+.BI \-\-link\-port " PUERTO"
+Puerto TCP del enlace persistente (por defecto 47816, fijo para poder abrirlo
+en el cortafuegos). Si está ocupado se usa otro libre.
+.TP
+.BR \-h ", " \-\-help
+Muestra la ayuda (también
+.BI "kushare help" " ORDEN"
+o
+.IB ORDEN " \-\-help"
+para cada orden).
+.TP
+.BR \-V ", " \-\-version
+Muestra la versión.
+.SH ÓRDENES
+.SS Archivos
+.TP
+.BI "send " "ARCHIVO DIRECCIÓN"
+Envía un archivo directamente a
+.IR host:puerto ,
+sin daemon ni descubrimiento. Útil para pruebas.
+.TP
+.BI "send\-bt " "ARCHIVO MAC"
+Envía un archivo por Bluetooth RFCOMM a un dispositivo ya vinculado
+.RB ( "bluetoothctl pair" ),
+sin red IP. Si el daemon está en marcha, el envío lo hace él (BlueZ solo admite
+un registro del perfil por equipo).
+.SS Dispositivos y emparejado
+.TP
+.B devices
+Lista los dispositivos emparejados (con su estado de conexión) y los
+encontrados en el último escaneo.
+.TP
+.BR scan " [" \fISEGUNDOS\fR ]
+Busca dispositivos kushare en la red (15 s por defecto). No hay escaneo
+continuo, para ahorrar batería.
+.TP
+.BR pair " [" \-\-yes "] " \fIDISPOSITIVO\fR
+Empareja con un dispositivo visible en la red (id, prefijo o nombre) o por
+Bluetooth (MAC de un dispositivo ya vinculado). Los dos lados muestran el mismo
+PIN;
+.B \-\-yes
+lo acepta aquí sin preguntar.
+.TP
+.BI "unpair " DISPOSITIVO
+Olvida un dispositivo emparejado, en ambos lados.
+.TP
+.B quit
+Cierra el daemon en marcha.
+.TP
+.B doctor
+Diagnostica los problemas típicos (puerto, cortafuegos, mDNS, Bluetooth,
+notificaciones, audio) y dice cómo arreglarlos.
+.SS Notificaciones
+.TP
+.BI "notif on" \fR|\fPoff " DISPOSITIVO" \fR\ [\fPin\fR|\fPout\fR|\fPboth\fR]\fP
+Activa o desactiva las notificaciones con un dispositivo:
+.B in
+recibe aquí las suyas,
+.B out
+le manda las de aquí,
+.B both
+(por defecto) ambas.
+.TP
+.BI "apps " DISPOSITIVO
+Apps conocidas y cuáles están bloqueadas.
+.TP
+.BI "block " "DISPOSITIVO DIRECCIÓN APP"
+.PD 0
+.TP
+.BI "unblock " "DISPOSITIVO DIRECCIÓN APP"
+.PD
+Bloquea o desbloquea las notificaciones de una app en una dirección
+.RB ( in ", " out " o " both ).
+.TP
+.BR phone\-notifs " [" \-\-dismiss " \fICLAVE\fR] \fIDISPOSITIVO\fR"
+Notificaciones que hay ahora en el teléfono;
+.B \-\-dismiss
+descarta una.
+.SS Teléfono
+.TP
+.BI "status " DISPOSITIVO
+Batería, timbre, llamada, reproductores y salidas de audio.
+.TP
+.BI "media " "DISPOSITIVO ACCIÓN" \fR\ [\fPREPRODUCTOR\fR]\fP
+Controla sus reproductores.
+.I ACCIÓN
+es
+.BR play\-pause ", " play ", " pause ", " next ", " previous " o " stop .
+Sin reproductor actúa sobre todos
+.RB ( "kushare media teléfono pause"
+= pausar todo).
+.TP
+.BI "audio " DISPOSITIVO \fR\ [\fPSALIDA\fR]\fP
+Lista sus salidas de audio o elige una (id o parte del nombre). Android no deja
+cambiar la salida de otras apps: desde el PC solo se ve.
+.TP
+.BR find " [" \-\-stop "] \fIDISPOSITIVO\fR"
+Hace sonar el teléfono para encontrarlo, aunque esté en silencio.
+.TP
+.BI "ringer " DISPOSITIVO " normal" \fR|\fPvibrate\fR|\fPsilent
+Cambia el modo de timbre.
+.TP
+.BI "call " "DISPOSITIVO ACCIÓN"
+Controla la llamada en curso:
+.BR answer ", " reject ", " hangup ", " mute " o " unmute .
+.TP
+.BI "dtmf " "DISPOSITIVO DÍGITOS"
+Tonos DTMF en la llamada en curso (menús de voz, extensiones):
+.RB « 1 »,
+.RB « 123# ».
+.TP
+.BI "dial " "DISPOSITIVO NÚMERO"
+Llama desde el teléfono. Admite letras
+.RB ( 1\-800\-FLORES ).
+.TP
+.BI "phone\-audio " DISPOSITIVO " on" \fR|\fPoff
+Oír en el PC la música y las llamadas del teléfono (Bluetooth A2DP y HFP).
+.TP
+.BI "calls " DISPOSITIVO
+Registro de llamadas
+.RB ( \-\-limit ,
+20 por defecto).
+.TP
+.BI "contacts " DISPOSITIVO \fR\ [\fPBÚSQUEDA\fR]\fP
+Busca en los contactos.
+.TP
+.BI "sms " DISPOSITIVO
+Conversaciones de SMS.
+.BI \-\-thread " ID"
+muestra sus mensajes;
+.BI \-\-to " NÚMERO TEXTO"
+manda un SMS;
+.B \-\-limit
+cuántos (20).
+.TP
+.BI "photos " DISPOSITIVO
+Fotos del teléfono, las más recientes primero
+.RB ( \-\-offset ", " \-\-limit ).
+.BI \-\-download " ID"
+descarga el original a la carpeta de descargas;
+.BI \-\-delete " ID"
+la manda a la papelera del teléfono (puede pedir confirmarlo allí).
+.SS El teléfono como periférico del PC
+.TP
+.BR "mic start" \fR|\fPstop\fR|\fPstatus
+El teléfono como micrófono: aparece la entrada
+.RI «Micrófono\ de\  teléfono »
+.RB ( kushare_mic ).
+Requiere
+.BR pactl .
+.TP
+.BR "webcam cameras" \fR|\fPstart\fR|\fPstop\fR|\fPstatus
+El teléfono como webcam (v4l2loopback o PipeWire).
+.B start \-\-camera
+acepta el id o parte de la etiqueta
+.RB (« frontal »,
+.RB « tele »…).
+.TP
+.BR "qr scan" \fR|\fPlist\fR|\fPopen\fR|\fPcopy\fR|\fPsave\fR|\fPforget
+Escáner de QR del teléfono e historial de lo leído. El número que da
+.B list
+es el que usan las demás;
+.B open
+solo abre webs http/https;
+.B forget \-\-all
+borra todo.
+.SS El PC
+.TP
+.BR clipboard " [" \-\-clear "] [" \-\-copy " \fIN\fR]"
+Historial del portapapeles compartido.
+.TP
+.BR setting " [\fINOMBRE\fR " on \fR|\fP off ]
+Ajustes del daemon; sin argumentos los lista:
+.TS
+tab(@);
+lB l.
+clipboard\-sync@compartir el portapapeles con el teléfono
+clipboard\-history@guardar el historial del portapapeles
+photo\-prefetch@precargar miniaturas (solo por Wi-Fi)
+update\-check@buscar versiones nuevas al arrancar
+receive\-confirm@preguntar antes de aceptar un archivo
+photo\-notify@avisar de fotos nuevas con su miniatura
+hybrid@Wi-Fi a demanda para lo pesado
+dynamic\-lock@bloquear la sesión al alejarse el teléfono
+.TE
+.TP
+.BR pc\-audio " [" \-\-output " \fISALIDA\fR] [" \-\-input " \fIENTRADA\fR]"
+Salidas y entradas de audio de este PC; con opción, elige la predeterminada
+(id o parte del nombre).
+.TP
+.BR update " [" \-\-download ]
+Busca una versión nueva en GitHub;
+.B \-\-download
+la descarga y la verifica con
+.BR SHA256SUMS .
+.SH ARCHIVOS
+.TP
+.I ~/.config/kushare/
+.B identity.key
+(identidad Ed25519 del equipo; no compartir),
+.B peers.toml
+(emparejados y filtros),
+.B daemon.toml
+(ajustes),
+.B gui.toml
+(interfaz),
+.B language
+(idioma elegido).
+.TP
+.I ~/.local/share/kushare/
+Historial del portapapeles y de QR.
+.TP
+.I ~/.cache/kushare/
+Miniaturas, fotos, carátulas, iconos, fotos de contacto y fondos del teléfono.
+Se puede borrar; tiene límite de tamaño.
+.TP
+.I /usr/lib/systemd/user/kushare.service
+Servicio de usuario (no se activa solo).
+.TP
+.IR ~/.local/share/kushare/locales/ ", " /usr/share/kushare/locales/
+Traducciones extra
+.RI ( idioma .json,
+copia de
+.B es.json
+traducida); el español y el inglés van dentro del binario.
+.SH ENTORNO
+.TP
+.B KUSHARE_LANG
+Idioma de la interfaz
+.RB ( es ", " en );
+tiene prioridad sobre el elegido en la GUI y sobre
+.BR LC_ALL ", " LC_MESSAGES " y " LANG .
+.TP
+.B KUSHARE_LOCALE_DIR
+Directorio alternativo de traducciones.
+.TP
+.B RUST_LOG
+Nivel de registro del daemon (p. ej.
+.BR info,kushare=debug ).
+.SH EJEMPLOS
+Emparejar el teléfono por Bluetooth y ver su estado:
+.PP
+.RS
+.nf
+bluetoothctl pair AA:BB:CC:DD:EE:FF
+kushare pair AA:BB:CC:DD:EE:FF
+kushare status teléfono
+.fi
+.RE
+.PP
+Pausar todo lo que suena en el teléfono y silenciarlo:
+.PP
+.RS
+.nf
+kushare media teléfono pause
+kushare ringer teléfono silent
+.fi
+.RE
+.PP
+Usar la cámara frontal como webcam y bajarse la última foto:
+.PP
+.RS
+.nf
+kushare webcam start \-\-camera frontal
+kushare photos teléfono \-\-limit 1
+kushare photos teléfono \-\-download ID
+.fi
+.RE
+.SH SEGURIDAD
+Solo los dispositivos emparejados (PIN en ambos lados y claves Ed25519) usan el
+enlace; todo va cifrado. Al recibir un archivo por Quick Share se pregunta
+antes de aceptarlo. Más detalle en
+.IR /usr/share/doc/kushare/SECURITY.md .
+.SH VÉASE TAMBIÉN
+.BR kushare\-gui (1),
+.BR kushare\-tui (1),
+.BR bluetoothctl (1),
+.BR pactl (1).
+.PP
+.I /usr/share/doc/kushare/README.md
+y
+.I FAQ.md
+(problemas comunes);
+https://github.com/tysyak/kushare
+.SH AUTOR
+Cristian Romero Andrade. Licencia GPLv3 o posterior.

@@ -61,6 +61,11 @@ package() {
   install -Dm644 "SECURITY.md" "$pkgdir/usr/share/doc/$pkgname/SECURITY.md"
   install -Dm644 "CHANGELOG.md" "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
   install -Dm644 "packaging/common/kushare.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/kushare.svg"
+  # Manual: inglés por defecto y español para los sistemas en español.
+  for page in kushare kushare-tui kushare-gui; do
+    install -Dm644 "packaging/man/en/$page.1" "$pkgdir/usr/share/man/man1/$page.1"
+    install -Dm644 "packaging/man/es/$page.1" "$pkgdir/usr/share/man/es/man1/$page.1"
+  done
   install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 "NOTICE" "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
 }

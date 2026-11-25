@@ -2,7 +2,7 @@
 
 Cliente nativo open-source del protocolo Quick Share (antes Nearby Share) para Linux, escrito en Rust, que va creciendo hacia algo al estilo de KDE Connect: además de transferir archivos, mantiene un **enlace persistente** con la app [`kushare-android`](https://github.com/tysyak/kushare-android) para **sincronizar notificaciones** en ambas direcciones (ver [Enlace persistente y notificaciones](#enlace-persistente-y-notificaciones)).
 
-¿Problemas? Ejecuta `kushare doctor` y mira el [FAQ](./FAQ.md) (firewall, redes que aíslan dispositivos, KDE Connect, arranque automático…). Cambios por versión en el [CHANGELOG](./CHANGELOG.md).
+¿Problemas? Ejecuta `kushare doctor` y mira el [FAQ](./FAQ.md) (firewall, redes que aíslan dispositivos, KDE Connect, arranque automático…). Cambios por versión en el [CHANGELOG](./CHANGELOG.md). Referencia completa: `man kushare`, `man kushare-tui` y `man kushare-gui` (en inglés y español según el idioma del sistema; fuentes en [`packaging/man/`](./packaging/man/)).
 
 ## Capturas
 

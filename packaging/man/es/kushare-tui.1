@@ -1,0 +1,193 @@
+'\" t
+.\" Página de manual de kushare-tui en español (la inglesa, predeterminada, es
+.\" ../en/kushare-tui.1). Las teclas salen de
+.\" src/bin/kushare-tui/app.rs (on_key) y de las claves tui.keys_* de las
+.\" traducciones: mantenerlas iguales.
+.TH KUSHARE\-TUI 1 "2026-11-25" "kushare" "Órdenes de usuario"
+.SH NOMBRE
+kushare\-tui \- interfaz de terminal de kushare
+.SH SINOPSIS
+.B kushare\-tui
+.RB [ \-\-screen
+.IR PESTAÑA ]
+.RB [ \-\-send
+.IR ARCHIVO ]
+.SH DESCRIPCIÓN
+.B kushare\-tui
+es la interfaz de terminal de
+.BR kushare (1),
+con las mismas funciones que
+.BR kushare\-gui (1):
+estado del teléfono, mensajes, llamadas, notificaciones, portapapeles,
+dispositivos, envío de archivos, webcam, micrófono y escáner de QR.
+.PP
+Es un cliente del daemon por D-Bus: si el daemon no está en marcha, lo indica y
+se conecta solo cuando arranca. Las órdenes se aplican al primer teléfono
+emparejado que esté conectado.
+.PP
+Los registros van a
+.I $TMPDIR/kushare\-tui.log
+.RI ( /tmp/kushare\-tui.log ),
+para no romper el dibujo de la terminal.
+.SH OPCIONES
+.TP
+.BI \-\-screen " PESTAÑA"
+Pestaña inicial:
+.BR home ", " phone ", " messages ", " calls ", " notifications ,
+.BR clipboard ", " devices ", " send ", " camera " o " qr .
+.TP
+.BI \-\-send " ARCHIVO"
+Abre la pestaña
+.B Enviar
+con ese archivo elegido.
+.TP
+.BR \-h ", " \-\-help
+Muestra la ayuda.
+.TP
+.BR \-V ", " \-\-version
+Muestra la versión.
+.SH PESTAÑAS
+.TS
+tab(@);
+rB lB l.
+1@Inicio@resumen del teléfono y del PC
+2@Teléfono@batería, timbre, llamada y multimedia
+3@Mensajes@conversaciones de SMS
+4@Llamadas@registro y marcador
+5@Notificaciones@las que hay ahora en el teléfono
+6@Portapapeles@historial compartido
+7@Dispositivos@emparejados y búsqueda
+8@Enviar@archivo al teléfono
+9@Cámara@webcam y micrófono
+0@QR@escáner e historial
+.TE
+.SH TECLAS
+.SS En todas las pestañas
+.TP 16
+.BR Tab ", " "\(<- \(->" ", " 1 \- 9 ", " 0
+Cambiar de pestaña.
+.TP
+.BR "\(ua \(da" ", " "j k"
+Moverse por la lista.
+.TP
+.B Enter
+Abrir o usar lo elegido.
+.TP
+.B r
+Recargar.
+.TP
+.B Espacio
+Reproducir o pausar.
+.TP
+.BR "< >" " (o " ", ." )
+Pista anterior o siguiente.
+.TP
+.B f
+Hacer sonar el teléfono para encontrarlo; otra vez
+.B f
+lo para.
+.TP
+.BR "H " / " A " / " M"
+Durante una llamada: colgar, contestar (si suena) y silenciar el micrófono.
+.TP
+.BR q ", " Ctrl+C
+Salir.
+.SS Teléfono
+.TP 16
+.BR "n v s"
+Timbre normal, vibrar o silencio.
+.TP
+.BR "a h m"
+Contestar, colgar (o rechazar si suena) y silenciar el micrófono.
+.SS Mensajes
+.TP 16
+.B Enter
+Abrir la conversación.
+.TP
+.B w
+Escribir una respuesta (con la conversación abierta).
+.TP
+.B Esc
+Volver a la lista.
+.SS Llamadas
+.TP 16
+.B Enter
+Llamar al número elegido.
+.TP
+.B d
+Escribir un número y marcarlo.
+.TP
+.BR 0 \- 9 ", " "* #"
+En llamada: tonos DTMF.
+.SS Notificaciones
+.TP 16
+.BR x ", " Supr
+Descartar la elegida.
+.TP
+.B X
+Descartarlas todas.
+.TP
+.B Enter
+Pulsar su acción.
+.TP
+.B w
+Responder (si la app lo permite).
+.SS Portapapeles
+.TP 16
+.B Enter
+Copiar la entrada al portapapeles del PC.
+.SS Dispositivos
+.TP 16
+.B s
+Buscar dispositivos en la red.
+.SS Enviar
+.TP 16
+.B e
+Escribir la ruta del archivo.
+.TP
+.B Enter
+Mandarlo al teléfono por Bluetooth.
+.SS Cámara
+.TP 16
+.BR "\(ua \(da"
+Elegir cámara.
+.TP
+.B Enter
+Encender o apagar la webcam.
+.TP
+.B p
+Motor de la webcam: automático, v4l2loopback o PipeWire.
+.TP
+.B m
+Encender o apagar el micrófono.
+.TP
+.B d
+Usar el micrófono del teléfono como entrada predeterminada.
+.SS QR
+.TP 16
+.B s
+Abrir el escáner en el teléfono.
+.TP
+.B Enter
+Abrir (si es una web) o copiar.
+.TP
+.B c
+Copiar.
+.TP
+.B g
+Guardar en Descargas.
+.TP
+.B x
+Borrar del historial.
+.SH ENTORNO
+.TP
+.B KUSHARE_LANG
+Idioma
+.RB ( es ", " en ).
+Ver
+.BR kushare (1).
+.SH VÉASE TAMBIÉN
+.BR kushare (1),
+.BR kushare\-gui (1).
+.SH AUTOR
+Cristian Romero Andrade. Licencia GPLv3 o posterior.

@@ -6,6 +6,10 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+### Añadido
+- Páginas de manual en inglés y español: `man kushare` (todas las órdenes, archivos, variables de entorno y ejemplos), `man kushare-tui` (pestañas y teclas) y `man kushare-gui`. Con el sistema en español se ven en español; con cualquier otro idioma, en inglés (`man -L es` o `man -L en` para elegir). Se instalan con los paquetes de Arch, Debian y Fedora.
+- `kushare-gui --help` y `--version` (antes abrían la ventana).
+
 ## [0.8.4] - 2026-11-19
 
 ### Añadido

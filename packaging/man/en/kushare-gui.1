@@ -1,0 +1,99 @@
+.\" kushare-gui manual page (English; installed as the default page). The
+.\" Spanish one is ../es/kushare-gui.1.
+.TH KUSHARE\-GUI 1 "2026-11-25" "kushare" "User Commands"
+.SH NAME
+kushare\-gui \- kushare window
+.SH SYNOPSIS
+.B kushare\-gui
+.br
+.B kushare\-gui \-\-reply
+.I "TITLE TEXT"
+.SH DESCRIPTION
+.B kushare\-gui
+is the window of
+.BR kushare (1),
+in the style of Phone Link. It is what the
+.B kushare
+launcher in the applications menu opens. Pages:
+.TP 16
+.B Home
+Link status and shortcuts.
+.TP
+.B Phone
+Battery, ringer, call, media players and audio outputs.
+.TP
+.B Messages
+SMS conversations; read and reply.
+.TP
+.B Calls
+Recent calls and a dial pad (with DTMF tones during a call).
+.TP
+.B Photos
+The phone's gallery: view, download and delete.
+.TP
+.B Notifications
+Those currently on the phone: dismiss, actions and replies.
+.TP
+.B Clipboard
+Shared history.
+.TP
+.B Camera & mic
+The phone as a webcam or microphone, and the QR scanner.
+.TP
+.B Devices
+Pair, unpair and per-app notification filters.
+.TP
+.B Send
+Send files over Wi-Fi or Bluetooth.
+.TP
+.B Settings
+Theme (System, Light, Dark, OLED), animations, menu position, phone panel,
+language, daemon settings and updates.
+.PP
+The window adapts to its width: when there is room it shows the phone panel at
+the side and, during a call, a bar to control it from any page.
+.PP
+It is a D-Bus client of the daemon; if the daemon is not running it says so and
+connects when it starts. Closing the window does not stop the daemon (use
+.B "kushare quit"
+for that).
+.SH OPTIONS
+.TP
+.BI \-\-reply " TITLE TEXT"
+Open only a small window to reply to a phone notification. The daemon uses it
+when
+.B Reply
+is clicked on a notification; there is no need to run it by hand.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.TP
+.BR \-V ", " \-\-version
+Show the version.
+.SH FILES
+.TP
+.I ~/.config/kushare/gui.toml
+Window preferences: theme, animations, menu position
+.RB ( nav )
+and phone panel
+.RB ( side_panel ).
+.TP
+.I ~/.config/kushare/language
+Language chosen in Settings.
+.SH ENVIRONMENT
+.TP
+.B KUSHARE_GUI_SCREEN
+Initial page:
+.BR phone ", " messages ", " calls ", " photos ", " notifications ,
+.BR clipboard ", " camera ", " devices " or " settings .
+.TP
+.B KUSHARE_LANG
+Language
+.RB ( es ", " en ).
+See
+.BR kushare (1).
+.SH SEE ALSO
+.BR kushare (1),
+.BR kushare\-tui (1).
+.SH AUTHOR
+Cristian Romero Andrade. Licensed under the GPLv3 or later.

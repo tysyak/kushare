@@ -59,6 +59,23 @@ fn main() -> iced::Result {
     // `kushare-gui --reply <título> <texto>`: ventana para responder a una
     // notificación del teléfono (la abre el daemon).
     let args: Vec<String> = std::env::args().collect();
+    // Sin clap: la ventana no tiene más opciones que estas.
+    match args.get(1).map(String::as_str) {
+        Some("-h" | "--help") => {
+            println!(
+                "Ventana de kushare (archivos, notificaciones y teléfono).\n\n\
+                 Uso: kushare-gui\n\
+                 \x20    kushare-gui --reply <TÍTULO> <TEXTO>\n\n\
+                 KUSHARE_GUI_SCREEN=<página> abre esa página. Más en `man kushare-gui`."
+            );
+            return Ok(());
+        }
+        Some("-V" | "--version") => {
+            println!("kushare-gui {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {}
+    }
     if args.get(1).map(String::as_str) == Some("--reply") {
         let title = args.get(2).cloned().unwrap_or_default();
         let body = args.get(3).cloned().unwrap_or_default();

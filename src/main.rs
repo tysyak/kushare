@@ -579,3 +579,32 @@ fn refresh_devices_menu(tray: &Tray, link: &link::LinkHandle) {
         tracing::warn!(?err, "no se pudo actualizar el menú de dispositivos");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::CommandFactory;
+
+    /// Cada orden de la CLI tiene que estar en `man kushare`, en inglés y en
+    /// español: si se añade una, este test recuerda documentarla en
+    /// `packaging/man/{en,es}/kushare.1`.
+    #[test]
+    fn man_page_lists_every_command() {
+        let pages = [
+            ("en", include_str!("../packaging/man/en/kushare.1")),
+            ("es", include_str!("../packaging/man/es/kushare.1")),
+        ];
+        for (lang, page) in pages {
+            // En roff los guiones van escapados (`send\-bt`).
+            let missing: Vec<String> = Cli::command()
+                .get_subcommands()
+                .map(|c| c.get_name().to_string())
+                .filter(|name| !page.contains(&name.replace('-', "\\-")))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "faltan en {lang}/kushare.1: {missing:?}"
+            );
+        }
+    }
+}

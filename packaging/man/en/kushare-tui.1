@@ -1,0 +1,193 @@
+'\" t
+.\" kushare-tui manual page (English; installed as the default page). The
+.\" Spanish one is ../es/kushare-tui.1. Keys come from
+.\" src/bin/kushare-tui/app.rs (on_key) and the tui.keys_* translation keys:
+.\" keep them in sync.
+.TH KUSHARE\-TUI 1 "2026-11-25" "kushare" "User Commands"
+.SH NAME
+kushare\-tui \- terminal interface for kushare
+.SH SYNOPSIS
+.B kushare\-tui
+.RB [ \-\-screen
+.IR TAB ]
+.RB [ \-\-send
+.IR FILE ]
+.SH DESCRIPTION
+.B kushare\-tui
+is the terminal interface of
+.BR kushare (1),
+with the same features as
+.BR kushare\-gui (1):
+phone status, messages, calls, notifications, clipboard, devices, file sending,
+webcam, microphone and QR scanner.
+.PP
+It is a D-Bus client of the daemon: if the daemon is not running it says so and
+connects as soon as it starts. Commands apply to the first paired phone that is
+connected.
+.PP
+Logs go to
+.I $TMPDIR/kushare\-tui.log
+.RI ( /tmp/kushare\-tui.log )
+so they do not break the terminal drawing.
+.SH OPTIONS
+.TP
+.BI \-\-screen " TAB"
+Initial tab:
+.BR home ", " phone ", " messages ", " calls ", " notifications ,
+.BR clipboard ", " devices ", " send ", " camera " or " qr .
+.TP
+.BI \-\-send " FILE"
+Open the
+.B Send
+tab with that file selected.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.TP
+.BR \-V ", " \-\-version
+Show the version.
+.SH TABS
+.TS
+tab(@);
+rB lB l.
+1@Home@overview of the phone and the PC
+2@Phone@battery, ringer, call and media
+3@Messages@SMS conversations
+4@Calls@call log and dialer
+5@Notifications@those currently on the phone
+6@Clipboard@shared history
+7@Devices@paired devices and search
+8@Send@a file to the phone
+9@Camera & mic@webcam and microphone
+0@QR codes@scanner and history
+.TE
+.SH KEYS
+.SS In every tab
+.TP 16
+.BR Tab ", " "\(<- \(->" ", " 1 \- 9 ", " 0
+Switch tab.
+.TP
+.BR "\(ua \(da" ", " "j k"
+Move through the list.
+.TP
+.B Enter
+Open or use the selected item.
+.TP
+.B r
+Reload.
+.TP
+.B Space
+Play or pause.
+.TP
+.BR "< >" " (or " ", ." )
+Previous or next track.
+.TP
+.B f
+Ring the phone to find it; press
+.B f
+again to stop.
+.TP
+.BR "H " / " A " / " M"
+During a call: hang up, answer (when ringing) and mute the microphone.
+.TP
+.BR q ", " Ctrl+C
+Quit.
+.SS Phone
+.TP 16
+.BR "n v s"
+Ringer normal, vibrate or silent.
+.TP
+.BR "a h m"
+Answer, hang up (or reject when ringing) and mute the microphone.
+.SS Messages
+.TP 16
+.B Enter
+Open the conversation.
+.TP
+.B w
+Write a reply (with the conversation open).
+.TP
+.B Esc
+Back to the list.
+.SS Calls
+.TP 16
+.B Enter
+Call the selected number.
+.TP
+.B d
+Type a number and dial it.
+.TP
+.BR 0 \- 9 ", " "* #"
+In a call: DTMF tones.
+.SS Notifications
+.TP 16
+.BR x ", " Delete
+Dismiss the selected one.
+.TP
+.B X
+Dismiss them all.
+.TP
+.B Enter
+Trigger its action.
+.TP
+.B w
+Reply (if the app allows it).
+.SS Clipboard
+.TP 16
+.B Enter
+Copy the entry to the PC clipboard.
+.SS Devices
+.TP 16
+.B s
+Search for devices on the network.
+.SS Send
+.TP 16
+.B e
+Type the file path.
+.TP
+.B Enter
+Send it to the phone over Bluetooth.
+.SS Camera & mic
+.TP 16
+.BR "\(ua \(da"
+Pick a camera.
+.TP
+.B Enter
+Turn the webcam on or off.
+.TP
+.B p
+Webcam engine: automatic, v4l2loopback or PipeWire.
+.TP
+.B m
+Turn the microphone on or off.
+.TP
+.B d
+Use the phone microphone as the default input.
+.SS QR codes
+.TP 16
+.B s
+Open the scanner on the phone.
+.TP
+.B Enter
+Open (if it is a web page) or copy.
+.TP
+.B c
+Copy.
+.TP
+.B g
+Save to Downloads.
+.TP
+.B x
+Delete from the history.
+.SH ENVIRONMENT
+.TP
+.B KUSHARE_LANG
+Language
+.RB ( es ", " en ).
+See
+.BR kushare (1).
+.SH SEE ALSO
+.BR kushare (1),
+.BR kushare\-gui (1).
+.SH AUTHOR
+Cristian Romero Andrade. Licensed under the GPLv3 or later.

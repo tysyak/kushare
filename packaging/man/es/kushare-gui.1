@@ -1,0 +1,98 @@
+.\" Página de manual de kushare-gui en español (la inglesa, predeterminada, es
+.\" ../en/kushare-gui.1).
+.TH KUSHARE\-GUI 1 "2026-11-25" "kushare" "Órdenes de usuario"
+.SH NOMBRE
+kushare\-gui \- ventana de kushare
+.SH SINOPSIS
+.B kushare\-gui
+.br
+.B kushare\-gui \-\-reply
+.I "TÍTULO TEXTO"
+.SH DESCRIPCIÓN
+.B kushare\-gui
+es la ventana de
+.BR kushare (1),
+al estilo de Enlace Móvil. Es la que abre el lanzador
+.B kushare
+del menú de aplicaciones. Páginas:
+.TP 16
+.B Inicio
+Estado del enlace y accesos rápidos.
+.TP
+.B Teléfono
+Batería, timbre, llamada, reproductores y salidas de audio.
+.TP
+.B Mensajes
+Conversaciones de SMS; leer y responder.
+.TP
+.B Llamadas
+Recientes y teclado para marcar (con tonos DTMF en llamada).
+.TP
+.B Fotos
+Galería del teléfono: ver, descargar y borrar.
+.TP
+.B Notificaciones
+Las que hay ahora en el teléfono: descartar, acciones y respuesta.
+.TP
+.B Portapapeles
+Historial compartido.
+.TP
+.B Cámara
+El teléfono como webcam o micrófono, y el escáner de QR.
+.TP
+.B Dispositivos
+Emparejar, desemparejar y filtros de notificaciones por app.
+.TP
+.B Enviar
+Mandar archivos por Wi-Fi o Bluetooth.
+.TP
+.B Ajustes
+Tema (Sistema, Claro, Oscuro, OLED), animaciones, posición del menú, panel del
+teléfono, idioma, ajustes del daemon y actualizaciones.
+.PP
+La ventana se adapta al ancho: si cabe, muestra a un lado el panel del teléfono
+y, durante una llamada, una barra para controlarla desde cualquier página.
+.PP
+Es un cliente del daemon por D-Bus; si el daemon no está en marcha, lo indica y
+se conecta cuando arranca. Cerrar la ventana no cierra el daemon (para eso,
+.BR "kushare quit" ).
+.SH OPCIONES
+.TP
+.BI \-\-reply " TÍTULO TEXTO"
+Abre solo una ventana pequeña para responder a una notificación del teléfono.
+La usa el daemon al pulsar
+.B Responder
+en una notificación; no hace falta lanzarla a mano.
+.TP
+.BR \-h ", " \-\-help
+Muestra la ayuda.
+.TP
+.BR \-V ", " \-\-version
+Muestra la versión.
+.SH ARCHIVOS
+.TP
+.I ~/.config/kushare/gui.toml
+Preferencias de la ventana: tema, animaciones, posición del menú
+.RB ( nav )
+y panel del teléfono
+.RB ( side_panel ).
+.TP
+.I ~/.config/kushare/language
+Idioma elegido en Ajustes.
+.SH ENTORNO
+.TP
+.B KUSHARE_GUI_SCREEN
+Página inicial:
+.BR phone ", " messages ", " calls ", " photos ", " notifications ,
+.BR clipboard ", " camera ", " devices " o " settings .
+.TP
+.B KUSHARE_LANG
+Idioma
+.RB ( es ", " en ).
+Ver
+.BR kushare (1).
+.SH VÉASE TAMBIÉN
+.BR kushare (1),
+.BR kushare\-tui (1).
+.SH AUTOR
+Cristian Romero Andrade. Licencia GPLv3 o posterior.
