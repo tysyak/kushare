@@ -1105,7 +1105,7 @@ async fn hotspot(daemon: &DaemonProxy<'_>, action: HotspotAction) -> anyhow::Res
 async fn wait_hotspot(daemon: &DaemonProxy<'_>) -> anyhow::Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     loop {
-        let (active, starting, .., error, _) = daemon.hotspot_status().await?;
+        let (active, starting, _, _, _, _, error, ..) = daemon.hotspot_status().await?;
         if active {
             return Ok(());
         }
@@ -1125,7 +1125,7 @@ async fn wait_hotspot(daemon: &DaemonProxy<'_>) -> anyhow::Result<()> {
 
 async fn print_hotspot(daemon: &DaemonProxy<'_>, qr: bool) -> anyhow::Result<()> {
     use std::io::IsTerminal;
-    let (active, starting, ssid, password, band, clients, error, alternative) =
+    let (active, starting, ssid, password, band, clients, error, alternative, switched) =
         daemon.hotspot_status().await?;
     let state = if active {
         format!("encendida · {band} · {clients} conectado(s)")
@@ -1137,6 +1137,11 @@ async fn print_hotspot(daemon: &DaemonProxy<'_>, qr: bool) -> anyhow::Result<()>
     println!("Red «{ssid}» ({state})\nClave: {password}");
     if !error.is_empty() {
         println!("Último error: {error}");
+    }
+    if active && !switched.is_empty() {
+        println!(
+            "La Wi-Fi del PC usa otra antena de su red ({switched}) mientras la red esté encendida; al apagarla vuelve a la de antes."
+        );
     }
     if !active && !alternative.is_empty() {
         println!(

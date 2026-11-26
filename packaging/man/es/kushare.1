@@ -241,10 +241,12 @@ lo vuelve a mostrar. La tarjeta Wi-Fi sigue conectada a su red: el punto de
 acceso va en el mismo canal (los canales «no IR», como el 36–48 en muchas
 tarjetas, no sirven; ver
 .BR "kushare doctor" ).
-Si la red del PC tiene otra antena en un canal válido, ofrece pasarse a ella
-(o lo hace sin preguntar con
-.BR \-\-switch\-antenna )
-mientras la red esté encendida; al apagarla, todo vuelve a como estaba.
+Si la red del PC tiene otra antena en un canal válido, se pasa sola a ella
+mientras la red esté encendida (ajuste
+.BR hotspot\-auto\-antenna ;
+si está apagado, lo pregunta, o lo hace sin preguntar con
+.BR \-\-switch\-antenna );
+al apagarla, todo vuelve a como estaba.
 .TP
 .BR "hotspot config" " [" \-\-ssid " \fINOMBRE\fR] [" \-\-password " \fICLAVE\fR | " \-\-random ]
 Nombre de la red y clave WPA2 (8–63 caracteres ASCII); se aplican al
@@ -279,6 +281,7 @@ receive\-confirm@preguntar antes de aceptar un archivo
 photo\-notify@avisar de fotos nuevas con su miniatura
 hybrid@Wi-Fi a demanda para lo pesado
 dynamic\-lock@bloquear la sesión al alejarse el teléfono
+hotspot\-auto\-antenna@cambiar sola de antena al compartir internet
 .TE
 .TP
 .BR pc\-audio " [" \-\-output " \fISALIDA\fR] [" \-\-input " \fIENTRADA\fR]"

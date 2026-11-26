@@ -443,6 +443,7 @@ impl DaemonApi {
             st.clients,
             st.error,
             st.alternative,
+            st.switched,
         )
     }
 
@@ -451,6 +452,7 @@ impl DaemonApi {
     /// espera de D-Bus. El resultado se ve en `hotspot_status`.
     fn hotspot_start(&self) {
         let hotspot = self.link.hotspot.clone();
+        hotspot.set_auto_antenna(self.link.features.settings.get().hotspot_auto_antenna);
         hotspot.mark_starting();
         tokio::spawn(async move {
             if let Err(err) = hotspot.start().await {

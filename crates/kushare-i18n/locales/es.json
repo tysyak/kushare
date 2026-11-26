@@ -434,7 +434,10 @@
       "usb_on": "Conectado · ↓ {down} ↑ {up}",
       "usb_wait": "Esperando al teléfono… (la primera vez acepta la VPN de kushare)",
       "usb_started": "El teléfono ya usa el internet del PC por el cable.",
-      "usb_failed": "No se pudo compartir internet por USB."
+      "usb_failed": "No se pudo compartir internet por USB.",
+      "auto_antenna": "Cambiar de antena automáticamente",
+      "auto_antenna_detail": "Si el canal de la Wi-Fi del PC no sirve, se pasa sola a otra antena de la misma red mientras la red esté encendida.",
+      "switched": "La Wi-Fi del PC usa la antena del {antenna} mientras la red esté encendida; al apagarla vuelve a la de antes."
     }
   },
   "tray": {

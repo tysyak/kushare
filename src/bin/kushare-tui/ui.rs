@@ -932,7 +932,8 @@ fn usb_line(app: &App) -> Line<'static> {
 /// «Compartir internet»: estado, nombre y clave, teclas y el QR si está
 /// encendida.
 fn draw_hotspot(frame: &mut Frame, area: Rect, app: &App) {
-    let (active, starting, ssid, password, band, clients, error, alternative) = &app.hotspot;
+    let (active, starting, ssid, password, band, clients, error, alternative, switched) =
+        &app.hotspot;
     let status = if *active {
         Span::styled(
             format!(
@@ -958,6 +959,9 @@ fn draw_hotspot(frame: &mut Frame, area: Rect, app: &App) {
         )
     };
     let mut lines = vec![Line::from(status)];
+    if *active && !switched.is_empty() {
+        lines.push(Line::from(tf("gui.hotspot.switched", &[("antenna", switched)])).fg(DIM));
+    }
     if !*active && !*starting && !alternative.is_empty() {
         lines.push(
             Line::from(format!(

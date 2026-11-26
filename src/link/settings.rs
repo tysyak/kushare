@@ -28,6 +28,10 @@ pub struct Settings {
     pub hybrid: bool,
     /// Bloquear la sesión si el teléfono se aleja (se pierde el Bluetooth).
     pub dynamic_lock: bool,
+    /// «Compartir internet»: si el canal de la Wi-Fi del PC no sirve para el
+    /// punto de acceso, pasarse sola a otra antena de la misma red mientras
+    /// la red esté encendida (si no, se pregunta).
+    pub hotspot_auto_antenna: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +45,7 @@ impl Default for Settings {
             photo_notify: true,
             hybrid: true,
             dynamic_lock: false,
+            hotspot_auto_antenna: true,
         }
     }
 }
@@ -55,6 +60,7 @@ pub const NAMES: &[&str] = &[
     "photo-notify",
     "hybrid",
     "dynamic-lock",
+    "hotspot-auto-antenna",
 ];
 
 impl Settings {
@@ -68,6 +74,7 @@ impl Settings {
             "photo-notify" => self.photo_notify,
             "hybrid" => self.hybrid,
             "dynamic-lock" => self.dynamic_lock,
+            "hotspot-auto-antenna" => self.hotspot_auto_antenna,
             _ => return None,
         })
     }
@@ -82,6 +89,7 @@ impl Settings {
             "photo-notify" => &mut self.photo_notify,
             "hybrid" => &mut self.hybrid,
             "dynamic-lock" => &mut self.dynamic_lock,
+            "hotspot-auto-antenna" => &mut self.hotspot_auto_antenna,
             _ => return None,
         })
     }

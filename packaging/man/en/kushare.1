@@ -236,10 +236,12 @@ shows it again. The Wi-Fi card stays connected to its network: the access
 point uses the same channel ("no IR" channels, such as 36–48 on many cards,
 cannot be used; see
 .BR "kushare doctor" ).
-If the PC's network has another antenna on a valid channel, it offers to
-switch to it (or does so without asking with
-.BR \-\-switch\-antenna )
-while the network is on; turning it off restores everything.
+If the PC's network has another antenna on a valid channel, it switches to it
+by itself while the network is on (setting
+.BR hotspot\-auto\-antenna ;
+when off, it asks, or switches without asking with
+.BR \-\-switch\-antenna );
+turning it off restores everything.
 .TP
 .BR "hotspot config" " [" \-\-ssid " \fINAME\fR] [" \-\-password " \fIPASSWORD\fR | " \-\-random ]
 Network name and WPA2 password (8–63 ASCII characters); applied when it is
@@ -275,6 +277,7 @@ receive\-confirm@ask before accepting a file
 photo\-notify@notify about new photos with a thumbnail
 hybrid@Wi-Fi on demand for heavy transfers
 dynamic\-lock@lock the session when the phone goes away
+hotspot\-auto\-antenna@auto antenna switch (sharing internet)
 .TE
 .TP
 .BR pc\-audio " [" \-\-output " \fIOUTPUT\fR] [" \-\-input " \fIINPUT\fR]"

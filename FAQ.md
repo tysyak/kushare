@@ -283,7 +283,7 @@ llamada); con el teléfono y el PC en la misma Wi-Fi, a 48 kHz.
 
 Ejecuta `kushare doctor` (sección *Compartir internet*). Lo habitual:
 
-- **«la Wi-Fi del PC está en el canal N, donde esta tarjeta no puede emitir»**: la red del teléfono tiene que ir en el mismo canal que la del PC, y en ese la tarjeta no puede ser punto de acceso. Si tu red tiene otra antena en un canal válido, kushare la ofrece («Usar la antena del canal…» en la GUI, `A` en la TUI, `kushare hotspot on --switch-antenna`): la Wi-Fi del PC se queda en ella mientras la red esté encendida y al apagarla vuelve a como estaba. Si no hay ninguna, conecta el PC a otra red o usa un adaptador Wi-Fi USB.
+- **«la Wi-Fi del PC está en el canal N, donde esta tarjeta no puede emitir»**: la red del teléfono tiene que ir en el mismo canal que la del PC, y en ese la tarjeta no puede ser punto de acceso. Si tu red tiene otra antena en un canal válido, kushare se pasa sola a ella (ajuste `hotspot-auto-antenna`; si lo apagas, lo ofrece con «Usar la antena del canal…» en la GUI, `A` en la TUI o `kushare hotspot on --switch-antenna`): la Wi-Fi del PC se queda en ella mientras la red esté encendida y al apagarla vuelve a como estaba. Si no hay ninguna, conecta el PC a otra red o usa un adaptador Wi-Fi USB.
 - **«se canceló la autorización»**: cerraste el diálogo de polkit. Vuelve a encenderla y escribe tu contraseña.
 - **Falta `hostapd` o el ayudante**: instala `hostapd` y reinstala el paquete de kushare.
 - **El teléfono se conecta y la Wi-Fi del PC se cae**: el teléfono usa la misma MAC que el PC (pasa si clonaste la MAC del teléfono en el PC para una red con registro). kushare rechaza a ese cliente; en el teléfono pon *Privacidad → MAC aleatoria* para esa red.

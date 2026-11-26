@@ -6,6 +6,9 @@ Todos los cambios notables de kushare (cliente de escritorio). Formato basado en
 
 ## [Sin publicar]
 
+### Cambiado
+- **Compartir internet**: si el canal de la Wi-Fi del PC no sirve para crear la red y la misma red tiene otra antena que sí, kushare se pasa a ella **solo** al encenderla (antes había que pulsar un botón) y avisa de en qué antena quedó; al apagar vuelve a la de antes. Ajuste `hotspot-auto-antenna` (activado por defecto; interruptor en la tarjeta *Compartir internet*). Con el ajuste apagado el error es más corto y el botón ofrece el cambio.
+
 ## [0.8.5] - 2026-11-25
 
 ### Añadido

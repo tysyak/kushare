@@ -112,7 +112,11 @@ impl App {
                 if failed {
                     self.toast = Some(row.6.clone());
                 } else if !was_active && row.0 {
-                    self.toast = Some(t("gui.hotspot.started").to_string());
+                    self.toast = Some(if row.8.is_empty() {
+                        t("gui.hotspot.started").to_string()
+                    } else {
+                        tf("gui.hotspot.switched", &[("antenna", &row.8)])
+                    });
                 }
                 s.row = row;
                 Task::none()
@@ -218,7 +222,7 @@ impl App {
 
     pub(crate) fn hotspot_card(&self, c: Colors) -> Element<'_, Message> {
         let s = &self.hotspot;
-        let (active, starting, _, _, band, clients, error, alternative) = &s.row;
+        let (active, starting, _, _, band, clients, error, alternative, switched) = &s.row;
         let busy = *starting || s.starting;
         let status = if *active {
             tf(
@@ -256,6 +260,22 @@ impl App {
             col = col.push(
                 text(t("gui.hotspot.switch_detail"))
                     .size(12)
+                    .color(c.on_surface_variant),
+            );
+        }
+
+        // Cambiar de antena sola (ajuste del daemon).
+        col = col.push(self.switch_row(
+            c,
+            t("gui.hotspot.auto_antenna"),
+            Some(t("gui.hotspot.auto_antenna_detail")),
+            self.setting("hotspot-auto-antenna"),
+            |on| Message::SetSetting("hotspot-auto-antenna".into(), on),
+        ));
+        if *active && !switched.is_empty() {
+            col = col.push(
+                text(tf("gui.hotspot.switched", &[("antenna", switched)]))
+                    .size(13)
                     .color(c.on_surface_variant),
             );
         }

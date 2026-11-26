@@ -95,8 +95,19 @@ pub type MicRow = (bool, String, String, u32, String, bool);
 /// Punto de acceso «Compartir internet»: (activo, arrancando, nombre de la
 /// red, clave, «banda · canal», clientes conectados, último error, antena
 /// alternativa — «canal 157 · señal 45» si el canal actual no sirve y hay
-/// otra antena de la misma red que sí; vacío si no).
-pub type HotspotRow = (bool, bool, String, String, String, u32, String, String);
+/// otra antena de la misma red que sí; vacío si no; antena en la que se fijó
+/// la Wi-Fi del PC mientras la red esté encendida, vacío si no).
+pub type HotspotRow = (
+    bool,
+    bool,
+    String,
+    String,
+    String,
+    u32,
+    String,
+    String,
+    String,
+);
 
 /// Internet por cable USB: (activo, arrancando, bytes hacia el teléfono,
 /// bytes desde el teléfono, último error).

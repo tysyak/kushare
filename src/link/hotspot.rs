@@ -74,7 +74,23 @@ pub struct Status {
     /// Si el canal de la Wi-Fi del PC no sirve y hay otra antena de la misma
     /// red que sí: «canal 157 · señal 45» (vacío si no).
     pub alternative: String,
+    /// La Wi-Fi del PC está fijada en otra antena mientras la red esté
+    /// encendida: «canal 1 · señal 57» (vacío si no).
+    pub switched: String,
 }
+
+/// El canal no sirve pero hay otra antena: [`Hotspot::start`] se pasa a ella
+/// sola si `auto_antenna` está activo.
+#[derive(Debug)]
+struct NeedsAntenna;
+
+impl std::fmt::Display for NeedsAntenna {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("hace falta cambiar de antena")
+    }
+}
+
+impl std::error::Error for NeedsAntenna {}
 
 struct Session {
     child: Child,
@@ -91,6 +107,8 @@ pub struct Hotspot {
     changed: watch::Sender<u64>,
     /// Puerto real del enlace (se abre en el cortafuegos del puente).
     link_port: std::sync::atomic::AtomicU16,
+    /// Ajuste `hotspot-auto-antenna` (lo fija quien la enciende).
+    auto_antenna: std::sync::atomic::AtomicBool,
 }
 
 impl Hotspot {
@@ -121,6 +139,7 @@ impl Hotspot {
             session: tokio::sync::Mutex::new(None),
             changed: watch::channel(0).0,
             link_port: std::sync::atomic::AtomicU16::new(0),
+            auto_antenna: std::sync::atomic::AtomicBool::new(true),
         });
         if let Err(err) = this.save(&config) {
             tracing::warn!(?err, "no se pudo guardar hotspot.toml");
@@ -138,6 +157,13 @@ impl Hotspot {
     pub fn set_link_port(&self, port: u16) {
         self.link_port
             .store(port, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Si al encender se puede cambiar sola de antena (ajuste
+    /// `hotspot-auto-antenna`).
+    pub fn set_auto_antenna(&self, on: bool) {
+        self.auto_antenna
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn subscribe(&self) -> watch::Receiver<u64> {
@@ -225,6 +251,12 @@ impl Hotspot {
                 drop(session);
                 self.wait_ready(ready).await
             }
+            Err(err) if err.is::<NeedsAntenna>() => {
+                drop(session);
+                let _ = nmcli(&["connection", "delete", NM_CONNECTION]).await;
+                tracing::info!("el canal de la Wi-Fi no sirve: se cambia de antena sola");
+                Box::pin(self.switch_antenna_and_start()).await
+            }
             Err(err) => {
                 drop(session);
                 let _ = nmcli(&["connection", "delete", NM_CONNECTION]).await;
@@ -262,6 +294,8 @@ impl Hotspot {
             };
             super::features::write_private(&self.pin_path, toml::to_string(&pinned)?.as_bytes())?;
             tracing::info!(bssid = %plan.bssid, channel = plan.channel, "fijando otra antena para compartir internet");
+            let label = format!("canal {} · señal {}", plan.channel, plan.signal);
+            self.update(|st| st.switched = label);
             nmcli(&["connection", "modify", &uuid, "802-11-wireless.bssid", &plan.bssid]).await?;
             nmcli(&["connection", "up", &uuid]).await?;
             // Esperar a estar de verdad en el canal nuevo.
@@ -308,6 +342,7 @@ impl Hotspot {
         }
         let _ = nmcli(&["connection", "up", &pinned.connection]).await;
         let _ = std::fs::remove_file(&self.pin_path);
+        self.update(|st| st.switched.clear());
     }
 
     async fn wait_ready(
@@ -358,7 +393,17 @@ impl Hotspot {
                 .flatten()
                 .map(|a| format!("canal {} · señal {}", a.channel, a.signal))
                 .unwrap_or_default();
+            let has_alt = !alt.is_empty();
             self.update(|st| st.alternative = alt);
+            if has_alt && self.auto_antenna.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(NeedsAntenna.into());
+            }
+            if has_alt {
+                // El botón «Usar la antena…» ofrece la solución.
+                anyhow::bail!(
+                    "la Wi-Fi del PC está en el canal {channel}, donde esta tarjeta no puede emitir"
+                );
+            }
             anyhow::bail!(shared::no_ir_error(channel));
         }
         self.update(|st| st.alternative.clear());
